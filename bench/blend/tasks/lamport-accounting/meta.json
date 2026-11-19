@@ -1,0 +1,7 @@
+{
+  "id": "lamport-accounting",
+  "title": "Remove floating-point lamport accounting",
+  "kind": "bugfix",
+  "difficulty": 1,
+  "topics": ["lamports", "overflow", "decimal"]
+}

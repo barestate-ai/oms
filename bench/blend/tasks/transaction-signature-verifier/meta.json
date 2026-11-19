@@ -1,0 +1,7 @@
+{
+  "id": "transaction-signature-verifier",
+  "title": "Verify raw legacy and v0 transaction signer ordering",
+  "kind": "implement",
+  "difficulty": 3,
+  "topics": ["ed25519", "signatures", "transaction-envelope", "multi-file"]
+}

@@ -1,0 +1,135 @@
+{
+  "seed": "blend-solana-v1-2026-11-20",
+  "dev": [
+    {
+      "id": "anchor-discriminators",
+      "sha256": "f4ebc05b2da4f3e77da70df6b19af7bc7cdeb81add1f9c90af9838e38ba5fbe6"
+    },
+    {
+      "id": "shortvec-u16",
+      "sha256": "4b26d3c20cecc43691f2e17137e9a0e792f18843d56d60dca1f5ebdc886cb568"
+    },
+    {
+      "id": "lamport-accounting",
+      "sha256": "57862bca216866a0767ed197f65d4ff579e9283b4633b84708a1ece5662cf465"
+    },
+    {
+      "id": "system-instructions",
+      "sha256": "22bf095679794843bfa7690b674ee131ed2f18be58dded52f75885b9cef6ca95"
+    },
+    {
+      "id": "program-error-logs",
+      "sha256": "a1b5fb1622cb854ebc31f2fd793459a89187a83a56e9a5e6fe8bf3c20531ed6b"
+    },
+    {
+      "id": "spl-token-account",
+      "sha256": "93867a659c99c8e8f302fa996fa95c478ce7254b3ae35087bed3ca66f72af86d"
+    },
+    {
+      "id": "borsh-vesting",
+      "sha256": "9a03835516a60c8b8760f06c438e3cb4eb6c23cddfc7316fdd305741d2d7b5b8"
+    },
+    {
+      "id": "lookup-table-layout",
+      "sha256": "f16f54bc9e135921bb3dfca4672e5e25ea25fd352b278ee8d9443eff7bf85623"
+    },
+    {
+      "id": "memo-instruction",
+      "sha256": "c62fba7ff7c01624ee7992b0385a4c40737128195bdfe4eb2081b499dccb43ae"
+    },
+    {
+      "id": "clock-sysvar",
+      "sha256": "8716a1a70e537c9817782518d5e4dee539c60240044d4ec0c25570de37c2bac7"
+    },
+    {
+      "id": "cpi-log-stack",
+      "sha256": "f213ba11e6e516f880c305f96dd6d3a871fd5b4fa474101fb6b4a07995ff3d55"
+    },
+    {
+      "id": "transfer-hook-extra-metas",
+      "sha256": "fd73e784a374a315b20b16aaf23d7884ec99e12f2ec19c7b8ec2c45ea0bbbb29"
+    },
+    {
+      "id": "token2022-transfer-fees",
+      "sha256": "3ebc8a245f017ae3607700759cbd0809d4c66a5a98006a095460b72c68bde8fb"
+    },
+    {
+      "id": "v0-message-wire",
+      "sha256": "356066bee77d06d241f26b891e03d5ded81c760d8193eafb77afac7d547c1f8d"
+    },
+    {
+      "id": "transaction-signature-verifier",
+      "sha256": "609cdd64697a7f5177a147333bffaa8b4b1644fc88d2c9ca48ab8eb93b19ae5b"
+    },
+    {
+      "id": "pda-ata-curve",
+      "sha256": "e9e549cf14293b625e3b87af6055a4e9ec058c2b0744e28e08d8f994a936c25a"
+    }
+  ],
+  "heldout": [
+    {
+      "id": "spl-mint",
+      "sha256": "71a78cae8cb14f5c227794963c53df55a786d79133aa4a3f44bad0cf942581cc"
+    },
+    {
+      "id": "base58-keys",
+      "sha256": "3a209fb07bcd795474498cb98957959debc4fae75db191179d53064b4224539e"
+    },
+    {
+      "id": "rent-threshold",
+      "sha256": "025cd805f0e38dd944fac0497103e48921fea0ad40e4f06dfd73b6dbbf1d6383"
+    },
+    {
+      "id": "compute-budget",
+      "sha256": "e851086a5f94771a64755ba5857e8d5e23a7e4ef0a50af69438ffe126a8e7843"
+    },
+    {
+      "id": "durable-nonce-detection",
+      "sha256": "a599057eb93843112fa387ad57c5b4391c7753fe6663c331135cabdb145c7f13"
+    },
+    {
+      "id": "ed25519-precompile-offsets",
+      "sha256": "8934f3c153d09e463abc5bd27015e675e238a1a1bad950daaf5093a30c8a818b"
+    },
+    {
+      "id": "token2022-tlv",
+      "sha256": "c4da187ed8b2d8a46aa12f5e06e285b1c7af80848f6753be1c0abcd71749936d"
+    },
+    {
+      "id": "compile-account-roles",
+      "sha256": "48e98ac722b5768bb73f259e335f05f176586f3a9a451ca49db92118661b6325"
+    },
+    {
+      "id": "spl-multisig",
+      "sha256": "453b25464c48e5a16f0f8ca7e1536ff569c14166d14ee55d426441ae6fe31829"
+    },
+    {
+      "id": "instructions-sysvar",
+      "sha256": "860275bebb95e1ab2e15103d980d4b08e0573d80bf137836ba5b9227f07406b0"
+    },
+    {
+      "id": "stake-history-sysvar",
+      "sha256": "43490708dddf9c41a6b5ca37579fe76f4226ae952616059dc339b33d8123c52a"
+    },
+    {
+      "id": "alt-slot-lifecycle",
+      "sha256": "16bf4a5a76b9ead670da45a82949b8c8d77eb135e34c75125d7d80ea9e354fc9"
+    },
+    {
+      "id": "legacy-message-wire",
+      "sha256": "4af0e49ba270ae0308a9955fa199b5ee125a6ce64158bb88c2d4f0d256db853c"
+    },
+    {
+      "id": "v0-lookup-resolution",
+      "sha256": "972a0a14e7400698aed5b214eddc74816821a55b63dd931b6d4a1e73b508ead9"
+    },
+    {
+      "id": "borsh-order-batch",
+      "sha256": "f42d81ff2bf5edd0c41c35d08969bca04dbaae0a070e2ea08ec260ab2ece0049"
+    },
+    {
+      "id": "legacy-transaction-compiler",
+      "sha256": "ba53a5fe605921490769d396431bc62bd9eb97da0f76dd7ba08d1b11d8d1e747"
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "node": "v22.23.5",
+  "seed": "blend-solana-v1-2026-11-20",
+  "split_counts": {
+    "dev": {
+      "1": 5,
+      "2": 6,
+      "3": 5
+    },
+    "heldout": {
+      "1": 5,
+      "2": 6,
+      "3": 5
+    }
+  },
+  "reference_tasks": 32,
+  "reference_hidden_passed": 421,
+  "reference_visible_passed": 64,
+  "starters_failing_majority": 32,
+  "max_reference_seconds": 0.294,
+  "max_run_seconds": 0.337,
+  "dev": [
+    {
+      "id": "anchor-discriminators",
+      "difficulty": 1,
+      "kind": "implement",
+      "hidden_tests": 10,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "borsh-vesting",
+      "difficulty": 2,
+      "kind": "implement",
+      "hidden_tests": 15,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "clock-sysvar",
+      "difficulty": 2,
+      "kind": "implement",
+      "hidden_tests": 12,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "cpi-log-stack",
+      "difficulty": 2,
+      "kind": "bugfix",
+      "hidden_tests": 12,
+      "starter_passed": 5,
+      "starter_score": 0.4166666666666667
+    },
+    {
+      "id": "lamport-accounting",
+      "difficulty": 1,
+      "kind": "bugfix",
+      "hidden_tests": 10,
+      "starter_passed": 3,
+      "starter_score": 0.3
+    },
+    {
+      "id": "lookup-table-layout",
+      "difficulty": 2,
+      "kind": "implement",
+      "hidden_tests": 12,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "memo-instruction",
+      "difficulty": 2,
+      "kind": "refactor",
+      "hidden_tests": 12,
+      "starter_passed": 3,
+      "starter_score": 0.25
+    },
+    {
+      "id": "pda-ata-curve",
+      "difficulty": 3,
+      "kind": "implement",
+      "hidden_tests": 18,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "program-error-logs",
+      "difficulty": 1,
+      "kind": "implement",
+      "hidden_tests": 10,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "shortvec-u16",
+      "difficulty": 1,
+      "kind": "implement",
+      "hidden_tests": 10,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "spl-token-account",
+      "difficulty": 2,
+      "kind": "implement",
+      "hidden_tests": 12,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "system-instructions",
+      "difficulty": 1,
+      "kind": "implement",
+      "hidden_tests": 10,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "token2022-transfer-fees",
+      "difficulty": 3,
+      "kind": "implement",
+      "hidden_tests": 17,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "transaction-signature-verifier",
+      "difficulty": 3,
+      "kind": "implement",
+      "hidden_tests": 16,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "transfer-hook-extra-metas",
+      "difficulty": 3,
+      "kind": "implement",
+      "hidden_tests": 20,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    },
+    {
+      "id": "v0-message-wire",
+      "difficulty": 3,
+      "kind": "implement",
+      "hidden_tests": 19,
+      "starter_passed": 0,
+      "starter_score": 0.0
+    }
+  ],
+  "grader_examples": [
+    {
+      "id": "lamport-accounting",
+      "mode": "starter",
+      "passed": 3,
+      "total": 10,
+      "score": 0.3
+    },
+    {
+      "id": "lamport-accounting",
+      "mode": "reference",
+      "passed": 10,
+      "total": 10,
+      "score": 1
+    },
+    {
+      "id": "pda-ata-curve",
+      "mode": "starter",
+      "passed": 0,
+      "total": 18,
+      "score": 0
+    },
+    {
+      "id": "pda-ata-curve",
+      "mode": "reference",
+      "passed": 18,
+      "total": 18,
+      "score": 1
+    }
+  ],
+  "heldout_tar_sha256": "52a70857bc14fa0a04a637433aa60b5f3031a0c5e614fe8312c61cef16963140"
+}

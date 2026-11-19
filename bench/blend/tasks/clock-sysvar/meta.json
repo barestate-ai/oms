@@ -1,0 +1,7 @@
+{
+  "id": "clock-sysvar",
+  "title": "Clock sysvar signed timestamp compatibility",
+  "kind": "implement",
+  "difficulty": 2,
+  "topics": ["sysvar", "clock", "signed-integers"]
+}
