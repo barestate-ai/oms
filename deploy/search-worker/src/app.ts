@@ -371,8 +371,6 @@ async function chargeSearch(
         'UNFUNDED_USAGE',
         `You have unpaid usage on your OMS account. Settle it at ${BILLING_PAGE}`,
       );
-    if (result.code === 'INVALID_REQUEST')
-      return gatewayError(402, 'INVALID_REQUEST', 'invalid search billing request');
   }
   return billingUnavailable();
 }
@@ -393,7 +391,7 @@ async function userRoute(subpath: string, request: Request, env: Env, deps: Deps
   if (!user) return UNAUTHENTICATED();
   const wait = await gate(env).limit(`user:${user}`, USER_RATE_PER_MIN);
   if (wait) return gatewayError(429, 'RATE_LIMITED', 'Too many search calls; slow down.', retryAfter(wait));
-  // Charged once per request, cache hits included; a call that fails with a 5xx is refunded below.
+  // Charged once per request, cache hits included; a call that does not answer 2xx is refunded below.
   const requestId = crypto.randomUUID();
   const refusal = await chargeSearch(env, user, pathname === '/search' ? 'search' : 'fetch', requestId);
   if (refusal) return refusal;
@@ -404,7 +402,7 @@ async function userRoute(subpath: string, request: Request, env: Env, deps: Deps
     await refundSearch(env, user, requestId);
     return gatewayError(500, 'SEARCH_UNAVAILABLE', 'internal error');
   }
-  if (response.status >= 500) await refundSearch(env, user, requestId);
+  if (!response.ok) await refundSearch(env, user, requestId);
   return gatewayStyle(response);
 }
 
