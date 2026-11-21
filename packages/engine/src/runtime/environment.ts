@@ -63,7 +63,7 @@ export function defaultHarnessEnvironment(
     // OMS_BENCH_DEPENDENCIES: one read-only dependency set for every cell of the Solana Bench harness.
     ...(process.env.OMS_BENCH_DEPENDENCIES
       ? { dependencies: resolve(process.env.OMS_BENCH_DEPENDENCIES) }
-      : process.platform === 'linux' && process.arch === 'x64'
+      : backend === 'docker' && process.platform === 'linux' && process.arch === 'x64'
         ? { dependencies: fileURLToPath(new URL('../../../../', import.meta.url)) }
         : {}),
   };
