@@ -10,7 +10,9 @@ import {
 } from '@oms/engine';
 import { webSetting } from './interactive.ts';
 import type { LaunchOptions } from './harness.ts';
+import { createConnectors } from './connectors/runtime.ts';
 import { chooseLocalAction } from './ownership.ts';
+import { connectorStatusChips } from './tui/connectors.ts';
 import { runOmsInterface } from './tui/interface.ts';
 import { interfacePreferences } from './tui/preferences.ts';
 import { YOLO_NOTICE } from './tui/ui-commands.ts';
@@ -57,6 +59,9 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
   const folder = resolveChatFolder(o.folder, { stateRoot: o.stateRoot });
   const selected = await chooseChatSession(folder, o.stateRoot, o.launch, o.choose);
   if (!selected) return;
+  // The folder's connectors (GitHub, Docker, AWS and more): off until the user turns one on in /connectors.
+  const connectors = createConnectors({ stateRoot: o.stateRoot, folder: folder.path });
+  connectors.recordLaunch();
   const chat = await (o.start ?? createChatSession)({
     folder,
     stateRoot: o.stateRoot,
@@ -66,6 +71,8 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
     executionMode: o.launch.executionMode,
     web: { enabled: o.web !== false && webSetting(o.stateRoot) === 'on' },
     ...(o.yolo ? { yolo: true } : {}),
+    extensions: connectors.extensions,
+    extensionTools: connectors.extensionTools,
     ...selected,
   });
   try {
@@ -75,9 +82,13 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
       folder.scratch ? scratchNotice(folder.path) : '',
       o.yolo ? YOLO_NOTICE : '',
       earlier ? `resumed · ${earlier} message${earlier === 1 ? '' : 's'} · /clear for new` : '',
+      // A connectors.json that could not be used is said once, here, so connectors that look off are not a mystery.
+      ...connectors.problems,
     ].filter(Boolean);
     await (o.run ?? runOmsInterface)(chat, {
       ...interfacePreferences(o.stateRoot),
+      connectors,
+      statusChips: () => connectorStatusChips(connectors),
       view: 'harness',
       ...(notes.length ? { startNote: notes.join('\n') } : {}),
     });

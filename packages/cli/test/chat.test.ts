@@ -217,6 +217,66 @@ test('--yolo reaches the session, and without it YOLO is off', async (t) => {
   assert.equal(YOLO_NOTICE, 'YOLO on · commands run without approval or sandbox · /yolo to turn off');
 });
 
+test('connectors: the session gets their extensions and tool names, the interface gets the connectors, and each launch is counted', async (t) => {
+  const f = setup(t);
+  const opened: Array<Record<string, unknown>> = [];
+  const given: Array<Record<string, unknown> | undefined> = [];
+  for (let launches = 1; launches <= 2; launches++) {
+    await capture(() =>
+      runInteractiveChat({
+        folder: f.project,
+        stateRoot: f.stateRoot,
+        environment: defaultHarnessEnvironment(),
+        launch,
+        start: async (options) => {
+          opened.push(options as unknown as Record<string, unknown>);
+          return fakeChat(options.folder, []);
+        },
+        run: async (_chat, interfaceOptions) => {
+          given.push(interfaceOptions as Record<string, unknown> | undefined);
+        },
+      }),
+    );
+  }
+  assert.equal(
+    (opened[0]!.extensions as unknown[]).length,
+    1,
+    'only the connector extension while no hosted connector is on',
+  );
+  assert.deepEqual(opened[0]!.extensionTools, [
+    'github',
+    'gitlab',
+    'docker',
+    'aws',
+    'solana_rpc',
+    'mcp__gitlab_remote__*',
+    'mcp__linear__*',
+    'mcp__slack__*',
+  ]);
+  assert.equal(typeof (given[0]!.connectors as { rows: unknown }).rows, 'function');
+  assert.equal(JSON.parse(readFileSync(join(f.stateRoot, 'connectors.json'), 'utf8')).tips.launches, 2);
+});
+
+test('a connectors.json that cannot be used is said once at the start, and the chat still opens', async (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.stateRoot, 'connectors.json'), '{oops');
+  let note: string | undefined;
+  await capture(() =>
+    runInteractiveChat({
+      folder: f.project,
+      stateRoot: f.stateRoot,
+      environment: defaultHarnessEnvironment(),
+      launch,
+      start: async (options) => fakeChat(options.folder, []),
+      run: async (_chat, interfaceOptions) => {
+        note = interfaceOptions?.startNote;
+      },
+    }),
+  );
+  assert.match(note!, /connectors\.json is not valid JSON, so connectors are off/);
+  assert.equal(readFileSync(join(f.stateRoot, 'connectors.json'), 'utf8'), '{oops');
+});
+
 test('a folder that holds personal files opens a scratch folder and says so in the interface', async (t) => {
   const f = setup(t);
   const log: string[] = [];

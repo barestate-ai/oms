@@ -142,9 +142,18 @@ test('folder chat help lists its commands, then a few keys in aligned columns, i
       '  /help keys  all keys',
   );
   assert.doesNotMatch(summary, /\b(Press|Use|Run) |\bleave\b/);
-  assert.match(chatHelp(), /\/connect +Sign in or add an API key/);
+  assert.match(chatHelp(), /\/connect +Model provider sign-in or API key/);
+  assert.match(chatHelp(), /\/connectors +Give the agent GitHub, Docker, AWS/);
+  // Commands that need a connected service are listed only when one is on.
+  assert.doesNotMatch(chatHelp(), /\/pr |\/issue |\/ci /);
+  assert.match(chatHelp(['pr', 'issue', 'ci']), /\/pr +Have the agent review a pull request/);
+  assert.match(chatHelp(['pr', 'issue', 'ci']), /\/ci +Have the agent fix failing checks/);
   assert.match(chatHelp(), /\/model +Pick a model/);
-  assert.match(chatHelp(), /^\/connect {4}Sign in/, 'names pad to the longest command, not to a long list of them');
+  assert.match(
+    chatHelp(),
+    /^\/connect {5}Model provider/,
+    'names pad to the longest command, not to a long list of them',
+  );
   assert.match(chatHelp(), /Also: \/theme \/art \/settings \/login \/logout · \/exit to quit/);
 });
 
@@ -177,7 +186,7 @@ test('a mistyped command names itself and the nearest command; a bad argument sa
 
 test('a chat lists the commands its /help shows first, and /quit stays out of the full list', () => {
   const names = commandMatches('/', 'chat')!.map((command) => command.name);
-  assert.deepEqual(names.slice(0, 3), ['connect', 'model', 'yolo']);
+  assert.deepEqual(names.slice(0, 4), ['connect', 'connectors', 'model', 'yolo']);
   assert.ok(!names.includes('quit'));
   assert.ok(names.includes('exit'));
   assert.deepEqual(

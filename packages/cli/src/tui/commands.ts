@@ -12,6 +12,8 @@ import {
 import { prepareDiff, prepareSession, prepareStatus, prepareUsage } from './inspect-commands.ts';
 import { prepareReview, prepareRun, prepareTest, prepareVerify } from './work-commands.ts';
 import { agentsCommand, teamCommand } from './agent-commands.ts';
+import { acceptsConnectors, connectorCommandNames, connectorsCommand, contextCommand } from './connector-commands.ts';
+import type { Connectors } from '../connectors/runtime.ts';
 import { clearConversation, goalCommand } from './conversation-commands.ts';
 import { acceptsArt, acceptsLayout, acceptsPanel, acceptsWeb, uiCommands } from './ui-commands.ts';
 import { refuseWith, type Prepared } from './prepared.ts';
@@ -62,6 +64,9 @@ export interface CommandContext {
   modelDetail(): string | undefined;
   openSetup(mode: 'model' | 'connect' | 'theme' | 'settings', query: string, draft: string | undefined): void;
   openAccount(mode: 'login' | 'logout' | 'account', draft: string | undefined): void;
+  /** A folder chat's connectors; absent in a pinned task and in tests that do not need them. */
+  readonly connectors?: Connectors;
+  openConnectors(draft: string | undefined): void;
   /** False, with a notice, for an unknown theme. */
   changeTheme(id: string): boolean;
   art: { setMode(mode: StartupArtMode): void; next(): void; title(): string; reload(): void };
@@ -183,6 +188,7 @@ export function keysHelp(kind: 'task' | 'chat' = 'task'): string {
 /** The commands a chat lists in /help, in this order; the rest are still typed or found with /. */
 const CHAT_HELP = [
   'connect',
+  'connectors',
   'model',
   'yolo',
   'web',
@@ -219,8 +225,11 @@ const SHORT_KEYS =
     ['/help keys', 'all keys'],
   ]);
 
-export function chatHelp(): string {
-  const rows = CHAT_HELP.map((name) => findCommand(name)!).map((command) => [`/${command.name}`, command.description]);
+/** `extra` names commands that only work with a connected service (/pr, /issue, /ci) and are listed only then. */
+export function chatHelp(extra: readonly string[] = []): string {
+  const rows = [...CHAT_HELP, ...extra]
+    .map((name) => findCommand(name)!)
+    .map((command) => [`/${command.name}`, command.description]);
   const width = Math.max(...rows.map(([name]) => name!.length)) + 2;
   const list = rows.map(([name, text]) => `${name!.padEnd(width)}${text}`).join('\n');
   return `${list}\n\nAlso: /theme /art /settings /login /logout · /exit to quit\n\n${SHORT_KEYS}`;
@@ -234,7 +243,7 @@ const help: CommandHandler = (ctx, argument, draft) => {
     argument === 'keys'
       ? keysHelp(ctx.harness.kind)
       : chat
-        ? chatHelp()
+        ? chatHelp(connectorCommandNames(ctx.connectors))
         : `${commandHelp(ctx.harness.kind)}\n\n${SHORT_KEYS}`,
   );
   ctx.clearDraft(draft);
@@ -297,11 +306,21 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'connect',
     group: 'Setup',
-    description: 'Sign in or add an API key',
+    description: 'Model provider sign-in or API key',
     argument: '[provider|import <path>]',
     accepts: any,
     whileBusy: 'accepted',
     run: uiCommands.connect,
+  },
+  {
+    name: 'connectors',
+    group: 'Setup',
+    description: 'Give the agent GitHub, Docker, AWS',
+    argument: '[dismiss]',
+    accepts: acceptsConnectors,
+    availability: 'chat',
+    whileBusy: 'accepted',
+    run: connectorsCommand,
   },
   {
     name: 'theme',
@@ -364,11 +383,11 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     name: 'account',
     group: 'Setup',
     description: 'OMS account, or a chain account with an address',
-    argument: '[address]',
+    argument: '[address] [--cluster devnet|mainnet]',
     accepts: any,
     whileBusy: 'always',
     run: (ctx, argument, draft) =>
-      argument ? prepareAccount(argument, ctx.harness) : ctx.openAccount('account', draft),
+      argument ? prepareAccount(argument, ctx.harness, ctx.connectors) : ctx.openAccount('account', draft),
   },
   {
     name: 'review',
@@ -597,6 +616,37 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     run: agentsCommand,
   },
   {
+    name: 'pr',
+    group: 'Work',
+    description: 'Have the agent review a pull request',
+    argument: '[number] [request]',
+    accepts: any,
+    availability: 'chat',
+    whileBusy: 'never',
+    run: contextCommand('pr'),
+  },
+  {
+    name: 'issue',
+    group: 'Work',
+    description: 'Have the agent work on an issue',
+    argument: '<number|LIN-123> [request]',
+    needsArgument: true,
+    accepts: any,
+    availability: 'chat',
+    whileBusy: 'never',
+    run: contextCommand('issue'),
+  },
+  {
+    name: 'ci',
+    group: 'Work',
+    description: 'Have the agent fix failing checks',
+    argument: '[request]',
+    accepts: any,
+    availability: 'chat',
+    whileBusy: 'never',
+    run: contextCommand('ci'),
+  },
+  {
     name: 'clear',
     group: 'Work',
     description: 'Start a new conversation',
@@ -655,12 +705,12 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'tx',
     group: 'Solana',
-    description: 'Inspect a local transaction',
-    argument: '<signature>',
+    description: 'Inspect a transaction',
+    argument: '<signature> [--cluster devnet|mainnet]',
     needsArgument: true,
     accepts: any,
     whileBusy: 'always',
-    run: (ctx, argument) => prepareTransaction(argument, ctx.harness),
+    run: (ctx, argument) => prepareTransaction(argument, ctx.harness, ctx.connectors),
   },
   {
     name: 'program',

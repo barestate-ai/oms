@@ -3279,7 +3279,7 @@ for (const [columns, rows] of [
         terminal.send('\x1b[5~');
         await terminal.screen();
       }
-      const scrolled = await terminal.until((s) => /\/connect +Sign in/.test(s));
+      const scrolled = await terminal.until((s) => /\/connect +Model provider/.test(s));
       assert.match(scrolled, /\/model +Pick a model/);
       terminal.send('\x1b');
       terminal.send('Explain this folder.');
@@ -3306,14 +3306,15 @@ test('/help is a short list with one entry for leaving, and /help keys has the r
     terminal.send('/help');
     terminal.send('\r');
     const help = await terminal.until((s) => s.includes('Also: /theme /art /settings /login /logout · /exit to quit'));
-    assert.match(help, /\/connect +Sign in or add an API key/);
+    assert.match(help, /\/connect +Model provider sign-in or API key/);
+    assert.match(help, /\/connectors +Give the agent GitHub, Docker, AWS/);
     assert.match(help, /\/yolo +YOLO mode: no approvals, no sandbox/);
     assert.doesNotMatch(help, /\/requirements|\/verify|\/open |Keyboard\n|F6|f6|Toolbar|toolbar/);
     assert.match(help, /\/goal +/);
     assert.match(help, /\/team +Split a goal across helper agents/);
     assert.match(help, /\/agents +List helper agents/);
     assert.match(help, /\/rewind +/);
-    assert.match(help, /\/connect +Sign in/, 'the whole list fits on one screen');
+    assert.match(help, /\/connect +Model provider sign-in/, 'the whole list fits on one screen');
     assert.match(help, /ctrl\+c +cancel · twice to quit/);
     terminal.send('/help keys');
     terminal.send('\r');

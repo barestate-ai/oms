@@ -55,7 +55,7 @@ claude auth login
 claude auth status
 ```
 
-Choose your Claude subscription when signing in. OMS requires a first-party Claude account login; an API-key, Bedrock, Vertex or other provider login does not configure this connector. Return to OMS:
+Choose your Claude subscription when signing in. OMS requires a first-party Claude account login; an API-key, Bedrock, Vertex or other provider login does not configure the Claude Code provider. Return to OMS:
 
 ```text
 /connect
@@ -74,7 +74,7 @@ Use the existing session and conversation actions:
 
 If a native tool batch was interrupted or the native protocol failed verification, review the OMS transcript and tool results before proceeding. Select **Claude Code** in `/model`, then use `/clear` to start a fresh native chat and clear the conversation view, retaining task files and verification. Interrupted tools are never replayed automatically; restarting OMS or reselecting the model does not bypass this guard.
 
-Switching to another provider stops the native transport. Switching back resumes Claude's own thread; messages exchanged with other providers are not imported into it. This connector accepts text conversations and OMS tools. Names such as `sonnet` select the connector's cataloged Claude model. Subscription limits and Claude extra-usage settings still apply; OMS does not fall back to an Anthropic API key. Use the Anthropic API-key provider for direct API access.
+Switching to another provider stops the native transport. Switching back resumes Claude's own thread; messages exchanged with other providers are not imported into it. The Claude Code provider accepts text conversations and OMS tools. Names such as `sonnet` select its cataloged Claude model. Subscription limits and Claude extra-usage settings still apply; OMS does not fall back to an Anthropic API key. Use the Anthropic API-key provider for direct API access.
 
 For a repository task, launch a native chat explicitly:
 
@@ -88,7 +88,7 @@ Claude Code runs at high effort by default. Set `OMS_CLAUDE_EFFORT` to `low`, `m
 
 OMS reserves the model's full catalog context and output capacity because Claude Code cannot enforce OMS's local per-request output cap. Total token and time limits remain active. Headless runs can select `--provider claude-code --model sonnet`; they omit the input cap that other headless providers use by default. An explicit `--input-tokens` is refused before opening the workspace because the native CLI adds its own request overhead.
 
-Anthropic documents [hosting unmodified Claude Code](https://code.claude.com/docs/en/legal-and-compliance) and [using a signed-in Claude plan with programmatic CLI requests](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan). This connector uses your local CLI and account, without a separate OMS Claude login.
+Anthropic documents [hosting unmodified Claude Code](https://code.claude.com/docs/en/legal-and-compliance) and [using a signed-in Claude plan with programmatic CLI requests](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan). The Claude Code provider uses your local CLI and account, without a separate OMS Claude login.
 
 ## MiMo Token Plan
 
