@@ -136,8 +136,11 @@ for (const [place, focusKeys] of [
       terminal.send('\r');
       await terminal.until((s) => /esc to interrupt/.test(s));
       if (focusKeys) {
-        terminal.send(focusKeys); // F6: the editor
-        await terminal.until((s) => /^ *Ctrl\+P files/m.test(s) && /esc to interrupt/.test(s));
+        // F6 walks the areas; stop on the one that shows Esc as the way to interrupt (the editor).
+        for (let press = 0; press < 4 && !/esc interrupt/.test(last(await terminal.screen())); press++) {
+          terminal.send(focusKeys);
+          await terminal.screen();
+        }
       }
       assert.match(last(await terminal.screen()), /esc interrupt/);
       terminal.send('\x1b');
@@ -419,7 +422,7 @@ test('/settings at 80x24 shows several settings, one hint, and a search prompt w
     terminal.send('/settings');
     terminal.send('\r');
     const screen = await terminal.until((s) => s.includes('Settings') && s.includes('Search settings'));
-    const items = ['Thinking', 'Steering', 'Follow-up', 'HTTP'].filter((name) => screen.includes(name));
+    const items = [/Thinking/, /Steering|while busy/, /Follow-up/, /HTTP|timeout/].filter((name) => name.test(screen));
     assert.ok(items.length >= 3, `${items.length} settings visible\n${screen}`);
     assert.match(screen, /❯ +Search settings/);
     assert.doesNotMatch(screen, /Esc to cancel/, 'one hint, in the border');

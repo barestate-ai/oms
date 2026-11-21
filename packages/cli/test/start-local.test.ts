@@ -45,6 +45,17 @@ test('the short help says oms works in any folder', () => {
   assert.match(help.stdout, /Start in the current folder \(any folder works\)/);
 });
 
+test('the short help lists the flags plain oms accepts, never the one it refuses, and ends no row with a period', () => {
+  const help = spawnSync(process.execPath, [bin, '--help'], { encoding: 'utf8' }).stdout;
+  for (const flag of ['--spend-usd <n>', '--yolo', '--no-web']) assert.ok(help.includes(flag), flag);
+  assert.doesNotMatch(help, /--sandbox/);
+  assert.match(help, /\/connect +Sign in: ChatGPT, Claude, Grok or an API key/);
+  assert.doesNotMatch(help, /\.$/m);
+  const advanced = spawnSync(process.execPath, [bin, 'help', 'advanced'], { encoding: 'utf8' }).stdout;
+  assert.match(advanced, /--sandbox docker +Run task commands in Docker \(oms run only\)/);
+  assert.doesNotMatch(advanced, /unknown usage are retained|Signing and workspace-secret/);
+});
+
 test('npx launches print runnable npx commands in help and recovery hints', () => {
   for (const [args, command] of [
     [['--help'], 'help advanced'],

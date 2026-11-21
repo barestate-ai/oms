@@ -8,23 +8,24 @@ import { toolchainCommand } from './toolchain.ts';
 import { runReviewCommand } from './review.ts';
 import { startLocal } from '../../../scripts/start-local.ts';
 
-const HELP = `oms: the Solana coding agent
+const HELP = `oms · Solana coding agent
 
-  ${omsCommand()}                 Start in the current folder (any folder works).
-  ${omsCommand()} doctor          Check your setup.
-  ${omsCommand()} review [path]   Review a Solana program offline.
-  ${omsCommand()} --version       Show the version.
+  ${omsCommand()}                 Start in the current folder (any folder works)
+  ${omsCommand()} doctor          Check your setup
+  ${omsCommand()} review [path]   Offline security review of a Solana program
+  ${omsCommand()} --version       Print the version
 
-Inside OMS:
-  /connect   Sign in (ChatGPT, Claude Code, or an API key).
-  /model     Pick a model.
-  /help      Show every command and key.
+Options
+  --spend-usd <n>     Cap API spend for this session (default $5)
+  --yolo              Run commands without the sandbox or approval
+  --no-web            Start with web search off
 
-Options:
-  --spend-usd <n>     Cap API spend for the session (default $5).
-  --sandbox docker    Run commands in Docker instead of on this machine.
+Inside oms
+  /connect   Sign in: ChatGPT, Claude, Grok or an API key
+  /model     Pick a model
+  /help      Commands and keys
 
-Run \`${omsCommand()} help advanced\` for more commands.
+More: ${omsCommand()} help advanced
 `;
 
 const ADVANCED_HELP = `oms advanced commands
@@ -50,16 +51,20 @@ Commands:
   task        Create a managed worktree and pin explicit requirements
   run         Open the OMS task interface over its persistent session
 
-Use --state-root <directory> with workspace/task/run to choose trusted external user state.
-Harness is the default. /workbench or F3 switches views over the same session. Type / for commands.
-Provider setup is in /connect; model selection is in /model. Signing and workspace-secret access are unavailable.
-To use native Claude chat, run \`${omsCommand()} run --provider claude-code --model sonnet\`. Claude Code owns its login and chat history.
---session resumes the OMS conversation and its bound native Claude chat, when selected.
-Normal launch uses interactive chat: idle time does not expire the conversation.
---tokens and --minutes bound each active turn/tool operation; --spend-usd caps cumulative API spend.
---bounded is advanced mode: token, spend and time caps apply to the whole session, including idle time.
-Defaults: 2,000,000 tokens, $5 API spend, 30 minutes, 32,768 output tokens (lowered to a smaller model's own maximum).
-Explicit limits are never raised automatically. Saved accounting and unknown usage are retained.
+Options
+  --state-root <dir>     Where workspace, task and run keep state
+  --session <id>         Resume a conversation (and its Claude chat)
+  --tokens <n>           Tokens per turn (default 2,000,000)
+  --minutes <n>          Minutes per turn (default 30)
+  --spend-usd <n>        Total API spend (default $5)
+  --output-tokens <n>    Max output tokens (default 32,768, or the model's own max)
+  --bounded              Apply the caps to the whole session, idle time included
+  --sandbox docker       Run task commands in Docker (oms run only)
+
+Notes
+  Harness is the default view; /workbench or F3 switches.
+  Normal sessions are interactive: idle time does not expire the conversation.
+  To use native Claude chat, run \`${omsCommand()} run --provider claude-code --model sonnet\`.
 `;
 
 async function doctor(args: string[]): Promise<number> {
@@ -76,7 +81,7 @@ async function doctor(args: string[]): Promise<number> {
   const environment = defaultHarnessEnvironment(binaryIdx >= 0 ? args[binaryIdx + 1] : undefined, backend);
   if (args.includes('--install')) {
     const version = await installPinnedSurfpool(environment.binary);
-    console.log(`Surfpool ${version} is installed at ${environment.binary}. Its SHA-256 checksum is verified.`);
+    console.log(`Installed Surfpool ${version} at ${environment.binary} (SHA-256 verified)`);
   }
   const env = nodeEnv();
   const results = await runChecks(env, {
@@ -112,9 +117,7 @@ try {
   } else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
     console.log(HELP);
   } else {
-    console.error(
-      `oms: unknown command "${cmd}". Run \`${omsCommand()}\` to start. Run \`${omsCommand()} --help\` for help.`,
-    );
+    console.error(`oms: unknown command "${cmd}" · see ${omsCommand()} --help`);
     process.exitCode = 2;
   }
 } catch (error) {

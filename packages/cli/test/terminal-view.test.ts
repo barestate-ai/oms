@@ -285,3 +285,47 @@ test('a viewport that grows past the overdraw is drawn in the same frame', async
     view.dispose();
   }
 });
+
+test('Shift+PageUp and Shift+PageDown scroll the history and are never sent to the shell; typing returns to the end', async () => {
+  const { view, input } = screen(10, 4);
+  try {
+    await view.write(Buffer.from(Array.from({ length: 30 }, (_, n) => `row${n}`).join('\r\n')));
+    const lines = view.render(10);
+    view.view.updateLayout(lines.length, 4, () => {});
+    assert.equal(view.scrolledBack, false);
+    view.handleInput('\x1b[5;2~');
+    assert.equal(view.scrolledBack, true);
+    const before = view.view.scrollTop;
+    view.handleInput('\x1b[5;2~');
+    assert.ok(view.view.scrollTop < before);
+    const up = view.view.scrollTop;
+    view.handleInput('\x1b[6;2~');
+    assert.ok(view.view.scrollTop > up);
+    view.handleInput('\x1b[1;2H');
+    assert.equal(view.view.scrollTop, 0);
+    view.handleInput('\x1b[1;2F');
+    assert.equal(view.scrolledBack, false);
+    assert.deepEqual(input, [], 'scroll keys never reach the child');
+    view.handleInput('\x1b[5;2~');
+    view.handleInput('q');
+    assert.equal(view.scrolledBack, false, 'typing jumps back to the live end');
+    assert.deepEqual(input, ['q']);
+  } finally {
+    view.dispose();
+  }
+});
+
+test('scroll keys still work after the shell stopped taking input', async () => {
+  const { view, input } = screen(10, 4);
+  try {
+    await view.write(Buffer.from(Array.from({ length: 30 }, (_, n) => `row${n}`).join('\r\n')));
+    view.view.updateLayout(view.render(10).length, 4, () => {});
+    view.stopInput();
+    view.handleInput('\x1b[5;2~');
+    assert.equal(view.scrolledBack, true);
+    view.handleInput('x');
+    assert.deepEqual(input, []);
+  } finally {
+    view.dispose();
+  }
+});

@@ -43,17 +43,17 @@ export function agentsText(
       );
   }
   if (problems.length) lines.push('', `Skipped: ${problems.map((problem) => clipLine(problem, 160)).join('; ')}`);
-  lines.push('', 'New agent: /agents new <name> [--project] [--edit] <what it does>');
+  lines.push('', 'New agent · /agents new <name> [--project] [--edit] <what it does>');
   return lines.join('\n');
 }
 
 /** /agents [new <name> [--project] [--edit] <what it does>] */
 export const agentsCommand: CommandHandler = (ctx, argument, draft) => {
   const { harness } = ctx;
-  if (harness.kind !== 'chat') return refuseWith('Helpers are part of a folder chat.');
+  if (harness.kind !== 'chat') return refuseWith('Helpers are only available in a folder chat');
   const words = argument.trim().split(/\s+/).filter(Boolean);
   if (words[0] !== 'new') {
-    if (words.length) return refuse('Usage: /agents, or /agents new <name> [--project] [--edit] <what it does>');
+    if (words.length) return refuse('Usage: /agents · /agents new <name> [--project] [--edit] <what it does>');
     ctx.show('agents', agentsText(harness.helpers, harness.helpers.available()), draft);
     return;
   }
@@ -69,20 +69,16 @@ export const agentsCommand: CommandHandler = (ctx, argument, draft) => {
       scope: flags.has('--project') ? 'project' : 'personal',
       tools: flags.has('--edit') ? 'edit' : 'read',
     });
-    ctx.show(
-      'agents',
-      `Wrote ${path}\nChange its instructions there, then ask for ${name} by name. /files opens it.`,
-      draft,
-    );
+    ctx.show('agents', `Created ${path} · edit its instructions, then ask for ${name} by name`, draft);
   } catch (error) {
-    return refuse(clipLine(error instanceof Error ? error.message : 'Could not write the agent.', 200));
+    return refuse(clipLine(error instanceof Error ? error.message : "Couldn't create the agent", 200));
   }
 };
 
 /** /team <goal>: the chat's agent splits the goal, starts helpers together, checks their reports and combines them. */
 export const teamCommand: CommandHandler = (ctx: CommandContext, argument, draft) => {
   const { harness } = ctx;
-  if (harness.kind !== 'chat') return refuseWith('Helpers are part of a folder chat.');
+  if (harness.kind !== 'chat') return refuseWith('Helpers are only available in a folder chat');
   if (!argument.trim()) return refuse('Usage: /team <goal>');
   const available = harness.helpers.available();
   if (!available.ok) return refuseWith(available.reason);

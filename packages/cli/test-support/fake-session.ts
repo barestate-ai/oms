@@ -173,10 +173,18 @@ export function fixture() {
 
 export type FakeSession = ReturnType<typeof fixture>;
 
-/** Quits with Ctrl+Q and asserts the interface released the terminal. */
+/**
+ * Quits with Ctrl+Q and asserts the interface released the terminal. A running shell, like an unsaved file, makes the
+ * first Ctrl+Q ask first: a second one a moment later confirms (it is ignored once the interface has gone).
+ */
 export async function quit(terminal: InterfaceTerminal, run: Promise<void>) {
   terminal.send('\x11');
-  await run;
+  const again = setTimeout(() => terminal.send('\x11'), 100);
+  try {
+    await run;
+  } finally {
+    clearTimeout(again);
+  }
   assert.equal(terminal.active, false);
   assert.equal(terminal.drained, true);
 }

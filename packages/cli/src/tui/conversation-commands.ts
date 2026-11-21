@@ -6,11 +6,11 @@ import type { CommandContext } from './commands.ts';
 
 /** /clear: a fresh conversation in the same task. A native Claude chat resets through its own controls, so it runs as work. */
 export function clearConversation(ctx: CommandContext, argument: string, draft: string | undefined): Prepared | void {
-  if (argument) return refuseWith('Usage: /clear; draft retained.');
+  if (argument) return refuseWith('/clear takes no arguments');
   const { harness } = ctx;
   if (harness.session.model?.provider === 'claude-code') {
     const chat = harness.nativeChat;
-    if (!chat) return refuseWith('Native Claude chat controls are unavailable; the conversation was not cleared.');
+    if (!chat) return refuseWith("Couldn't reset the Claude chat");
     return {
       ok: true,
       async run() {
@@ -20,10 +20,10 @@ export function clearConversation(ctx: CommandContext, argument: string, draft: 
         ctx.goal.set(undefined);
         ctx.conversation.clear();
         return {
-          title: 'new native Claude conversation',
+          title: 'clear',
           inPlace: true,
-          text: `Fresh native chat boundary. Previous chat history is not replayed. ${
-            ctx.harness.kind === 'chat' ? 'Your files are unchanged.' : 'Files, worktree and verification are retained.'
+          text: `New Claude chat · earlier messages are not sent · ${
+            ctx.harness.kind === 'chat' ? 'files unchanged' : 'files and task unchanged'
           }`,
         };
       },
@@ -35,16 +35,14 @@ export function clearConversation(ctx: CommandContext, argument: string, draft: 
     harness.session.sessionManager.resetLeaf();
   } catch (error) {
     return refuseWith(
-      `Could not clear the conversation: ${singleLine(error instanceof Error ? error.message : 'unknown error', 200)}`,
+      `Couldn't clear the conversation · ${singleLine(error instanceof Error ? error.message : 'unknown error', 200)}`,
     );
   }
   ctx.goal.set(undefined);
   ctx.conversation.clear();
   ctx.show(
-    'new conversation',
-    ctx.harness.kind === 'chat'
-      ? 'Fresh conversation. Your files are unchanged.'
-      : 'Fresh conversation in the same task. Files, worktree and task state are unchanged.',
+    'clear',
+    ctx.harness.kind === 'chat' ? 'New conversation · files unchanged' : 'New conversation · files and task unchanged',
     draft,
   );
 }

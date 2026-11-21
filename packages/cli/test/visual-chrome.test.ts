@@ -189,7 +189,7 @@ test('confirmations are three-second toasts in the status row; warnings stay unt
     assert.doesNotMatch(lines(screen).at(-1)!, /commands/, 'the toast replaces the hints');
     terminal.send('hello');
     terminal.send('\r');
-    screen = await terminal.until((s) => /^! Run \/connect to sign in or \/model/m.test(s));
+    screen = await terminal.until((s) => /^! No model selected · \/connect/m.test(s));
     assert.equal(
       cell(
         terminal,
@@ -198,10 +198,11 @@ test('confirmations are three-second toasts in the status row; warnings stay unt
       ).getFgColor(),
       rgb(getTheme('nord')!.colors.warning),
     );
-    screen = await terminal.until((s) => !s.includes('Theme set to Nord') && s.includes('/ commands'), 4500);
-    assert.match(screen, /^! Run \/connect/m, 'the warning outlives the toast');
+    // The refused draft stays in the composer, so the hints are the drafting ones (enter send · shift+enter new line).
+    screen = await terminal.until((s) => !s.includes('Theme set to Nord') && s.includes('shift+enter new line'), 4500);
+    assert.match(screen, /^! No model selected/m, 'the warning outlives the toast');
     terminal.send('\x1b');
-    await terminal.until((s) => !s.includes('! Run /connect'));
+    await terminal.until((s) => !s.includes('! No model selected'));
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();
@@ -294,7 +295,9 @@ test('the slash popup sits directly above the composer: eight rows, pointer, arg
     assert.ok(!/Commands ·|Navigate|Setup/.test(screen), 'no heading and no group column');
     assert.equal(cell(terminal, 3, top - 8).isBgRGB(), true, 'the selected row is on the raised surface');
     terminal.send('\x1b[B');
-    screen = await terminal.until((s) => /^› \/harness/m.test(s));
+    // The chat view's own command (/harness) is not offered where you already are: the next row is /files.
+    screen = await terminal.until((s) => /^› \/files/m.test(s));
+    assert.doesNotMatch(screen, /^[› ] \/harness/m);
     terminal.send('\x01');
     terminal.send('\x7f');
     terminal.send('/err');
@@ -593,7 +596,7 @@ test('? on an empty composer opens the keyboard help; in a draft it is a letter'
   const { terminal, run } = await open(f.harness, 120, 40);
   try {
     terminal.send('?');
-    await terminal.until((s) => s.includes('Tab'));
+    await terminal.until((s) => s.includes('move focus'));
     assert.match(await terminal.screen(), /^❯ Ask OMS/m, 'the composer stays empty');
     terminal.send('why');
     terminal.send('?');

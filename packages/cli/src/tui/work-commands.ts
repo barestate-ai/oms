@@ -27,12 +27,9 @@ export function testCommand(codeRoot: string): string | undefined {
 }
 
 export function prepareTest(argument: string, harness: OmsSession): Prepared {
-  if (argument) return refuse('Usage: /test (no arguments; use /run for another command)');
+  if (argument) return refuse('Usage: /test · use /run <command> for anything else');
   const command = testCommand(harness.root);
-  if (!command)
-    return refuse(
-      'No tests found: expected Anchor.toml, a package.json "test" script or Cargo.toml in the project folder.',
-    );
+  if (!command) return refuse('No tests found · expected Anchor.toml, a package.json "test" script or Cargo.toml');
   return {
     ok: true,
     async run(signal) {
@@ -42,36 +39,35 @@ export function prepareTest(argument: string, harness: OmsSession): Prepared {
         output.length > TEST_OUTPUT_CHARS ? `[earlier output cut]\n${output.slice(-TEST_OUTPUT_CHARS)}` : output;
       const state = result.cancelled ? ' · cancelled' : result.timedOut ? ' · timed out' : '';
       return {
-        title: 'tests',
-        text: `$ ${command}\nExit: ${result.exitCode}${state}\n${shown}${result.truncated ? '\n[backend output truncated]' : ''}`,
+        title: 'test',
+        text: `$ ${command}\nExit: ${result.exitCode}${state}\n${shown}${result.truncated ? '\n[output truncated]' : ''}`,
       };
     },
   };
 }
 
-/** /run <command>: a sandbox command whose output is the note; a command that did not succeed fails the action. */
+/** /run <command>: a shell command whose output is the note; a command that did not succeed fails the action. */
 export function prepareRun(argument: string, harness: OmsSession): Prepared {
   return {
     ok: true,
     async run(signal) {
       const result = await harness.runCommand(argument, signal);
       return {
-        title: 'sandbox command',
+        title: 'run',
         inPlace: true,
-        text: `$ ${argument}\nExit: ${result.exitCode}${result.timedOut ? ' · timed out' : ''}${result.cancelled ? ' · cancelled' : ''}\n${result.stdout}\n${result.stderr}${result.truncated ? '\n[backend output truncated]' : ''}`,
+        text: `$ ${argument}\nExit: ${result.exitCode}${result.timedOut ? ' · timed out' : ''}${result.cancelled ? ' · cancelled' : ''}\n${result.stdout}\n${result.stderr}${result.truncated ? '\n[output truncated]' : ''}`,
         ...(result.exitCode !== 0 || result.timedOut || result.cancelled
-          ? { failure: `Sandbox command did not succeed (exit ${result.exitCode}); draft retained.` }
+          ? { failure: `Exit ${result.exitCode}`, failureShown: true as const }
           : {}),
       };
     },
   };
 }
 
-/** /verify [item]: independent verification of one requirement; it runs to its backend timeout. */
+/** /verify [item]: checks one requirement independently; it runs until it finishes and cannot be cancelled. */
 export function prepareVerify(ctx: CommandContext, argument: string): Prepared {
   const { harness } = ctx;
-  if (harness.kind === 'chat')
-    return refuseWith('Nothing to verify here. Use /test, or /goal <text> --check "<command>".');
+  if (harness.kind === 'chat') return refuseWith('Nothing to verify here · /test, or /goal <text> --check "<command>"');
   const id = argument || ctx.selectedRequirement();
   return {
     ok: true,
@@ -79,22 +75,21 @@ export function prepareVerify(ctx: CommandContext, argument: string): Prepared {
       const verification = await harness.verify(id);
       const result = verification.result;
       return {
-        title: 'verification',
+        title: 'verify',
         inPlace: true,
-        text: `${verification.itemId}: ${result.closed ? 'closed by independent verification' : result.reason}`,
+        text: `${verification.itemId}: ${result.closed ? 'verified' : result.reason}`,
       };
     },
   };
 }
 
-/** /review: offline Phase A security review of the task worktree; the full report opens read-only in the workbench. */
+/** /review: offline static security review of the project; the full report opens read-only in the workbench. */
 export function prepareReview(ctx: CommandContext): Prepared {
-  if (ctx.workbench.dirty || ctx.shell.running)
-    return refuseWith('Save or close unsaved files and stop the terminal before reviewing.');
+  if (ctx.workbench.dirty || ctx.shell.running) return refuseWith('Save your files and stop the terminal first');
   return {
     ok: true,
     async run() {
-      ctx.conversation.note('security review', REVIEW_DISCLAIMER + '\nRunning offline Phase A static tools.');
+      ctx.conversation.note('review', REVIEW_DISCLAIMER + '\nRunning offline static checks…');
       let report: ReviewPresentation | undefined;
       const code = await ctx.review([ctx.harness.root, '--phase', 'A'], {
         stdout() {},
@@ -107,21 +102,17 @@ export function prepareReview(ctx: CommandContext): Prepared {
       });
       const failed = code !== 0;
       if (!report) {
-        if (failed) throw new Error('Review did not produce a report. See the review status.');
+        if (failed) throw new Error('Review produced no report');
         return undefined;
       }
       const summary = `Confirmed ${report.confirmed} · Suspected ${report.suspected}`;
       // The editor has a 64 KiB document limit. Keep the full saved report; mark a bounded preview.
-      const preview = previewBytes(
-        report.markdown,
-        REPORT_BYTES,
-        '\n[Preview truncated; full report is saved in private review state.]',
-      );
+      const preview = previewBytes(report.markdown, REPORT_BYTES, '\n[Preview truncated · full report saved]');
       return {
-        title: 'security review',
+        title: 'review',
         text: summary + '\n' + REVIEW_DISCLAIMER,
         report: { id: report.reviewId, text: summary + '\n' + preview },
-        ...(failed ? { failure: 'Partial review saved; one or more stages failed.' } : {}),
+        ...(failed ? { failure: 'Partial review saved · one or more stages failed' } : {}),
       };
     },
   };

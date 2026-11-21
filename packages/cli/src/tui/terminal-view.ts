@@ -6,6 +6,7 @@ import {
   ScrollView,
   decodeKittyPrintable,
   isKeyRelease,
+  matchesKey,
   parseKey,
   type Component,
   type Focusable,
@@ -174,9 +175,26 @@ export class TerminalView implements Component, Focusable {
     return { handled: true, focus: true };
   }
 
+  /** True while the view is scrolled up into the output that already went by. */
+  get scrolledBack(): boolean {
+    return !this.view.isFollowingEnd;
+  }
+
+  /** Shift+PageUp and Shift+PageDown (and Shift+Home/End) scroll the history; the shell never sees them. */
+  private scrollKey(data: string): boolean {
+    const page = Math.max(1, this.view.viewportHeight - 1);
+    if (matchesKey(data, 'shift+pageUp')) this.view.scrollBy(-page);
+    else if (matchesKey(data, 'shift+pageDown')) this.view.scrollBy(page);
+    else if (matchesKey(data, 'shift+home')) this.view.scrollToStart();
+    else if (matchesKey(data, 'shift+end')) this.view.scrollToEnd();
+    else return false;
+    this.options.requestRender();
+    return true;
+  }
+
   handleInput(data: string): void {
-    if (this.inputClosed || this.disposed || Buffer.byteLength(data) > MAX_TERMINAL_INPUT_BYTES || isKeyRelease(data))
-      return;
+    if (this.disposed || isKeyRelease(data) || this.scrollKey(data)) return;
+    if (this.inputClosed || Buffer.byteLength(data) > MAX_TERMINAL_INPUT_BYTES) return;
     this.view.scrollToEnd();
     if (data.length === 1 && /[\x00-\x1f\x7f]/.test(data)) {
       this.terminal.input(data, true);

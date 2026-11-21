@@ -155,7 +155,7 @@ export function goalSummary(goal: Goal | undefined, budget: string, chat = false
   if (!goal)
     return `No goal set. Start one with /goal <text> --check "<command>"${chat ? '.' : ", or /goal <text> to use the task's verifier."}\nBudget: ${budget}`;
   return (
-    `Goal: ${goal.text}\nCheck: ${goal.check === undefined ? "the task's pinned verifier" : goal.check}\n` +
+    `Goal: ${goal.text}\nCheck: ${goal.check === undefined ? 'task verifier' : goal.check}\n` +
     `Status: ${goal.status} · checks used ${goal.attempts}/${goal.maxAttempts}${goal.summary ? ` · ${goal.summary}` : ''}\nBudget: ${budget}`
   );
 }
@@ -206,11 +206,11 @@ export async function runGoalLoop(loop: GoalLoop): Promise<void> {
       previous = failure;
       const shown = result.output ? `\n${tail(result.output, SHOWN_LIMIT)}` : '';
       if (decision.action === 'allow') return finish('reached', result.summary);
-      loop.say(`Check ${goal.attempts}/${goal.maxAttempts}: ${result.summary}${shown}`);
+      loop.say(`Check ${goal.attempts}/${goal.maxAttempts} · ${result.summary.replace(/^check /, '')}${shown}`);
       if (decision.action === 'stop')
         return finish(
           'stopped',
-          decision.summary + (decision.askUser ? ' Your call: adjust the goal or check, then run /goal again.' : ''),
+          decision.summary + (decision.askUser ? ' · adjust the goal or check, then /goal again' : ''),
         );
       goal.summary = result.summary;
       prompt = failurePrompt(goal, result);

@@ -22,14 +22,12 @@ export async function checkLocalPrerequisites(environment: HarnessEnvironment): 
   try {
     accessSync(environment.binary, constants.X_OK);
   } catch {
-    process.stdout.write(
-      `Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool}, the local Solana network (one time)...\n`,
-    );
+    process.stdout.write(`Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool} (local Solana network, one-time)…\n`);
     try {
       await installPinnedSurfpool(environment.binary);
     } catch (error) {
       throw new Error(
-        `Could not install Surfpool: ${error instanceof Error ? error.message : 'unknown error'}. Check your connection and run \`${omsCommand()}\` again. Run \`${omsCommand()} doctor\` to check your setup.`,
+        `Couldn't install Surfpool: ${error instanceof Error ? error.message : 'unknown error'} · check your connection and retry, or run \`${omsCommand()} doctor\``,
       );
     }
   }
@@ -39,7 +37,7 @@ export async function checkLocalPrerequisites(environment: HarnessEnvironment): 
 export async function startLocal(args: string[] = []): Promise<void> {
   const launch = parseLaunchOptions(args, ['--yolo'], ['--yolo']);
   if (!process.stdin.isTTY || !process.stdout.isTTY)
-    throw new Error(`Run ${omsCommand()} in an interactive terminal such as Ghostty.`);
+    throw new Error(`Needs an interactive terminal · run ${omsCommand()} in a terminal window`);
   const environment = defaultHarnessEnvironment(undefined, configuredBackend(launch.values.get('--sandbox')));
   if (backendFor(environment).requiresDocker) throw new Error(DOCKER_CHAT_REFUSAL);
   await checkLocalPrerequisites(environment);

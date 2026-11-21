@@ -167,7 +167,9 @@ The agent looks things up through the official Solana MCP, `web_fetch` and `web_
 | `/review` | Offline security report for your program |
 | `/workbench`, `/harness` | Editor or chat |
 | `/web on\|off`, `/login` | Web access and hosted search |
-| `/help`, `/exit` | Every command, and close |
+| `/help`, `/exit` | Every command and key, and quit |
+
+Keys: Enter sends, Shift+Enter adds a line, Esc cancels, PgUp and PgDn scroll, Ctrl+K opens the command menu. Ctrl+C cancels running work, and pressing it twice at an idle prompt quits, as do Ctrl+D on an empty prompt and Ctrl+Q. `/help keys` lists the rest.
 
 ## Develop
 

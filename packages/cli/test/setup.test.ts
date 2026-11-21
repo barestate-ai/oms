@@ -474,11 +474,10 @@ for (const available of [false, true]) {
       pane.handleInput('\r');
       await flush();
       assert.deepEqual(selections, ['claude-code/sonnet']);
-      assert.match(notices.at(-1)!, /Native Claude chat selected: claude-code\/sonnet/);
+      assert.match(notices.at(-1)!, /Model: claude-code\/sonnet \(native Claude chat\)/);
     } else {
       assert.match(screen(), /Claude Code is not ready/);
       assert.match(screen(), /claude auth login/);
-      assert.match(screen(), /claude auth status/);
       assert.doesNotMatch(screen(), /Secret:|credentials may already be saved/);
       assert.deepEqual(notices, []);
     }

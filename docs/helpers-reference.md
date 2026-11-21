@@ -18,7 +18,7 @@ Helpers exist only in a folder chat. They are not available in pinned tasks or `
 - `--edit` sets `tools: edit`. Without it the agent is read-only.
 - Everything else after the name is the description. It may not contain ` #`.
 
-Esc and `/cancel` stop running helpers. Ctrl+O on a helper's line opens its own transcript.
+Esc, Ctrl+C and `/cancel` stop running helpers. Ctrl+O on a helper's line opens its own transcript.
 
 ## Built-in agents
 

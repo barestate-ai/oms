@@ -13,8 +13,12 @@ interface AccountOptions {
 export class AccountPane {
   readonly body: Component;
   readonly input: Component & Focusable;
-  readonly label = 'Account';
-  readonly hint = 'ctrl+x copy code · pgup/pgdn scroll · esc close';
+  readonly label = 'OMS account';
+  get hint(): string {
+    return this.device && this.pending
+      ? 'ctrl+x copy code · pgup/pgdn scroll · esc cancel'
+      : 'pgup/pgdn scroll · esc close';
+  }
   private readonly controls: Pick<OmsAccountControls, 'snapshot' | 'login' | 'logout' | 'refresh'>;
   private readonly options: AccountOptions;
   private readonly controller = new AbortController();
@@ -30,7 +34,7 @@ export class AccountPane {
     this.input = {
       focused: false,
       invalidate() {},
-      render: (width) => [truncateToWidth(this.pending ? 'Waiting · Esc cancel' : 'Esc return', width, '')],
+      render: (width) => [truncateToWidth(this.pending ? 'Waiting…' : '', width, '')],
       handleInput: (data) => this.handleInput(data),
     };
     queueMicrotask(() => {
@@ -44,7 +48,7 @@ export class AccountPane {
           await this.controls.refresh(this.controller.signal);
           if (this.disposed || this.controller.signal.aborted) return;
           if (this.controls.snapshot().state === 'signed-in') {
-            this.message = 'Already signed in. Use /logout first to switch accounts.';
+            this.message = 'Already signed in · /logout to switch';
             return;
           }
         }
@@ -65,13 +69,11 @@ export class AccountPane {
       } else if (this.options.mode === 'logout') {
         const result = await this.controls.logout(this.controller.signal);
         this.message = result.serverRevoked
-          ? 'Signed out. Server session revocation confirmed.'
-          : 'Local access removed; server revocation unconfirmed. Revoke the device from your account page when online.';
+          ? 'Signed out'
+          : "Signed out here · couldn't reach the server; revoke this device from your account page";
       } else await this.controls.refresh(this.controller.signal);
     } catch {
-      if (!this.disposed)
-        this.message =
-          'Account operation did not complete. Check connectivity or start a fresh /login; no inference was sent.';
+      if (!this.disposed) this.message = "Couldn't reach OMS · check your connection and /login again";
     } finally {
       this.pending = false;
       if (!this.disposed) this.options.render();
@@ -79,21 +81,25 @@ export class AccountPane {
   }
   private renderBody(width: number): string[] {
     const snapshot = this.controls.snapshot();
-    const lines = [`OMS account: ${snapshot.state} · ${displayText(snapshot.origin, 2048)}`];
-    if (snapshot.email) lines.push(`Email: ${displayText(snapshot.email, 320)}`);
+    const status =
+      snapshot.state === 'signed-in'
+        ? `Signed in${snapshot.email ? ` as ${displayText(snapshot.email, 320)}` : ''}`
+        : snapshot.state === 'unavailable'
+          ? 'Sign-in unavailable'
+          : this.pending && this.options.mode === 'login'
+            ? 'Signing in…'
+            : 'Not signed in';
+    const lines = [status, displayText(snapshot.origin, 2048)];
     if (this.device && this.pending)
       lines.push(
         `Open: ${this.device.verificationUri}`,
         `Device code: ${this.device.userCode}`,
         `Expires: ${new Date(this.device.expiresAt).toLocaleTimeString()}`,
-        'Enter this code deliberately, then approve OMS CLI in the browser. Never approve an unsolicited code.',
+        'Approve only a code you just requested',
       );
     if (this.message) lines.push(displayText(this.message, 2048));
     if (snapshot.message) lines.push(displayText(snapshot.message, 2048));
-    lines.push(
-      'Signing in enables hosted web search only. It does not select a model or send inference.',
-      'Provider keys remain in /connect. Local repository chats and worktrees are not cloud-synced.',
-    );
+    lines.push('OMS sign-in enables hosted web search only · model keys stay in /connect');
     const rendered = lines.flatMap((line) =>
       wrapTextWithAnsi(colorText(this.options.theme(), 'foreground', line), Math.max(1, width)),
     );
@@ -108,10 +114,10 @@ export class AccountPane {
       void copyToClipboard(this.device.userCode)
         .then(
           () => {
-            this.message = 'Device code copied.';
+            this.message = 'Code copied';
           },
           () => {
-            this.message = 'Copy unavailable; use the displayed code.';
+            this.message = "Couldn't copy · type the code shown";
           },
         )
         .finally(() => {

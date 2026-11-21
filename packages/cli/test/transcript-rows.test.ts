@@ -557,7 +557,7 @@ test('a turn that worked a while ends with how long and how many tokens', () => 
 test('history beyond what is kept is one faint line', () => {
   const history = Array.from({ length: 200 }, (_, i) => ({ role: 'user', content: `turn ${i}`, timestamp: i }));
   const lines = plain(new Conversation(history).render(60));
-  assert.equal(lines[0], '⋯ earlier entries hidden');
+  assert.equal(lines[0], '⋯ earlier messages hidden');
   assert.equal(lines[1], '');
   assert.equal(lines.at(-1), ' ❯ turn 199');
 });

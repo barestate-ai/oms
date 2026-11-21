@@ -2,14 +2,12 @@ import { VStack, matchesKey, truncateToWidth, type Component, type Focusable } f
 import { TerminalStoppedError, type HarnessSession, type TaskTerminal } from '@oms/engine';
 import { TerminalView } from './terminal-view.ts';
 import { colorText, type OmsTheme } from './theme.ts';
-import { ActionBar, PaneFrame } from './chrome.ts';
 
 import { displayText } from './transcript.ts';
 interface TerminalPaneOptions {
   theme: () => OmsTheme;
   columns: () => number;
   rows: () => number;
-  hostRows?: () => number;
   requestFocus?: () => void;
   render: () => void;
   notice: (message: string) => void;
@@ -57,98 +55,56 @@ export class TerminalPane {
   get running(): boolean {
     return !!this.terminal || !!this.pending;
   }
+  /** A shell is up (not just starting): what quitting would stop. */
+  get live(): boolean {
+    return !!this.terminal;
+  }
   get cleanupUncertain(): boolean {
     return this.state === 'cleanup uncertain';
   }
   get hint(): string {
     if (this.cleanupUncertain) return 'Recovery required · /session details';
-    return this.terminal
-      ? 'Ctrl+C interrupts · /terminal stop releases verification'
-      : 'Enter starts shell · /harness returns to agent';
+    if (!this.terminal) return 'Enter starts a shell · Ctrl+P open a file · Ctrl+K commands';
+    return this.pane?.scrolledBack
+      ? 'Scrolled back · Shift+PgDn returns · F6 leaves the terminal'
+      : 'F6 leaves the terminal · Shift+PgUp scrolls back · Ctrl+C interrupts · Ctrl+Q quits';
+  }
+  /** One word for the panel header: what the shell is doing. */
+  get status(): string {
+    return this.state;
   }
   resolveMouseFocus(component: Component): Component | undefined {
     return component === this.pane || component === this.pane?.view ? this.focus : undefined;
   }
 
+  /** What shows where the shell will be, until it is running. */
+  private emptyState(): Component {
+    return {
+      invalidate() {},
+      render: (width) => {
+        const theme = this.options.theme();
+        const lines =
+          this.state === 'starting' || this.state === 'stopping' || this.state === 'cleaning up'
+            ? [`${this.state[0]!.toUpperCase()}${this.state.slice(1)}…`]
+            : this.cleanupUncertain
+              ? ['The shell is still cleaning up.', '/session shows what is left to recover.']
+              : this.state.startsWith('exited') || this.state === 'session deadline reached'
+                ? [`The shell ended (${this.state}).`, 'Press Enter to start a new one.']
+                : ['No shell is running.', 'Press Enter to open one in the project sandbox.'];
+        return ['', ...lines.map((line) => truncateToWidth(`  ${colorText(theme, 'muted', line)}`, width, ''))];
+      },
+    };
+  }
+
   private layout(): void {
     this.body.clear();
-    const rows = () => this.options.hostRows?.() ?? 24;
-    const content = new VStack();
-    content.addChild(
-      {
-        invalidate() {},
-        render: (width) => [
-          truncateToWidth(
-            colorText(this.options.theme(), this.focused ? 'accent' : 'muted', `>_ Terminal · ${this.state}`),
-            width,
-            '',
-          ),
-        ],
-      },
-      { basis: 1, shrink: 0, visible: () => rows() < 20 },
-    );
-    content.addChild(
-      new ActionBar(
-        () => [
-          {
-            id: 'start',
-            label: 'Start',
-            icon: '▸',
-            disabled: this.running || this.cleanupUncertain,
-            onPress: () => {
-              this.options.requestFocus?.();
-              void this.start();
-            },
-          },
-          {
-            id: 'stop',
-            label: 'Stop',
-            icon: '■',
-            disabled: !this.terminal || !!this.pending || this.cleanupUncertain,
-            onPress: () => {
-              this.options.requestFocus?.();
-              void this.stop();
-            },
-          },
-        ],
-        { theme: this.options.theme, render: this.options.render },
-      ),
-      { basis: 1, shrink: 0, visible: () => rows() >= 20 },
-    );
-    content.addChild(
-      this.pane?.view ?? {
-        invalidate() {},
-        render: (width) =>
-          ['Start opens the sandbox shell.', '/harness returns to the agent; the shell keeps running.'].map((text) =>
-            truncateToWidth(text, width, ''),
-          ),
-      },
-      { basis: 0, grow: 1, minSize: 1 },
-    );
-    content.addChild(
+    this.body.addChild(this.pane?.view ?? this.emptyState(), { basis: 0, grow: 1, minSize: 1 });
+    this.body.addChild(
       {
         invalidate() {},
         render: (width) => [truncateToWidth(colorText(this.options.theme(), 'warning', this.message), width, '')],
       },
       { basis: 1, shrink: 0, visible: () => !!this.message },
-    );
-    content.addChild(
-      {
-        invalidate() {},
-        render: (width) => [truncateToWidth(colorText(this.options.theme(), 'muted', this.hint), width, '')],
-      },
-      { basis: 1, shrink: 0 },
-    );
-    this.body.addChild(
-      new PaneFrame(content, {
-        theme: this.options.theme,
-        title: () => `>_ Terminal · ${this.state}`,
-        focused: () => this.focused,
-        rows,
-        compact: () => rows() < 20,
-        onFocus: this.options.requestFocus,
-      }),
-      { basis: 0, grow: 1, minSize: 1 },
     );
     this.options.render();
   }

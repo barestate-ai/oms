@@ -64,7 +64,7 @@ test(
       terminal.send('\x1b[13~');
       await terminal.until((screen) => screen.includes('export const amount = 10;'));
       command(terminal, 'terminal');
-      await terminal.until((screen) => screen.includes('Terminal · running'), 30_000);
+      await terminal.until((screen) => screen.includes('■ stop'), 30_000);
       terminal.send("printf 'shared-terminal-ready\\n'\r");
       await terminal.until((screen) => screen.includes('shared-terminal-ready'), 30_000);
       terminal.send('\x1b[13~');
@@ -92,14 +92,12 @@ test(
         ),
       );
       terminal.send('\x1b[13~');
-      await terminal.until(
-        (screen) => screen.includes('Terminal · running') && screen.includes('export const amount = 10;'),
-      );
+      await terminal.until((screen) => screen.includes('■ stop') && screen.includes('export const amount = 10;'));
       assert.equal(harness.session, session);
       assert.equal(session.sessionManager.getSessionId(), id);
       await assert.rejects(harness.verify('fixture'), /Stop terminal before verification/);
       command(terminal, 'terminal stop');
-      await terminal.until((screen) => screen.includes('Terminal · exited'), 30_000);
+      await terminal.until((screen) => screen.includes('▸ start'), 30_000);
       const result = await harness.verify('fixture');
       assert.equal(result.result.closed, true);
       assert.equal(session.sessionManager.getSessionId(), id);

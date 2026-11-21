@@ -66,7 +66,7 @@ function storedAccount(t: TestContext, meStatus = 200) {
         mode,
         theme: () => getTheme('gruvbox')!,
         render() {
-          if (pane.input.render(120).join('\n').includes('Esc return')) resolve();
+          if (!pane.input.render(120).join('\n').includes('Waiting')) resolve();
         },
         close() {},
       });
@@ -85,7 +85,7 @@ test('login verifies a stored credential without requesting a new device code', 
   assert.deepEqual(f.calls, ['/oms/api/me']);
   const screen = pane.body.render(120).join('\n');
   assert.match(screen, /already signed in/i);
-  assert.match(screen, /\/logout first.*switch accounts/i);
+  assert.match(screen, /\/logout to switch/i);
   assert.match(screen, /person@example\.test/);
   assert.doesNotMatch(screen, /Device code:/);
   assert.equal(readFileSync(f.accountPath, 'utf8'), before);
@@ -117,7 +117,7 @@ test('login does not replace a stored credential when verification is unavailabl
   const before = readFileSync(f.accountPath, 'utf8');
   const pane = await f.open('login');
   assert.deepEqual(f.calls, ['/oms/api/me']);
-  assert.match(pane.body.render(120).join('\n'), /Account operation did not complete/);
+  assert.match(pane.body.render(120).join('\n'), /Couldn't reach OMS/);
   assert.doesNotMatch(pane.body.render(120).join('\n'), /already signed in/i);
   assert.equal(readFileSync(f.accountPath, 'utf8'), before);
 });
@@ -126,7 +126,7 @@ test('account refresh restores the email from a persisted credential after resta
   const f = storedAccount(t);
   const pane = await f.open('account');
   assert.deepEqual(f.calls, ['/oms/api/me']);
-  assert.match(pane.body.render(120).join('\n'), /Email: person@example\.test/);
+  assert.match(pane.body.render(120).join('\n'), /Signed in as person@example\.test/);
 });
 
 test('device login displays code/link and escape cancels its pending operation', async () => {
@@ -182,7 +182,7 @@ test('offline logout states revocation uncertainty instead of claiming server su
     { mode: 'logout', theme: () => getTheme('gruvbox')!, render() {}, close() {} },
   );
   await setImmediate();
-  assert.match(pane.body.render(100).join('\n'), /revocation unconfirmed/i);
+  assert.match(pane.body.render(100).join('\n'), /couldn't reach the server/i);
   pane.dispose();
 });
 
@@ -205,7 +205,7 @@ test('account pane shows the signed-in email and origin and explains that sign-i
   );
   await setImmediate();
   const screen = pane.body.render(120).join('\n');
-  assert.match(screen, /signed-in/);
+  assert.match(screen, /Signed in as/);
   assert.match(screen, /person@example\.test/);
   assert.match(screen, /hosted web search only/);
   assert.doesNotMatch(screen, /credit|managed/i);

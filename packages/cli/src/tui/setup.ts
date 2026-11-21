@@ -349,7 +349,7 @@ export class SetupPane {
         colorText(
           palette,
           'accent',
-          hyperlink(truncateToWidth('Open sign-in link · Ctrl+X copy', width, ''), this.authUrl),
+          hyperlink(truncateToWidth('Open this link to sign in · ctrl+x copy', width, ''), this.authUrl),
         ),
       );
     }
@@ -358,7 +358,7 @@ export class SetupPane {
       if (this.stage === 'auth')
         lines.push(
           ...wrapTextWithAnsi(
-            'Install the official Claude Code CLI, run claude auth login in another terminal, then check claude auth status. Return to /connect after signing in.',
+            'Needs the Claude Code CLI · run `claude auth login` in another terminal, then reopen /connect',
             Math.max(1, width),
           ),
         );
@@ -366,9 +366,7 @@ export class SetupPane {
     if (this.stage === 'auth') {
       lines.push(
         ...[
-          ...(this.authUrl
-            ? ['Open this link to sign in.', hyperlink(this.authUrl, this.authUrl), 'Ctrl+X copies the link.']
-            : []),
+          ...(this.authUrl ? [hyperlink(this.authUrl, this.authUrl)] : []),
           ...this.authLines,
           ...(this.prompt && this.prompt.type !== 'select' ? [line(this.prompt.message)] : []),
         ].flatMap((text) => wrapTextWithAnsi(colorText(palette, 'muted', text), Math.max(1, width))),
@@ -474,9 +472,9 @@ export class SetupPane {
     if (!this.authUrl) return;
     try {
       await (this.options.copyAuthUrl ?? copyToClipboard)(this.authUrl);
-      if (!this.disposed) this.message = 'Complete sign-in link copied.';
+      if (!this.disposed) this.message = 'Link copied';
     } catch {
-      if (!this.disposed) this.message = 'Could not copy the sign-in link.';
+      if (!this.disposed) this.message = "Couldn't copy · select the link instead";
     }
     if (!this.disposed) this.options.render();
   }
@@ -545,7 +543,7 @@ export class SetupPane {
       this.harness.listModels().find((model) => model.provider === previous.provider && model.id === previous.id);
     if (!model) return;
     if (model.selectable === false) {
-      this.message = `${line(model.detail ?? 'Model needs provider setup.')} · Selection unchanged.`;
+      this.message = line(model.detail ?? 'Model needs provider setup');
       this.options.render();
       return;
     }
@@ -556,7 +554,7 @@ export class SetupPane {
       if (!this.disposed) {
         this.options.notice(
           model.provider === 'claude-code'
-            ? `Native Claude chat selected: ${line(model.provider)}/${line(model.id)} · /session`
+            ? `Model: ${line(model.provider)}/${line(model.id)} (native Claude chat)`
             : `Model: ${line(model.provider)}/${line(model.id)}`,
         );
         this.options.close();
@@ -568,7 +566,7 @@ export class SetupPane {
       this.message =
         current?.selectable === false && current.detail
           ? line(current.detail)
-          : 'Model selection failed. Check provider credentials and wait for current work to finish.';
+          : "Couldn't switch model · check /connect";
     } finally {
       this.pending = false;
       if (!this.disposed) this.options.render();
@@ -597,14 +595,12 @@ export class SetupPane {
               (item) =>
                 `${line(item.name)}: ${item.status === 'may_have_saved' ? 'may have been saved; check configuration before retrying' : item.status}`,
             )
-            .join(' · ') || 'No recognized provider names.',
+            .join(' · ') || 'No provider keys found in that file',
         );
         this.options.close();
       }
     } catch {
-      if (!this.disposed)
-        this.message =
-          'Import refused before completion. Check file ownership, 0600 permissions and literal assignments; no secret details are displayed.';
+      if (!this.disposed) this.message = 'Import failed · file must be yours, mode 0600, with KEY=value lines';
     } finally {
       this.pending = false;
       this.key = '';
@@ -635,16 +631,16 @@ export class SetupPane {
         this.showModels(provider);
         this.options.notice(
           provider === 'claude-code'
-            ? 'Claude Code is ready. Select a model.'
-            : `Connected to ${line(provider)}. Select a model.`,
+            ? 'Claude Code is ready · pick a model'
+            : `Connected to ${line(this.harness.listProviders().find((item) => item.id === provider)?.name ?? provider)} · pick a model`,
         );
       }
     } catch {
       if (!this.disposed && !this.controller.signal.aborted) {
         this.message =
           provider === 'claude-code'
-            ? 'Claude Code is not ready. Install the official CLI, run claude auth login and check claude auth status in another terminal, then reopen /connect.'
-            : 'Setup incomplete; credentials may already be saved. Check private configuration before retrying.';
+            ? 'Claude Code is not ready · run `claude auth login`, then /connect'
+            : 'Setup incomplete · credentials may already be saved; check your configuration before trying again';
       }
     } finally {
       this.pending = false;
