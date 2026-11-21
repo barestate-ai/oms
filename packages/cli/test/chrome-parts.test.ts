@@ -89,7 +89,7 @@ test('the slash popup is two columns, at most eight rows, with the selection on 
   assert.equal(rows.length, POPUP_ROWS);
   assert.ok(rows.every((row) => visibleWidth(row) <= 90));
   assert.match(plain(rows[0]!), /^› \/workbench +Editor, files and terminal/);
-  assert.match(plain(rows[1]!), /^ {2}\/harness +Back to the conversation/);
+  assert.match(plain(rows[1]!), /^ {2}\/harness +Back to chat/);
   assert.ok(rows[0]!.includes('48;2;'), 'the selected row has a background');
   assert.ok(!rows[1]!.includes('48;2;'));
   assert.match(plain(rows[3]!), /\/terminal \[start\|stop\|hide\] +Open a shell/, 'the argument hint follows the name');
@@ -442,9 +442,7 @@ test('the approval card shows the request in a warning box with the keys it answ
 test('every drawn chrome part is plain ASCII with OMS_ASCII', () => {
   const asciiOnly = (lines: string[]) => lines.map(plain).every((line) => /^[\x20-\x7e]*$/.test(line));
   const choices = slashChoices('/', 'task')!;
-  assert.ok(
-    asciiOnly(slashPopup(theme, ascii, choices, 0, 80).map((line) => line.replace('Back to the conversation', 'x'))),
-  );
+  assert.ok(asciiOnly(slashPopup(theme, ascii, choices, 0, 80).map((line) => line.replace('Back to chat', 'x'))));
   assert.ok(
     asciiOnly(
       boxLines({ theme, glyphs: ascii, width: 30, title: 'Model', hint: 'esc', border: 'border', rows: ['x'] }),

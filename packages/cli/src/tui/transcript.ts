@@ -757,6 +757,11 @@ export class Conversation {
     return cut ? lines.slice(cut) : lines;
   }
 
+  /** The row, in what render() returned, where the newest entry starts. */
+  lastEntryStart(): number | undefined {
+    return this.layout.at(-1)?.start;
+  }
+
   /**
    * A click on row `row` of the view's content, which has `above` rows (the art) before what render() returned: it
    * opens or folds the entry there, or, on the '▼ new output' chip, asks the view to go to the end.

@@ -46,7 +46,7 @@ test('pointer navigation controls switch the same session without submitting its
   }
 });
 
-test('cancelled workbench toolbar SGR gestures preserve composer focus and draft typing', async () => {
+test('cancelled mouse gestures on the panel tabs preserve composer focus and draft typing', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(120, 36);
   const run = runOmsInterface(f.harness, { terminal, view: 'workbench' });
@@ -56,9 +56,9 @@ test('cancelled workbench toolbar SGR gestures preserve composer focus and draft
     terminal.send('composer draft');
     const before = await terminal.until((screen) => screen.includes('composer draft'));
     const rows = before.split('\n');
-    const y = rows.findIndex((row) => row.includes('New') && row.includes('Save'));
-    assert.ok(y >= 0, 'workbench toolbar is visible alongside the composer');
-    const x = rows[y]!.indexOf('New') + 1;
+    const y = rows.findIndex((row) => row.includes('problems') && row.includes('changes'));
+    assert.ok(y >= 0, 'the panel tabs are visible alongside the composer');
+    const x = rows[y]!.indexOf('problems') + 1;
     terminal.send(`\x1b[<0;${x + 1};${y + 1}M`);
     terminal.send(' after press');
     await terminal.until((screen) => screen.includes('composer draft after press'));
@@ -149,7 +149,8 @@ for (const [columns, rows] of [
       terminal.send('X');
       terminal.send('\x13');
       await terminal.until(() => saved.includes('X'));
-      assert.equal(saved, '/\tXSOURCE\nsecond\nthird');
+      // Tab in a TypeScript file with no indentation to copy inserts soft spaces up to the next two-column stop.
+      assert.equal(saved, '/ XSOURCE\nsecond\nthird');
       terminal.send('\x0b');
       terminal.send('harness');
       terminal.send('\r');
@@ -186,7 +187,8 @@ test('read-only status and help remain reachable during work without dispatching
     terminal.send('\x1b/');
     terminal.send('help');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('all keys'));
+    // Help opens at its first line: wait for that, not a frame on the way there.
+    await terminal.until((screen) => /⎿ +help/.test(screen));
     terminal.send('\x1b');
     terminal.send('!');
     await terminal.until((screen) => screen.includes('retained draft!'));
@@ -226,7 +228,7 @@ test('terminal slash, Tab, Escape and Ctrl+C stay child input while global navig
     await terminal.screen();
     terminal.send('/terminal');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('running'));
+    await terminal.until((screen) => screen.includes('stop'));
     terminal.send('/');
     terminal.send('\t');
     terminal.send('\x1b');
@@ -236,7 +238,8 @@ test('terminal slash, Tab, Escape and Ctrl+C stay child input while global navig
     terminal.send('\x1b');
     terminal.send('x');
     await terminal.until(() => Buffer.concat(bytes).toString('utf8').endsWith('x'));
-    assert.equal(Buffer.concat(bytes).toString('utf8'), '/\t\x1b\x03x');
+    // A running shell gets every key, including the ones that open the command menu elsewhere; F6 is the way out.
+    assert.equal(Buffer.concat(bytes).toString('utf8'), '/\t\x1b\x03\x1b/help\x1bx');
     assert.equal(f.closed(), false);
     assert.deepEqual(f.prompts, []);
   } finally {
@@ -1845,13 +1848,13 @@ test('dismissed slash discovery reopens after clearing and retyping before anoth
   try {
     await terminal.until((screen) => idle(screen));
     terminal.send('/');
-    await terminal.until((screen) => screen.includes('/files') && screen.includes('Browse files'));
+    await terminal.until((screen) => screen.includes('/files') && screen.includes('Find and open a file'));
     terminal.send('\x1b');
     await terminal.until((screen) => !screen.includes('/files'));
     terminal.send('\x01');
     terminal.send('\x7f');
     terminal.send('/');
-    await terminal.until((screen) => screen.includes('/files') && screen.includes('Browse files'));
+    await terminal.until((screen) => screen.includes('/files') && screen.includes('Find and open a file'));
     assert.deepEqual(f.prompts, []);
   } finally {
     await quit(terminal, run);
@@ -2068,7 +2071,7 @@ test('an empty session opens with startup art above the placeholder, and the art
 
     terminal.send('/help');
     terminal.send('\r');
-    await terminal.until((s) => s.includes('all keys'));
+    await terminal.until((s) => /⎿ +help/.test(s));
     terminal.send('\x1b[H');
     await terminal.until((s) => s.includes(art.entry.label));
   } finally {
@@ -2853,7 +2856,7 @@ test('Solana commands use the local chain, and /airdrop refuses a chain that is 
 
 test('/help lists the new commands under Solana; a bare /account still opens the OMS account pane', async () => {
   const f = fixture();
-  const terminal = new InterfaceTerminal(120, 60);
+  const terminal = new InterfaceTerminal(120, 72);
   const run = runOmsInterface(f.harness, { terminal });
   try {
     await terminal.screen();
@@ -3316,7 +3319,7 @@ test('/help is a short list with one entry for leaving, and /help keys has the r
     terminal.send('\r');
     const keys = await terminal.until((s) => s.includes('clear the field'));
     for (const key of ['f3', 'f4', 'f8', 'pgup pgdn', 'ctrl+q']) assert.ok(keys.includes(key), key);
-    assert.doesNotMatch(keys, /\b(f2|f6|f10)\b/, 'a chat has no requirements panel or toolbar');
+    assert.doesNotMatch(keys, /\bf2\b/, 'a chat has no requirements panel');
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();

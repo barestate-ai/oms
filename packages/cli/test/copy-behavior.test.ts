@@ -111,12 +111,12 @@ test('Ctrl+C twice never discards unsaved files: the discard still takes Ctrl+Q'
     terminal.send(CTRL_C);
     await terminal.until((s) => s.includes('ctrl+c again to quit'));
     terminal.send(CTRL_C);
-    await terminal.until((s) => s.includes('Unsaved files · ctrl+q again to discard · ctrl+s to save'));
+    await terminal.until((s) => s.includes('Unsaved: file.ts · ctrl+q again to discard · ctrl+s to save'));
     terminal.send(CTRL_C);
     await terminal.until((s) => s.includes('ctrl+c again to quit'));
     assert.equal(f.closed(), false);
     terminal.send('\x11');
-    await terminal.until((s) => s.includes('Unsaved files'));
+    await terminal.until((s) => s.includes('Unsaved: file.ts'));
     terminal.send('\x11');
     await run;
     assert.equal(f.closed(), true);

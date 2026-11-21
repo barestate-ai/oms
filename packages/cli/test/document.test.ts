@@ -103,3 +103,75 @@ test('inserting a joining character keeps the resulting caret on a grapheme boun
   document.undo();
   assert.equal(document.text, '👩💻');
 });
+
+test('typing a word is one undo step; a space, a move or a newline starts the next', () => {
+  const document = new FileDocument('');
+  for (const character of 'hello world') document.insert(character, true);
+  document.undo();
+  assert.equal(document.text, 'hello');
+  document.undo();
+  assert.equal(document.text, '');
+  for (const character of 'ab') document.insert(character, true);
+  document.move('left');
+  document.insert('X', true);
+  assert.equal(document.text, 'aXb');
+  document.undo();
+  assert.equal(document.text, 'ab');
+  document.undo();
+  assert.equal(document.text, '');
+  document.redo();
+  document.redo();
+  assert.equal(document.text, 'aXb');
+});
+
+test('repeated Backspace and Delete each undo as one step and restore the caret', () => {
+  const document = new FileDocument('abcdef');
+  document.select(4, 4);
+  document.backspace(true);
+  document.backspace(true);
+  document.backspace(true);
+  assert.equal(document.text, 'aef');
+  document.undo();
+  assert.equal(document.text, 'abcdef');
+  assert.equal(document.cursor, 4);
+  document.select(1, 1);
+  document.deleteForward(true);
+  document.deleteForward(true);
+  assert.equal(document.text, 'adef');
+  document.undo();
+  assert.equal(document.text, 'abcdef');
+  assert.equal(document.cursor, 1);
+});
+
+test('word boundaries skip separators, then a run of letters or of punctuation', () => {
+  const document = new FileDocument('foo_bar  baz.qux(1)\n界 世界');
+  assert.equal(document.wordBoundary(0, 'right'), 7);
+  assert.equal(document.wordBoundary(7, 'right'), 12);
+  assert.equal(document.wordBoundary(12, 'right'), 13);
+  assert.equal(document.wordBoundary(19, 'left'), 18);
+  assert.equal(document.wordBoundary(14, 'left'), 13);
+  assert.equal(document.wordBoundary(document.text.length, 'left'), document.text.length - 2);
+  assert.equal(document.wordBoundary(document.text.length, 'right'), document.text.length);
+  document.select(7, 7);
+  document.deleteWord('left');
+  assert.equal(document.text.slice(0, 5), '  baz');
+  document.moveWord('right', true);
+  assert.equal(document.selectedText, '  baz');
+});
+
+test('replaceRange is one undo step with a chosen selection; reload drops history and keeps the caret near', () => {
+  const document = new FileDocument('one\ntwo\nthree');
+  document.replaceRange(0, 13, 'x\ny\nz', { anchor: 0, cursor: 5 });
+  assert.equal(document.selectedText, 'x\ny\nz');
+  document.undo();
+  assert.equal(document.text, 'one\ntwo\nthree');
+  document.select(9, 9);
+  document.reload('one\ntwo\nthree and more');
+  assert.equal(document.cursor, 9);
+  assert.equal(document.dirty, false);
+  document.undo();
+  assert.equal(document.text, 'one\ntwo\nthree and more');
+  document.select(20, 20);
+  document.reload('short');
+  assert.equal(document.cursor, 5);
+});

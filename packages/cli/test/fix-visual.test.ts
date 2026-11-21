@@ -136,8 +136,11 @@ for (const [place, focusKeys] of [
       terminal.send('\r');
       await terminal.until((s) => /esc to interrupt/.test(s));
       if (focusKeys) {
-        terminal.send(focusKeys); // F6: the editor
-        await terminal.until((s) => /^ *Ctrl\+P files/m.test(s) && /esc to interrupt/.test(s));
+        // F6 walks the areas; stop on the one that shows Esc as the way to interrupt (the editor).
+        for (let press = 0; press < 4 && !/esc interrupt/.test(last(await terminal.screen())); press++) {
+          terminal.send(focusKeys);
+          await terminal.screen();
+        }
       }
       assert.match(last(await terminal.screen()), /esc interrupt/);
       terminal.send('\x1b');

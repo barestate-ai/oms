@@ -15,6 +15,8 @@ export const acceptsArt = (argument: string): boolean =>
   !argument || argument === 'next' || Object.hasOwn(ART_MODES, argument);
 export const acceptsWeb = (argument: string): boolean => ['', 'on', 'off'].includes(argument);
 export const acceptsLayout = (argument: string): boolean => ['editor', 'balanced', ''].includes(argument);
+export const acceptsPanel = (argument: string): boolean =>
+  ['', 'terminal', 'problems', 'output', 'changes', 'hide'].includes(argument);
 
 export const YOLO_NOTICE = 'YOLO on · commands run without approval or sandbox · /yolo to turn off';
 const YOLO_OFF_NOTICE = 'YOLO off · risky commands are sandboxed or ask first';
@@ -52,10 +54,10 @@ const accountScreen =
 export const uiCommands = {
   workbench: goToView('workbench'),
   harness: goToView('harness'),
-  files: inEditor((ctx) => ctx.workbench.open()),
+  files: inEditor((ctx) => ctx.ide.openFinder()),
   open: inEditor((ctx, argument) => ctx.workbench.open(argument)),
   newfile: inEditor((ctx, argument) => ctx.workbench.newFile(argument || undefined)),
-  save: inEditor((ctx) => ctx.workbench.save()),
+  save: inEditor((ctx, argument) => (argument === 'all' ? ctx.workbench.saveAll() : ctx.workbench.save())),
   close: inEditor((ctx) => {
     ctx.workbench.closeBuffer();
   }),
@@ -71,6 +73,29 @@ export const uiCommands = {
   split: inEditor((ctx) => {
     ctx.workbench.split();
   }),
+  search: inEditor((ctx, argument) => {
+    ctx.ide.search(argument);
+  }),
+  goto: inEditor((ctx, argument) => {
+    ctx.ide.goToLine(argument);
+  }),
+  tasks: inEditor((ctx) => {
+    ctx.ide.openDashboard();
+  }),
+  sidebar: inEditor((ctx) => {
+    ctx.ide.toggleExplorer();
+  }),
+  changes: inEditor((ctx) => {
+    void ctx.ide.changes.refresh();
+    ctx.ide.showPanel('changes');
+  }),
+  panel(ctx: CommandContext, argument: string, draft: Draft): void {
+    ctx.clearDraft(draft);
+    ctx.switchView('workbench');
+    if (argument === 'hide') ctx.ide.hidePanel();
+    else if (!argument) ctx.ide.togglePanel();
+    else ctx.ide.showPanel(argument as 'terminal' | 'problems' | 'output' | 'changes');
+  },
   model: setupScreen('model'),
   connect: setupScreen('connect'),
   settings: setupScreen('settings'),

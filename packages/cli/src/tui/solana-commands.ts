@@ -64,7 +64,7 @@ const named = (id: string): string => {
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 /** The task's own Surfpool, or a refusal. Anything that is not its loopback RPC is never used. */
-function localChain(harness: OmsSession) {
+export function localChain(harness: OmsSession) {
   const chain = harness.chain;
   if (!chain) throw new Error('This session has no local chain.');
   const url = chain.rpcUrl();

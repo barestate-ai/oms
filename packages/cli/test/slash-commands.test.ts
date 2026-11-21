@@ -157,9 +157,10 @@ test('/help keys lists the keys of the current mode from one table, and names qu
     for (const key of ['f3', 'f4', 'f8', 'pgup pgdn']) assert.match(keys, new RegExp(`^ {2}${key} `, 'm'), key);
     assert.doesNotMatch(keys, /\bleave\b|Press |Use /);
   }
-  // A chat has neither a requirements panel nor a toolbar.
-  assert.doesNotMatch(chat, /^ {2}(f2|f6|f10) /m);
+  // A chat has no requirements panel; both have the header tabs (f10) and the workbench areas (f6).
+  assert.doesNotMatch(chat, /^ {2}f2 /m);
   for (const key of ['f2', 'f6', 'f10']) assert.match(task, new RegExp(`^ {2}${key} `, 'm'), key);
+  for (const key of ['f6', 'f10']) assert.match(chat, new RegExp(`^ {2}${key} `, 'm'), key);
 });
 
 test('a mistyped command names itself and the nearest command; a bad argument says what the command takes', () => {

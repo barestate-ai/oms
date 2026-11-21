@@ -267,8 +267,12 @@ test('quitting with the workbench terminal running stops the shell before closin
     await terminal.until((screen) => screen.includes('/ commands'));
     terminal.send('/terminal');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Terminal · running'));
+    await terminal.until((screen) => screen.includes('■ stop'));
     terminal.send('\x0c');
+    // A running shell is lost on quit: the first Ctrl+Q asks, the second stops the shell and quits.
+    terminal.send('\x11');
+    await terminal.until((screen) => screen.includes('Shell is running · ctrl+q again to stop it and quit'));
+    assert.deepEqual(f.order, [], 'the first Ctrl+Q closed nothing');
     terminal.send('\x11');
     await run;
     assert.deepEqual(f.order, ['terminal closed', 'session closed']);
