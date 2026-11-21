@@ -140,10 +140,12 @@ export class SetupPane {
     this.selected = '';
     this.list = undefined;
     const providers = this.harness.listProviders();
+    // One catalog read: each listModels() rebuilds the whole catalog.
+    const catalog = this.harness.listModels();
     this.shortlistProviders = this.options.mode === 'connect' || !providers.some((provider) => provider.configured);
     if (this.options.mode === 'model') {
       for (const provider of providers.filter((provider) => provider.configured)) {
-        if (!this.harness.listModels().some((model) => model.provider === provider.id)) continue;
+        if (!catalog.some((model) => model.provider === provider.id)) continue;
         this.choices.push({
           value: JSON.stringify([provider.id, 'configured']),
           label:
@@ -164,7 +166,7 @@ export class SetupPane {
       if (
         this.options.mode === 'model' &&
         provider.configured &&
-        this.harness.listModels().some((model) => model.provider === provider.id)
+        catalog.some((model) => model.provider === provider.id)
       )
         continue;
       const connected = provider.configured ? 'Connected' : '';

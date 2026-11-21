@@ -10,6 +10,8 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { commandNamesEnvFile, isEnvFile, maskEnvFile, maskSecrets } from './secret-mask.ts';
+import { installPiTheme } from './pi-theme.ts';
+import type { OmsTheme } from './theme.ts';
 
 const ENTRY_CHARS = 12_000;
 const HISTORY_CHARS = 192_000;
@@ -164,6 +166,12 @@ export class Conversation implements Component {
   }
   invalidate(): void {
     for (const item of this.items) item.component.invalidate?.();
+  }
+
+  /** Draw every message, tool, diff and code block with this OMS theme from the next render. */
+  applyTheme(theme: OmsTheme): void {
+    installPiTheme(theme);
+    this.invalidate();
   }
 
   /** Forget everything shown, for a fresh conversation. */

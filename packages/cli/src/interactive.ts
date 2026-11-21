@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { HarnessSession, HarnessSessionOptions } from '@oms/engine';
 import { openHarnessWithOwnership } from './ownership.ts';
 import { runOmsInterface } from './tui/interface.ts';
-import { DEFAULT_THEME_ID } from './tui/theme.ts';
+import { interfacePreferences } from './tui/preferences.ts';
 
 function shellWord(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -70,7 +70,7 @@ export async function runInteractiveHarness(
   const sessionId = harness.session.sessionManager.getSessionId();
   process.stdout.write(`OMS ready | task ${harness.task.id} | Harness\n`);
   try {
-    await runOmsInterface(harness, { theme: DEFAULT_THEME_ID, view: 'harness' });
+    await runOmsInterface(harness, { ...interfacePreferences(stateRoot), view: 'harness' });
   } finally {
     await harness.close();
   }

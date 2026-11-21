@@ -256,3 +256,32 @@ test('pending parser writes and input are bounded; disposal refuses later work',
   view.handleInput('later');
   assert.equal(input.length, 0);
 });
+
+test('a disposed view in the layout stops asking for frames', async () => {
+  const { view } = screen(40, 10);
+  await view.write(Buffer.from(Array.from({ length: 100 }, (_, i) => `l${i}\r\n`).join('')));
+  await view.flush();
+  view.render(40);
+  view.view.updateLayout(view.render(40).length, 10, () => {});
+  view.dispose();
+  let requests = 0;
+  view.view.updateLayout(view.render(40).length, 10, () => requests++);
+  view.view.updateLayout(view.render(40).length, 10, () => requests++);
+  assert.equal(requests, 0);
+});
+
+test('a viewport that grows past the overdraw is drawn in the same frame', async () => {
+  const { view } = screen(20, 4);
+  try {
+    await view.write(Buffer.from(Array.from({ length: 200 }, (_, i) => `l${i}\r\n`).join('')));
+    await view.flush();
+    view.view.updateLayout(view.render(20).length, 4, () => {});
+    view.view.updateLayout(view.render(20).length, 4, () => {});
+    const lines = plain(view.render(20));
+    view.view.updateLayout(lines.length, 30, () => {});
+    const shown = lines.slice(view.view.scrollTop, view.view.scrollTop + 30);
+    assert.equal(shown.filter((line) => !line.trim()).length, 1, 'only the empty line after the last newline');
+  } finally {
+    view.dispose();
+  }
+});

@@ -214,3 +214,30 @@ test('a folder that holds personal files opens a scratch folder and says so in t
     `No project here, so this chat uses a scratch folder (${scratch}). cd into a project folder and run oms to work on it.`,
   );
 });
+
+test('the chat starts with the saved theme and art and saves each change for the next launch', async (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.stateRoot, 'tui.json'), JSON.stringify({ theme: 'nord', startupArt: '256' }));
+  const seen: Array<Record<string, unknown>> = [];
+  const open = () =>
+    capture(() =>
+      runInteractiveChat({
+        folder: f.project,
+        stateRoot: f.stateRoot,
+        environment: defaultHarnessEnvironment(),
+        launch,
+        start: async (options) => fakeChat(options.folder, []),
+        run: async (_chat, options) => {
+          seen.push({ theme: options?.theme, background: options?.background, startupArt: options?.startupArt });
+          options?.onThemeChange?.('dracula');
+          options?.onStartupArtChange?.('off');
+        },
+      }),
+    );
+  await open();
+  await open();
+  assert.deepEqual(seen, [
+    { theme: 'nord', background: 'theme', startupArt: '256' },
+    { theme: 'dracula', background: 'theme', startupArt: 'off' },
+  ]);
+});

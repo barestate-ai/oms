@@ -12,7 +12,7 @@ import { webSetting } from './interactive.ts';
 import type { LaunchOptions } from './harness.ts';
 import { chooseLocalAction } from './ownership.ts';
 import { runOmsInterface } from './tui/interface.ts';
-import { DEFAULT_THEME_ID } from './tui/theme.ts';
+import { interfacePreferences } from './tui/preferences.ts';
 import { YOLO_NOTICE } from './tui/ui-commands.ts';
 
 export interface ChatLaunch {
@@ -70,7 +70,7 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
   });
   try {
     await (o.run ?? runOmsInterface)(chat, {
-      theme: DEFAULT_THEME_ID,
+      ...interfacePreferences(o.stateRoot),
       view: 'harness',
       ...(folder.scratch || o.yolo
         ? {

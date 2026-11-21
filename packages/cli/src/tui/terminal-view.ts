@@ -27,12 +27,25 @@ const CONTROL_PUNCTUATION: Readonly<Record<string, string>> = {
   '?': '\x7f',
 };
 
+/**
+ * Rows drawn beyond the viewport, so a resize or scroll the layout applies after drawing still lands on drawn
+ * rows: no viewport can outgrow the host terminal.
+ */
+const overdraw = (height: number) => Math.max(height, process.stdout.rows || 64);
+
 /** Layout allocates the scroll viewport after rendering its child. */
 class TerminalScrollView extends ScrollView {
+  private readonly terminalView: TerminalView;
+  constructor(view: TerminalView) {
+    super(view, { follow: 'end', scrollbar: 'hidden', overscroll: 'contain' });
+    this.terminalView = view;
+  }
   override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
     const previousHeight = this.viewportHeight;
     super.updateLayout(contentHeight, viewportHeight, requestRender);
-    if (this.viewportHeight !== previousHeight) requestRender();
+    const bottom = Math.min(this.scrollTop + this.viewportHeight, contentHeight);
+    const undrawn = this.scrollTop < this.terminalView.drawnFrom || bottom > this.terminalView.drawnTo;
+    if (this.viewportHeight !== previousHeight || undrawn) requestRender();
   }
 }
 
@@ -57,6 +70,12 @@ export class TerminalView implements Component, Focusable {
   private pendingHighSurrogate = '';
   private frame: NodeJS.Timeout | undefined;
   private cursorVisible = true;
+  /** The last drawing, reused until output, a resize, focus or scrolling changes it. */
+  private drawn: { key: string; lines: string[] } | undefined;
+  private dirty = true;
+  /** Rows [drawnFrom, drawnTo) of the last drawing hold cells; the rest are blank. */
+  drawnFrom = 0;
+  drawnTo = 0;
 
   private readonly options: TerminalViewOptions;
 
@@ -74,7 +93,7 @@ export class TerminalView implements Component, Focusable {
     });
     this.terminal.loadAddon(new unicodeGraphemes.UnicodeGraphemesAddon());
     this.terminal.unicode.activeVersion = '15-graphemes';
-    this.view = new TerminalScrollView(this, { follow: 'end', scrollbar: 'hidden', overscroll: 'contain' });
+    this.view = new TerminalScrollView(this);
     this.terminal.onData((data) => {
       if (this.inputClosed || this.disposed || !data) return;
       data = this.pendingHighSurrogate + data;
@@ -139,6 +158,7 @@ export class TerminalView implements Component, Focusable {
   }
 
   invalidate(): void {
+    this.dirty = true;
     if (!this.disposed && !this.frame) {
       this.frame = setTimeout(() => {
         this.frame = undefined;
@@ -243,19 +263,33 @@ export class TerminalView implements Component, Focusable {
   }
 
   render(width: number): string[] {
-    if (this.disposed) return [];
+    if (this.disposed) {
+      this.drawnFrom = this.drawnTo = 0;
+      return [];
+    }
     const columns = Math.min(500, Math.max(1, Math.floor(width)));
     const rows = Math.min(500, Math.max(1, this.view.viewportHeight || this.terminal.rows));
     if (!this.inputClosed && (columns !== this.terminal.cols || rows !== this.terminal.rows)) {
       this.terminal.resize(columns, rows);
       this.options.resize(columns, rows);
+      this.dirty = true;
     }
     const buffer = this.terminal.buffer.active;
+    // Only the rows where the scroll view will show this frame are drawn; scrollback above stays blank.
+    const height = this.view.viewportHeight || rows;
+    const end = Math.max(0, buffer.length - height);
+    const top = this.view.isFollowingEnd ? end : Math.min(this.view.scrollTop, end);
+    const reach = overdraw(height);
+    this.drawnFrom = Math.max(0, top - reach);
+    this.drawnTo = Math.min(buffer.length, top + height + reach);
+    const key = `${columns}|${buffer.length}|${this.drawnFrom}|${this.drawnTo}|${this.focused}`;
+    if (!this.dirty && this.drawn?.key === key) return this.drawn.lines;
+    this.dirty = false;
     const cell = buffer.getNullCell();
-    const lines: string[] = [];
+    const lines = new Array<string>(buffer.length).fill('');
     const cursorRow = buffer.baseY + buffer.cursorY;
     const cursorColumn = Math.min(buffer.cursorX, columns - 1);
-    for (let y = 0; y < buffer.length; y++) {
+    for (let y = this.drawnFrom; y < this.drawnTo; y++) {
       const line = buffer.getLine(y);
       let rendered = '';
       let lastStyle = '';
@@ -285,8 +319,9 @@ export class TerminalView implements Component, Focusable {
         const chars = current.getChars().replace(/[\x00-\x1f\x7f-\x9f]/g, '');
         rendered += current.isInvisible() ? ' '.repeat(current.getWidth()) : chars || ' ';
       }
-      lines.push(rendered + (lastStyle ? '\x1b[0m' : ''));
+      lines[y] = rendered + (lastStyle ? '\x1b[0m' : '');
     }
+    this.drawn = { key, lines };
     return lines;
   }
 

@@ -249,6 +249,11 @@ export class TerminalPane {
     }
   }
 
+  /** Stop a running shell before its session closes; one still starting is left to the session's own shutdown. */
+  async release(): Promise<void> {
+    if (!this.pending) await this.stop();
+  }
+
   private cleanupFailure(error: unknown): void {
     this.pane?.stopInput();
     this.state = 'cleanup uncertain';

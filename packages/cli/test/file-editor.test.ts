@@ -180,3 +180,28 @@ test('numbered editor views share one document while keeping separate scroll sta
   assert.notEqual(first.view, second.view);
   for (const width of [1, 2, 8]) assert.ok(layout(first, width, 2).every((line) => visibleWidth(line) <= width));
 });
+
+test('a resize that reveals a far cursor or grows the viewport draws the rows it shows', () => {
+  const pane = createFileEditorPane(Array.from({ length: 500 }, (_, n) => `line ${n}`).join('\n'), () => {});
+  layout(pane, 20, 10);
+  pane.view.scrollTo(200);
+  layout(pane, 20, 10);
+  // Taller viewport: the resize reveals the cursor on line 1 after this frame was drawn.
+  const lines = pane.focus.render(20);
+  pane.view.updateLayout(lines.length, 40, () => {});
+  const shown = lines.slice(pane.view.scrollTop, pane.view.scrollTop + 40);
+  assert.equal(pane.view.scrollTop, 0);
+  assert.deepEqual(
+    shown,
+    Array.from({ length: 40 }, (_, n) => `line ${n}`),
+  );
+
+  const far = createFileEditorPane(Array.from({ length: 500 }, (_, n) => `line ${n}`).join('\n'), () => {});
+  layout(far, 20, 5);
+  for (let i = 0; i < 300; i++) input(far, '\x1b[B');
+  layout(far, 20, 5);
+  const before = far.focus.render(20);
+  far.view.updateLayout(before.length, 40, () => {});
+  const visible = before.slice(far.view.scrollTop, far.view.scrollTop + 40);
+  assert.equal(visible.filter((line) => !line.trim()).length, 0);
+});

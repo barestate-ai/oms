@@ -185,8 +185,19 @@ interface PaneFrameOptions {
   onFocus?: () => void;
 }
 
+/**
+ * A stack that only ever fills a slot its parent sized (numeric basis), so it measures as empty. Row layouts measure
+ * every child by rendering it; without this a frame would draw its whole transcript or file again on every frame.
+ * The visible drawing goes through the layout tree, which never calls this.
+ */
+class Filled extends VStack {
+  override render(): string[] {
+    return [];
+  }
+}
+
 /** Public stacks keep scroll views and cursor-bearing children in the layout tree. */
-export class PaneFrame extends VStack {
+export class PaneFrame extends Filled {
   constructor(content: Component, options: PaneFrameOptions) {
     super();
     const decorated = (viewport: { width: number }) =>
@@ -234,7 +245,7 @@ export class PaneFrame extends VStack {
     };
     const body = new HStack([
       { component: rail, basis: 1, grow: 0, shrink: 1, minSize: 0, visible: decorated },
-      { component: content, basis: 0, grow: 1, minSize: 1 },
+      { component: new Filled([{ component: content, basis: 0, grow: 1 }]), basis: 0, grow: 1, minSize: 1 },
       { component: rail, basis: 1, grow: 0, shrink: 1, minSize: 0, visible: decorated },
     ]);
     this.addChild(horizontal(true), { basis: 1, grow: 0, shrink: 0, visible: decorated });

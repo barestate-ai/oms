@@ -52,9 +52,11 @@ import { StartupArt, artShow, settleKittyGraphics, type StartupArtMode } from '.
 import {
   colorText,
   DEFAULT_THEME_ID,
+  detectColorDepth,
   getTheme,
   paintThemeRow,
   THEME_IDS,
+  type Backdrop,
   type OmsTheme,
   type OmsThemeId,
 } from './theme.ts';
@@ -116,9 +118,22 @@ class InterfaceRenderer extends TuiAltScreen {
     this.prepareFrame = prepareFrame;
     this.mouseFocus = mouseFocus;
   }
+  /** Rows painted last frame, by their unpainted text; most rows do not change between frames. */
+  private painted = new Map<string, string>();
+  private paintedFor = '';
   protected override resolveFakeCursors(lines: string[]): string[] {
     const theme = this.palette();
-    return super.resolveFakeCursors(lines).map((line) => paintThemeRow(theme, line, this.terminal.columns));
+    const columns = this.terminal.columns;
+    const previous = this.paintedFor === `${theme.id} ${columns}` ? this.painted : new Map<string, string>();
+    const painted = new Map<string, string>();
+    const rows = super.resolveFakeCursors(lines).map((line) => {
+      const row = painted.get(line) ?? previous.get(line) ?? paintThemeRow(theme, line, columns);
+      painted.set(line, row);
+      return row;
+    });
+    this.painted = painted;
+    this.paintedFor = `${theme.id} ${columns}`;
+    return rows;
   }
   override setFocus(component: Component | null): void {
     // Native dispatch resolves candidates even for focus:false; only commit at actual focus.
@@ -154,6 +169,8 @@ export async function runOmsInterface(
     terminal?: Terminal;
     theme?: OmsThemeId;
     onThemeChange?: (theme: OmsThemeId) => void;
+    /** 'theme' paints the palette background on every row; the default 'terminal' keeps the terminal's own. */
+    background?: Backdrop;
     startupArt?: StartupArtMode;
     onStartupArtChange?: (mode: StartupArtMode) => void;
     view?: 'harness' | 'workbench';
@@ -163,7 +180,8 @@ export async function runOmsInterface(
   } = {},
 ): Promise<void> {
   const terminal = options.terminal ?? new ProcessTerminal();
-  let theme = getTheme(options.theme ?? DEFAULT_THEME_ID);
+  const display = { depth: detectColorDepth(), backdrop: options.background ?? 'terminal' } as const;
+  let theme = getTheme(options.theme ?? DEFAULT_THEME_ID, display);
   if (!theme) throw new Error(`Choose a theme from: ${THEME_IDS.join(', ')}`);
   /** A folder chat is pi-minimal: the conversation, the input and one footer line. A pinned task keeps its panes. */
   const minimal = harness.kind === 'chat';
@@ -219,6 +237,13 @@ export async function runOmsInterface(
     fail,
     () => theme!,
     () => {
+      // A frame is synchronous: its model-list reads share one snapshot that ends with it.
+      frameModels = undefined;
+      framing = true;
+      queueMicrotask(() => {
+        framing = false;
+        frameModels = undefined;
+      });
       repairHiddenFocus();
       composerLayoutEntry.basis = terminal.rows >= 24 ? 7 : terminal.rows >= 20 ? 6 : 3;
       chatComposerEntry.basis = 2 + Math.max(1, Math.min(6, input.document.text.split('\n').length));
@@ -245,6 +270,10 @@ export async function runOmsInterface(
   const requestRender = () => {
     if (!disposed) renderer.requestRender();
   };
+  /** The model catalog is rebuilt on every read; a frame reads it once. */
+  let frameModels: ReturnType<typeof harness.listModels> | undefined;
+  let framing = false;
+  const models = () => (framing ? (frameModels ??= harness.listModels()) : harness.listModels());
   /** The one busy rule: a model turn, a command, or a cancellation still settling. */
   const busy = () => !!active || externalBusy || !!externalCancellation;
   /** Cancel does something only for cancellable work: the running action, or a turn this presentation did not start. */
@@ -306,6 +335,7 @@ export async function runOmsInterface(
       requestRender: () => requestRender(),
     },
   );
+  conversation.applyTheme(theme);
   if (options.startNote) conversation.note('scratch folder', options.startNote);
   const art = new StartupArt();
   let artMode = options.startupArt ?? (minimal ? 'off' : 'auto');
@@ -322,7 +352,7 @@ export async function runOmsInterface(
         colorText(
           theme!,
           'muted',
-          !harness.listModels().some((candidate) => candidate.configured)
+          !models().some((candidate) => candidate.configured)
             ? 'Run /connect to sign in, then /model to pick a model. Run /help for help.'
             : configured && selectedModelChoice()?.configured
               ? 'Run /help for help.'
@@ -356,16 +386,15 @@ export async function runOmsInterface(
     return ['', ...content.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width - 2)))].map((line) => ' ' + line);
   }
   /** The art is the first block of the transcript, sized so it fits above the placeholder; it scrolls away with the conversation. */
-  function artBlock(width: number, below: number): string[] {
+  function artBlock(width: number, below: number, content: number): string[] {
     artViewport = transcript.viewportHeight;
-    artHidden = transcript.scrollTop;
-    return art.block(
-      width,
-      Math.min(artViewport - 6, artViewport - 3 - below, Math.floor(terminal.rows / 2)),
-      artShown,
-      (text) => colorText(theme!, 'muted', text),
-      artHidden,
-    );
+    const rows = Math.min(artViewport - 6, artViewport - 3 - below, Math.floor(terminal.rows / 2));
+    const muted = (text: string) => colorText(theme!, 'muted', text);
+    const block = art.block(width, rows, artShown, muted);
+    // The layout scrolls after drawing: crop the picture for the rows it is about to scroll away, so no second frame.
+    const end = Math.max(0, block.length + content - artViewport);
+    artHidden = transcript.isFollowingEnd ? end : Math.min(transcript.scrollTop, end);
+    return artHidden ? art.block(width, rows, artShown, muted, artHidden) : block;
   }
   const transcript = new (class extends ScrollView {
     // The viewport and scroll position are known only after the content renders: render again when they differ from
@@ -384,9 +413,12 @@ export async function runOmsInterface(
         conversation.invalidate();
       },
       render(width) {
-        const hint = placeholder(width);
         const lines = conversation.render(width);
-        return [...artBlock(width, hint.length), ...(lines.length ? lines : hint)];
+        // The placeholder only shows, or sizes the art, when there is no conversation yet or art is on.
+        const hint = lines.length && artShown === 'off' ? [] : placeholder(width);
+        const body = lines.length ? lines : hint;
+        const block = artBlock(width, hint.length, body.length);
+        return block.length ? [...block, ...body] : body;
       },
     },
     { primary: true, follow: 'end', scrollbar: 'auto' },
@@ -415,12 +447,13 @@ export async function runOmsInterface(
   }
 
   function changeTheme(id: string): boolean {
-    const next = getTheme(id);
+    const next = getTheme(id, display);
     if (!next) {
       setNotice(`Unknown theme. Choose: ${THEME_IDS.join(', ')}; draft retained.`);
       return false;
     }
     theme = next;
+    conversation.applyTheme(next);
     options.onThemeChange?.(next.id);
     setNotice(`Theme: ${next.name}`);
     return true;
@@ -583,7 +616,7 @@ export async function runOmsInterface(
   }
   function selectedModelChoice() {
     const model = harness.session.model;
-    return model && harness.listModels().find((choice) => choice.provider === model.provider && choice.id === model.id);
+    return model && models().find((choice) => choice.provider === model.provider && choice.id === model.id);
   }
   function clearDraft(snapshot: string | undefined): void {
     if (snapshot === undefined || input.document.text !== snapshot) return;
@@ -677,6 +710,8 @@ export async function runOmsInterface(
     setNotice('Closing...');
     if (!active || active.cancellable) cancel();
     shutdown = Promise.resolve()
+      // A shell closed by the session underneath its pane can end with uncertain cleanup; stop it here first.
+      .then(() => shell.release())
       .then(() => harness.close())
       .then(
         () => {
@@ -1038,7 +1073,7 @@ export async function runOmsInterface(
     const model = harness.session.model;
     const choice = selectedModelChoice();
     // Before anything is connected the session still holds a default model; do not present it as a pick the user made.
-    const nothingConnected = !harness.listModels().some((candidate) => candidate.configured);
+    const nothingConnected = !models().some((candidate) => candidate.configured);
     const modelLabel =
       model && hasModelConfiguration(model) && !(nothingConnected && choice?.selectable === false)
         ? `${model.provider === 'claude-code' ? 'Native chat · ' : ''}${singleLine(model.provider, 80)}/${singleLine(model.id, 120)}${choice?.selectable === false ? ' · unavailable · /model' : ''}`
@@ -1100,7 +1135,7 @@ export async function runOmsInterface(
   /** The folder, then the model, how full its context is, and YOLO when it is on. One line. */
   const chatFooter = component((width) => {
     const model = harness.session.model;
-    const connected = harness.listModels().some((candidate) => candidate.configured);
+    const connected = models().some((candidate) => candidate.configured);
     const parts: string[] = [];
     if (model && hasModelConfiguration(model) && connected)
       parts.push(colorText(theme!, 'muted', `${singleLine(model.provider, 60)}/${singleLine(model.id, 100)}`));
@@ -1606,7 +1641,10 @@ export async function runOmsInterface(
         ? `oms · ${singleLine(sessionLabel(harness), 120)}`
         : `oms · ${singleLine(sessionLabel(harness), 120)} / ${singleLine(harness.task.id, 80)}`,
     );
-    clock = setInterval(requestRender, 1000);
+    // Running work and a bounded budget's wall clock change with time; nothing else on screen does.
+    clock = setInterval(() => {
+      if (busy() || harness.budget.snapshot().executionMode === 'bounded') requestRender();
+    }, 1000);
     await finished;
   } finally {
     closing = true;

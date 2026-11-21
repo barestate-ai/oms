@@ -21,6 +21,7 @@ export interface FileEditorPane {
   readonly position: { line: number; column: number };
 }
 
+/** One grapheme's display cells; start/end are offsets within its line. */
 interface CellRun {
   start: number;
   end: number;
@@ -28,14 +29,26 @@ interface CellRun {
   width: number;
   text: string;
 }
+/** The display cells of one line's text, shared by every line with that text. */
+interface LineLayout {
+  width: number;
+  runs: CellRun[];
+  /** The last plain (no cursor or selection) drawing and the viewport it was drawn for. */
+  drawn?: { left: number; width: number; text: string };
+}
 interface SourceLine {
   start: number;
   end: number;
   breakEnd: number;
-  width: number;
-  runs: CellRun[];
 }
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+/**
+ * Rows drawn beyond the viewport, so a resize or scroll the layout applies after drawing still lands on drawn
+ * rows: no viewport can outgrow the host terminal.
+ */
+/** The viewport assumed before the first layout. */
+const FIRST_VIEWPORT = 64;
+const overdraw = (height: number) => Math.max(height, process.stdout.rows || FIRST_VIEWPORT);
 
 function displayText(text: string): string {
   return text.replace(/[\x00-\x1f\x7f-\x9f]/g, (character) => {
@@ -51,32 +64,38 @@ function project(text: string): SourceLine[] {
   for (;;) {
     const delimiter = breaks.exec(text);
     const end = delimiter?.index ?? text.length;
-    const runs: CellRun[] = [];
-    let column = 0;
-    for (const part of segmenter.segment(text.slice(start, end))) {
-      let shown = part.segment === '\t' ? ' '.repeat(4 - (column % 4)) : displayText(part.segment);
-      if (visibleWidth(shown) === 0) shown = '◌' + shown;
-      const width = visibleWidth(shown);
-      runs.push({
-        start: start + part.index,
-        end: start + part.index + part.segment.length,
-        column,
-        width,
-        text: shown,
-      });
-      column += width;
-    }
     const breakEnd = delimiter ? end + delimiter[0].length : end;
-    lines.push({ start, end, breakEnd, width: column, runs });
+    lines.push({ start, end, breakEnd });
     if (!delimiter) return lines;
     start = breakEnd;
   }
+}
+
+function layoutLine(text: string): LineLayout {
+  const runs: CellRun[] = [];
+  let column = 0;
+  for (const part of segmenter.segment(text)) {
+    let shown = part.segment === '\t' ? ' '.repeat(4 - (column % 4)) : displayText(part.segment);
+    if (visibleWidth(shown) === 0) shown = '◌' + shown;
+    const width = visibleWidth(shown);
+    // Stored as a whole-cell slice draws it (marks after the ◌ placeholder fall away), so drawing needs no slicing.
+    const cells = sliceByColumn(shown, 0, width, true);
+    const text = cells + ' '.repeat(Math.max(0, width - visibleWidth(cells)));
+    runs.push({ start: part.index, end: part.index + part.segment.length, column, width, text });
+    column += width;
+  }
+  return { width: column, runs };
 }
 
 class FileEditor implements Component, Focusable {
   focused = false;
   private projectedText: string | undefined;
   private lines: SourceLine[] = [];
+  private readonly layouts = new Map<string, LineLayout>();
+  /** The last drawing, returned unchanged while nothing it depends on changed. */
+  private drawn: { text: string; key: string; lines: string[] } | undefined;
+  /** Row ranges [from, to) of the last drawing that hold text; the rest are blank. */
+  drawnRanges: Array<[number, number]> = [];
   private width = 0;
   private left = 0;
   private goalColumn: number | undefined;
@@ -110,21 +129,41 @@ class FileEditor implements Component, Focusable {
 
   invalidate(): void {
     this.projectedText = undefined;
+    this.drawn = undefined;
+    this.layouts.clear();
   }
 
   private sourceLines(): SourceLine[] {
     if (this.projectedText !== this.document.text) {
       this.lines = project(this.document.text);
       this.projectedText = this.document.text;
+      // ponytail: drop every cached line layout once edits leave too many stale ones; visible rows rebuild in microseconds.
+      if (this.layouts.size > 2 * this.lines.length + 256) this.layouts.clear();
     }
     return this.lines;
   }
 
+  private layoutOf(line: SourceLine): LineLayout {
+    const text = this.document.text.slice(line.start, line.end);
+    let layout = this.layouts.get(text);
+    if (!layout) {
+      layout = layoutLine(text);
+      this.layouts.set(text, layout);
+    }
+    return layout;
+  }
+
   private cursorLine(): number {
     const lines = this.sourceLines();
-    let row = lines.length - 1;
-    while (row > 0 && lines[row]!.start > this.document.cursor) row--;
-    return row;
+    const cursor = this.document.cursor;
+    let low = 0;
+    let high = lines.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (lines[middle]!.start > cursor) high = middle - 1;
+      else low = middle;
+    }
+    return low;
   }
 
   get position(): { line: number; column: number } {
@@ -133,13 +172,14 @@ class FileEditor implements Component, Focusable {
   }
 
   private columnAt(line: SourceLine, offset: number): number {
-    return line.runs.find((run) => run.start >= offset)?.column ?? line.width;
+    const layout = this.layoutOf(line);
+    return layout.runs.find((run) => run.start >= offset - line.start)?.column ?? layout.width;
   }
 
   private offsetAt(line: SourceLine, column: number): number {
-    for (const run of line.runs) {
-      if (column < run.column + run.width / 2) return run.start;
-      if (column < run.column + run.width) return run.end;
+    for (const run of this.layoutOf(line).runs) {
+      if (column < run.column + run.width / 2) return line.start + run.start;
+      if (column < run.column + run.width) return line.start + run.end;
     }
     return line.end;
   }
@@ -154,58 +194,104 @@ class FileEditor implements Component, Focusable {
     this.revealPending = false;
   }
 
+  /** Content height stays the line count, but only rows near the viewport are drawn; the rest are blank. */
   render(width: number): string[] {
     width = Math.max(0, Math.floor(width));
     const lines = this.sourceLines();
     const row = this.cursorLine();
     const line = lines[row]!;
-    const column = this.columnAt(line, this.document.cursor);
+    const cursor = this.document.cursor;
+    const column = this.columnAt(line, cursor);
     this.gutter = this.lineNumbers ? Math.min(Math.max(0, width - 1), String(lines.length).length + 2) : 0;
     width -= this.gutter;
-    if (width !== this.width || this.lastCursor !== this.document.cursor) this.revealPending = true;
+    if (width !== this.width || this.lastCursor !== cursor) this.revealPending = true;
     this.width = width;
-    this.lastCursor = this.document.cursor;
-    const cursorWidth = Math.min(width, line.runs.find((run) => run.start === this.document.cursor)?.width ?? 1);
+    this.lastCursor = cursor;
+    const cursorWidth = Math.min(
+      width,
+      this.layoutOf(line).runs.find((run) => run.start === cursor - line.start)?.width ?? 1,
+    );
     if (column < this.left) this.left = column;
     if (column + cursorWidth > this.left + width) this.left = Math.max(0, column + cursorWidth - width);
-    const selectionStart = Math.min(this.document.anchor, this.document.cursor);
-    const selectionEnd = Math.max(this.document.anchor, this.document.cursor);
-    const rendered = lines.map((source, index) => {
-      if (width === 0) return '';
-      let result = '';
-      for (const run of source.runs) {
-        if (run.column + run.width <= this.left || run.column >= this.left + width) continue;
-        const from = Math.max(0, this.left - run.column);
-        const count = Math.min(run.width - from, this.left + width - run.column);
-        let shown = sliceByColumn(run.text, from, count, true);
-        shown += ' '.repeat(Math.max(0, count - visibleWidth(shown)));
-        if (run.start < selectionEnd && run.end > selectionStart) shown = `\x1b[7m${shown}\x1b[0m`;
-        if (this.focused && index === row && run.start === this.document.cursor) {
-          shown = CURSOR_MARKER + renderFakeCursor(shown || ' ');
-        }
-        result += shown;
-      }
-      const hasEndCell = source.end === this.document.cursor && index === row && this.focused;
-      const selectedBreak = source.end < selectionEnd && source.breakEnd > selectionStart;
-      if ((hasEndCell || selectedBreak) && source.width >= this.left && source.width < this.left + width) {
-        let shown = selectedBreak ? '\x1b[7m \x1b[0m' : ' ';
-        if (hasEndCell) shown = CURSOR_MARKER + renderFakeCursor(shown);
-        result += shown;
-      }
-      return result;
-    });
+    // Draw where the scroll view will show this frame: it reveals the cursor only after drawing.
+    const height = this.view.viewportHeight || FIRST_VIEWPORT;
+    let top = this.view.scrollTop;
+    if (this.revealPending && row < top) top = row;
+    else if (this.revealPending && row >= top + height) top = row - height + 1;
+    top = Math.max(0, Math.min(top, lines.length - height));
+    // Around the cursor too: a resize the layout applies after drawing reveals it, wherever the view was.
+    const reach = overdraw(height);
+    const clamp = (index: number) => Math.max(0, Math.min(lines.length, index));
+    this.drawnRanges =
+      width > 0
+        ? [
+            [clamp(top - reach), clamp(top + height + reach)],
+            [clamp(row - reach), clamp(row + reach + 1)],
+          ]
+        : [[0, lines.length]];
+    const key = `${width}|${this.gutter}|${this.left}|${this.drawnRanges.join(';')}|${cursor}|${this.document.anchor}|${this.focused}|${this.error}`;
+    if (this.drawn?.text === this.document.text && this.drawn.key === key) return this.drawn.lines;
+    const selectionStart = Math.min(this.document.anchor, cursor);
+    const selectionEnd = Math.max(this.document.anchor, cursor);
+    const rendered = new Array<string>(lines.length).fill('');
+    const drawn = new Set<number>();
+    for (const [from, to] of this.drawnRanges) for (let index = from; index < to; index++) drawn.add(index);
+    for (const index of drawn) {
+      if (width > 0) rendered[index] = this.drawLine(lines[index]!, index === row, selectionStart, selectionEnd, width);
+    }
     if (this.error && width > 0) {
       rendered[row] =
         (this.focused ? CURSOR_MARKER + renderFakeCursor(' ') : '') +
         sliceByColumn(`Edit refused: ${this.error}`, 0, width - (this.focused ? 1 : 0), true);
     }
     if (this.gutter > 0) {
-      return rendered.map((text, index) => {
+      for (const index of drawn) {
         const label = String(index + 1).padStart(this.gutter - 2) + ' │';
-        return '\x1b[2m' + sliceByColumn(label, 0, this.gutter, true) + '\x1b[22m' + text;
-      });
+        rendered[index] = '\x1b[2m' + sliceByColumn(label, 0, this.gutter, true) + '\x1b[22m' + rendered[index];
+      }
     }
+    this.drawn = { text: this.document.text, key, lines: rendered };
     return rendered;
+  }
+
+  private drawLine(
+    source: SourceLine,
+    cursorRow: boolean,
+    selectionStart: number,
+    selectionEnd: number,
+    width: number,
+  ) {
+    const layout = this.layoutOf(source);
+    const cursor = this.focused && cursorRow ? this.document.cursor - source.start : -1;
+    const selected = selectionStart < selectionEnd && selectionStart < source.breakEnd && selectionEnd > source.start;
+    const plain = cursor < 0 && !selected;
+    if (plain && layout.drawn?.left === this.left && layout.drawn.width === width) return layout.drawn.text;
+    const from = selectionStart - source.start;
+    const to = selectionEnd - source.start;
+    let result = '';
+    for (const run of layout.runs) {
+      if (run.column >= this.left + width) break;
+      if (run.column + run.width <= this.left) continue;
+      const skip = Math.max(0, this.left - run.column);
+      const count = Math.min(run.width - skip, this.left + width - run.column);
+      let shown = run.text;
+      if (skip > 0 || count < run.width) {
+        shown = sliceByColumn(run.text, skip, count, true);
+        shown += ' '.repeat(Math.max(0, count - visibleWidth(shown)));
+      }
+      if (run.start < to && run.end > from) shown = `\x1b[7m${shown}\x1b[0m`;
+      if (run.start === cursor) shown = CURSOR_MARKER + renderFakeCursor(shown || ' ');
+      result += shown;
+    }
+    const hasEndCell = source.end - source.start === cursor;
+    const selectedBreak = source.end < selectionEnd && source.breakEnd > selectionStart;
+    if ((hasEndCell || selectedBreak) && layout.width >= this.left && layout.width < this.left + width) {
+      let shown = selectedBreak ? '\x1b[7m \x1b[0m' : ' ';
+      if (hasEndCell) shown = CURSOR_MARKER + renderFakeCursor(shown);
+      result += shown;
+    }
+    if (plain) layout.drawn = { left: this.left, width, text: result };
+    return result;
   }
 
   handleInput(data: string): void {
@@ -354,6 +440,9 @@ class EditorScrollView extends ScrollView {
     super.updateLayout(contentHeight, viewportHeight, requestRender);
     if (resized) this.editor.revealPending = true;
     this.editor.reveal();
+    // A viewport that moved past the drawn rows (a resize, or the first layout) needs one more frame.
+    const bottom = Math.min(this.scrollTop + this.viewportHeight, contentHeight);
+    if (!this.editor.drawnRanges.some(([from, to]) => this.scrollTop >= from && bottom <= to)) requestRender();
   }
 }
 
