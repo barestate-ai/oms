@@ -103,6 +103,8 @@ interface Backend {
   parse(body: any): Hit[];
   /** Label for the usage record; defaults to the backend name. */
   label?(body: any): string;
+  /** Failure line for statuses this backend answers differently; consumes the body when it answers. */
+  refusal?(response: Response): Promise<string | undefined>;
 }
 const json = (headers: Record<string, string>, body: unknown): RequestInit => ({
   method: 'POST',
@@ -136,6 +138,8 @@ export const SEARCH_BACKENDS: Backend[] = [
     parse: (body) =>
       (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: r.snippet ?? '' })),
     label: (body) => omsLabel(body?.answered),
+    // A 402 is a paywall, not a rate limit: name where to pay and keep falling through to BYOK backends.
+    refusal: async (response) => (response.status === 402 ? paywallText(await paywallCode(response)) : undefined),
   },
   {
     name: 'exa',
@@ -643,21 +647,13 @@ export function createWeb(config: WebConfig): WebControls {
         failures.push(`${backend.name}: unreachable`);
         continue;
       }
-      if (response.status === 429 || response.status >= 500) {
-        blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
-        void response.body?.cancel().catch(() => {});
-        failures.push(`${backend.name}: HTTP ${response.status}`);
-        continue;
-      }
-      // A 402 is a paywall, not a rate limit: name where to pay and keep falling through to BYOK backends.
-      if (backend.name === 'oms' && response.status === 402) {
-        failures.push(`${backend.name}: ${paywallText(await paywallCode(response))}`);
-        continue;
-      }
       // Bodies of failures are never echoed: a provider error must not carry text past the untrusted frame.
       if (!response.ok) {
-        void response.body?.cancel().catch(() => {});
-        failures.push(`${backend.name}: HTTP ${response.status}`);
+        const named = await backend.refusal?.(response);
+        if (named === undefined) void response.body?.cancel().catch(() => {});
+        if (response.status === 429 || response.status >= 500)
+          blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
+        failures.push(`${backend.name}: ${named ?? `HTTP ${response.status}`}`);
         continue;
       }
       let hits: Hit[];

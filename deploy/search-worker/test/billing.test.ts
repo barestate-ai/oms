@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SCRAPE, SEARCH, scrapeBody, searchBody, searchResult, setup } from './helpers.ts';
+import { SCRAPE, SEARCH, scrapeBody, searchBody, searchResult, setup, sha } from './helpers.ts';
 
 const routes = {
   [SEARCH]: () => searchBody([searchResult('https://example.com/a', 'A')], 1),
@@ -67,24 +67,56 @@ test('a failed upstream call refunds the charge with the same requestId', async 
   assert.deepEqual(refund.input, { userId: 'user-1', requestId: charge.input.requestId });
 });
 
-test('any non-2xx answer refunds the charge: a blocked /fetch and a malformed /search', async () => {
+test('malformed calls are refused before billing: no charge, nothing to refund', async () => {
   const { userCall, billing, upstream } = setup(routes);
-  const fetch4xx = await userCall('/v1/fetch', { url: 'https://10.0.0.1/' });
-  assert.equal(fetch4xx.status, 400);
-  const search4xx = await userCall('/v1/search', { query: 'q', count: 99 });
-  assert.equal(search4xx.status, 400);
-  const charges = billing.calls.filter((c) => c.method === 'charge');
-  const refunds = billing.calls.filter((c) => c.method === 'refund');
-  assert.equal(charges.length, 2);
-  assert.equal(refunds.length, 2);
-  for (const refund of refunds) {
-    assert.equal(refund.input.userId, 'user-1');
-    assert.ok(
-      charges.some((c) => c.input.requestId === refund.input.requestId),
-      'each refund names its charge requestId',
-    );
+  assert.equal((await userCall('/v1/fetch', { url: 'https://10.0.0.1/' })).status, 400);
+  assert.equal((await userCall('/v1/search', { query: 'q', count: 99 })).status, 400);
+  assert.equal((await userCall('/v1/search')).status, 400, 'no JSON body');
+  assert.equal(billing.calls.length, 0, 'a malformed request is never billed');
+  assert.equal(upstream.calls.length, 0, 'all three requests were refused before any backend call');
+});
+
+test('a malformed call is 400 even when billing is down', async () => {
+  const { userCall, billing } = setup(routes);
+  billing.state.failure = 'charge';
+  const response = await userCall('/v1/search', { query: 'q', count: 99 });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json<any>()).error.code, 'INVALID_REQUEST');
+  assert.equal(billing.calls.length, 0);
+});
+
+test('a refund that keeps failing still serves the real error, and is retried once and recorded', async () => {
+  const { userCall, billing, events } = setup({
+    [SEARCH]: () => new Response('', { status: 503 }),
+  });
+  billing.state.failure = 'refund';
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(' '));
+  try {
+    const response = await userCall('/v1/search', { query: 'q' });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json<any>()).error.code, 'SEARCH_UNAVAILABLE');
+  } finally {
+    console.error = original;
   }
-  assert.equal(upstream.calls.length, 0, 'both requests were refused before any backend call');
+  const charge = billing.calls.find((c) => c.method === 'charge')!;
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 2, 'the refund was retried once');
+  for (const refund of refunds)
+    assert.deepEqual(refund.input, { userId: 'user-1', requestId: charge.input.requestId });
+  const marker = events.find((e) => (e as { blobs?: string[] }).blobs?.[0] === 'refund_failed');
+  assert.deepEqual(marker, {
+    indexes: ['user-1'],
+    blobs: ['refund_failed', 'search', charge.input.requestId],
+    doubles: [1],
+  });
+  const line = logged.find((l) => l.includes('refund_failed'))!;
+  assert.ok(line, 'the failure was logged');
+  assert.match(line, /"route":"search"/);
+  assert.ok(line.includes(charge.input.requestId));
+  assert.ok(line.includes(sha('user-1')), 'the user id is logged as a hash');
+  assert.ok(!line.includes('user-1'), 'the raw user id is not logged');
 });
 
 test('a 2xx cache hit stays charged and is not refunded', async () => {

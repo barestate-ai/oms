@@ -1,29 +1,11 @@
 import { authorize, digestList, sha256Hex } from './auth.ts';
+import { chargeSearch, refundSearch, type SearchBillingRpc } from './billing.ts';
 import { CONTEXT_DEV, contextDevScrape, contextDevSearch, type ContextDevConfig, type Outcome } from './context-dev.ts';
 import { capText, GuardError, parseFetchUrl, plainFetch, type Page, type Resolve } from './fetch-guard.ts';
 import { canonicalUrl, fuse, type FusedResult } from './fusion.ts';
 import { QUEUE_WAIT_MS, type UsageEvent } from './gate.ts';
 import { isIP, isPrivateAddress } from './net.ts';
 import type { Grant } from './semaphore.ts';
-
-/** The `oms` gateway SearchBilling charge result (contract shared with the gateway worker). */
-export type SearchChargeResult =
-  | {
-      ok: true;
-      source: 'allowance' | 'balance';
-      month: string;
-      plan: 'free' | 'pro' | 'team';
-      usedUnits: number;
-      allowanceUnits: number;
-      chargedWalletUnits: number;
-    }
-  | { ok: false; code: 'SEARCH_PAYMENT_REQUIRED' | 'UNFUNDED_USAGE' | 'INVALID_REQUEST'; message: string };
-
-/** The `oms` gateway's SearchBilling entrypoint, reached through the BILLING service binding. */
-export interface SearchBillingRpc {
-  charge(input: { userId: string; requestId: string; kind: 'search' | 'fetch' }): Promise<SearchChargeResult>;
-  refund(input: { userId: string; requestId: string }): Promise<{ ok: true }>;
-}
 
 export interface Env {
   CACHE: KVNamespace;
@@ -38,8 +20,8 @@ export interface Env {
   RATE_PER_MIN?: string;
   /** The `oms` gateway Worker, used only to check OMS session tokens on /oms/search/v1/*. */
   GATEWAY?: Fetcher;
-  /** The `oms` gateway's SearchBilling entrypoint: signed-in /search and /fetch calls are charged through it. */
-  BILLING: SearchBillingRpc;
+  /** The `oms` gateway's SearchBilling entrypoint: signed-in /search and /fetch calls are charged through it. Unbound fails closed. */
+  BILLING?: SearchBillingRpc;
 }
 
 /** Who a call is charged to in /usage. */
@@ -192,7 +174,8 @@ async function search(env: Env, deps: Deps, caller: Caller, query: string, count
   return json(200, { query, results: results.slice(0, count), backends, answered, cached: false });
 }
 
-async function fetchPage(env: Env, deps: Deps, caller: Caller, raw: string): Promise<Response> {
+/** The /fetch target checks — https URL, no credentials, public host — run before a call is charged. */
+async function validateFetch(raw: string, deps: Deps): Promise<URL | Response> {
   let url: URL;
   try {
     url = parseFetchUrl(raw);
@@ -207,6 +190,10 @@ async function fetchPage(env: Env, deps: Deps, caller: Caller, raw: string): Pro
     if (addresses.some(isPrivateAddress))
       return json(400, { error: 'private, loopback and link-local addresses are refused' });
   }
+  return url;
+}
+
+async function fetchPage(env: Env, deps: Deps, caller: Caller, url: URL): Promise<Response> {
   const key = `page:v2:${await sha256Hex(canonicalUrl(url.href) ?? url.href)}`;
   const hit = await env.CACHE.get<PageAnswer>(key, 'json');
   if (hit) return json(200, { ...hit, cached: true });
@@ -260,29 +247,47 @@ function rateLimiter(now: () => number): (digest: string, perMinute: number) => 
   };
 }
 
-/** Parses the body and runs /search or /fetch; the answers are the oms-search shapes. */
-async function serve(pathname: '/search' | '/fetch', request: Request, env: Env, deps: Deps, caller: Caller) {
+/** A validated /search or /fetch call; `kind` is what the call is billed as. */
+type Input = { kind: 'search'; query: string; count: number } | { kind: 'fetch'; url: URL };
+
+/** Body and route validation for /search and /fetch, run before any charge; a Response is the refusal. */
+async function readInput(pathname: '/search' | '/fetch', request: Request, deps: Deps): Promise<Input | Response> {
   let body: any;
   try {
     body = await request.json();
   } catch {
     return json(400, { error: 'body must be JSON' });
   }
+  if (pathname === '/search') {
+    const query = typeof body?.query === 'string' ? body.query.replace(/\s+/g, ' ').trim() : '';
+    if (!query || query.length > 400) return json(400, { error: 'query must be 1-400 characters' });
+    const count = body.count ?? 10;
+    if (!Number.isInteger(count) || count < 1 || count > MAX_RESULTS)
+      return json(400, { error: `count must be an integer 1-${MAX_RESULTS}` });
+    return { kind: 'search', query, count };
+  }
+  if (typeof body?.url !== 'string' || body.url.length > 2048)
+    return json(400, { error: 'url must be a string of at most 2048 characters' });
+  const url = await validateFetch(body.url, deps);
+  return url instanceof Response ? url : { kind: 'fetch', url };
+}
+
+/** Runs a validated input; an internal failure is a bare 500, like the pre-charge refusals above. */
+async function dispatch(input: Input, env: Env, deps: Deps, caller: Caller): Promise<Response> {
   try {
-    if (pathname === '/search') {
-      const query = typeof body?.query === 'string' ? body.query.replace(/\s+/g, ' ').trim() : '';
-      if (!query || query.length > 400) return json(400, { error: 'query must be 1-400 characters' });
-      const count = body.count ?? 10;
-      if (!Number.isInteger(count) || count < 1 || count > MAX_RESULTS)
-        return json(400, { error: `count must be an integer 1-${MAX_RESULTS}` });
-      return await search(env, deps, caller, query, count);
-    }
-    if (typeof body?.url !== 'string' || body.url.length > 2048)
-      return json(400, { error: 'url must be a string of at most 2048 characters' });
-    return await fetchPage(env, deps, caller, body.url);
+    return input.kind === 'search'
+      ? await search(env, deps, caller, input.query, input.count)
+      : await fetchPage(env, deps, caller, input.url);
   } catch {
     return json(500, { error: 'internal error' });
   }
+}
+
+/** Parses the body and runs /search or /fetch; the answers are the oms-search shapes. */
+async function serve(pathname: '/search' | '/fetch', request: Request, env: Env, deps: Deps, caller: Caller) {
+  const input = await readInput(pathname, request, deps).catch(() => json(500, { error: 'internal error' }));
+  if (input instanceof Response) return input;
+  return dispatch(input, env, deps, caller);
 }
 
 const gatewayError = (status: number, code: string, message: string, headers: Record<string, string> = {}) =>
@@ -338,50 +343,6 @@ async function sessionUser(request: Request, env: Env, deps: Deps): Promise<stri
   return userId;
 }
 
-const BILLING_PAGE = 'https://barestate.xyz/oms/billing';
-const billingUnavailable = () => gatewayError(503, 'SEARCH_BILLING_UNAVAILABLE', 'search billing is unavailable');
-
-/**
- * Charges one hosted call for a signed-in user before it is served. Returns the refusal or unavailability
- * response, or undefined when the charge went through; anything but a well-formed answer fails closed.
- */
-async function chargeSearch(
-  env: Env,
-  user: string,
-  kind: 'search' | 'fetch',
-  requestId: string,
-): Promise<Response | undefined> {
-  let result: SearchChargeResult;
-  try {
-    result = await env.BILLING.charge({ userId: user, requestId, kind });
-  } catch {
-    return billingUnavailable();
-  }
-  if (result?.ok === true) return undefined;
-  if (result?.ok === false) {
-    if (result.code === 'SEARCH_PAYMENT_REQUIRED')
-      return gatewayError(
-        402,
-        'SEARCH_PAYMENT_REQUIRED',
-        `Your free searches for this month are used up. Add credits or upgrade to Pro at ${BILLING_PAGE}`,
-      );
-    if (result.code === 'UNFUNDED_USAGE')
-      return gatewayError(
-        402,
-        'UNFUNDED_USAGE',
-        `You have unpaid usage on your OMS account. Settle it at ${BILLING_PAGE}`,
-      );
-  }
-  return billingUnavailable();
-}
-
-/** Gives a charge back when the call failed with nothing served; a failed refund must not mask the real error. */
-async function refundSearch(env: Env, user: string, requestId: string): Promise<void> {
-  try {
-    await env.BILLING.refund({ userId: user, requestId });
-  } catch {}
-}
-
 /** POST /oms/search/v1/search and /v1/fetch for signed-in OMS users. */
 async function userRoute(subpath: string, request: Request, env: Env, deps: Deps): Promise<Response> {
   const pathname = subpath === '/v1/search' ? '/search' : subpath === '/v1/fetch' ? '/fetch' : undefined;
@@ -391,18 +352,21 @@ async function userRoute(subpath: string, request: Request, env: Env, deps: Deps
   if (!user) return UNAUTHENTICATED();
   const wait = await gate(env).limit(`user:${user}`, USER_RATE_PER_MIN);
   if (wait) return gatewayError(429, 'RATE_LIMITED', 'Too many search calls; slow down.', retryAfter(wait));
+  // The request is validated before it is charged, so a malformed call is refused with no charge+refund pair.
+  const input = await readInput(pathname, request, deps).catch(() => json(500, { error: 'internal error' }));
+  if (input instanceof Response) return gatewayStyle(input);
   // Charged once per request, cache hits included; a call that does not answer 2xx is refunded below.
   const requestId = crypto.randomUUID();
-  const refusal = await chargeSearch(env, user, pathname === '/search' ? 'search' : 'fetch', requestId);
+  const refusal = await chargeSearch(env, user, input.kind, requestId);
   if (refusal) return refusal;
   let response: Response;
   try {
-    response = await serve(pathname, request, env, deps, { token: 'session', user });
+    response = await dispatch(input, env, deps, { token: 'session', user });
   } catch {
-    await refundSearch(env, user, requestId);
+    await refundSearch(env, user, requestId, input.kind);
     return gatewayError(500, 'SEARCH_UNAVAILABLE', 'internal error');
   }
-  if (!response.ok) await refundSearch(env, user, requestId);
+  if (!response.ok) await refundSearch(env, user, requestId, input.kind);
   return gatewayStyle(response);
 }
 

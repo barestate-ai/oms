@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { createApp, type Env, type SearchBillingRpc, type SearchChargeResult } from '../src/app.ts';
+import { createApp, type Env } from '../src/app.ts';
+import type { SearchBillingRpc, SearchChargeResult } from '../src/billing.ts';
 import { ContextDevGate } from '../src/gate.ts';
 
 export const TOKEN = 'bench-token-0123456789';
