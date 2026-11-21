@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { Semaphore } from '../src/semaphore.ts';
 import { SEARCH, searchBody, searchResult, setup, sleep } from './helpers.ts';
+
+const realSleep = async (ms: number) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) await new Promise((resolve) => setImmediate(resolve));
+};
 
 for (const status of [402, 429, 500, 502, 503]) {
   test(`search: context.dev ${status} returns 503 with Retry-After, pauses context.dev, never echoes the body`, async () => {
@@ -123,6 +128,47 @@ test('semaphore: waiters resume after a pause that began while a lease was activ
   assert.ok('lease' in grant);
   assert.ok(Date.now() - started <= 150);
   assert.ok(semaphore.inFlight === 1);
+});
+
+test('semaphore: an early pause wake is retried', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const semaphore = new Semaphore(1, 60_000);
+    const lease = await semaphore.acquire(10);
+    assert.ok('lease' in lease);
+    let resolved = false;
+    const waiter = semaphore.acquire(1_000).then((grant) => {
+      resolved = true;
+      return grant;
+    });
+    semaphore.pause(25);
+    semaphore.release(lease.lease);
+    mock.timers.tick(25);
+    assert.equal(resolved, false);
+    await realSleep(25);
+    mock.timers.tick(25);
+    if (!resolved) mock.timers.tick(1_000);
+    const grant = await waiter;
+    assert.ok('lease' in grant);
+    assert.equal(semaphore.inFlight, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('semaphore: pause wake timers stay within the runtime limit', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    delays.push(ms ?? 0);
+    return originalSetTimeout(callback, ms, ...args);
+  }) as typeof setTimeout;
+  try {
+    new Semaphore(1, 60_000).pause(2_147_483_647 + 1_000);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+  assert.deepEqual(delays, [2_147_483_647]);
 });
 
 test('worker: 30 concurrent searches put at most 5 calls in flight at context.dev, and all succeed', async () => {

@@ -1,5 +1,8 @@
 export type Grant = { lease: string } | { retryAfterMs: number; reason: 'busy' | 'paused' };
 
+// Node timers are signed 32-bit; longer pauses re-arm instead of overflowing to about 1 ms.
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 /**
  * At most `limit` leases out at once; callers wait up to `waitMs` in FIFO order, then get `busy`.
  * Leases expire after `leaseMs` so a caller that died without releasing cannot hold a slot forever.
@@ -11,6 +14,8 @@ export class Semaphore {
   private readonly active = new Map<string, number>();
   private readonly waiting: { grant: (lease: string) => void; timer: ReturnType<typeof setTimeout> }[] = [];
   private pausedUntil = 0;
+  private pauseWakeAt = 0;
+  private pauseTimer: ReturnType<typeof setTimeout> | undefined;
   private next = 0;
   peak = 0;
 
@@ -36,8 +41,27 @@ export class Semaphore {
 
   /** Pauses new grants for `ms` (Retry-After); only ever extends a pause. */
   pause(ms: number): void {
-    this.pausedUntil = Math.max(this.pausedUntil, this.now() + Math.max(0, ms));
-    const timer = setTimeout(() => this.drain(), this.pausedFor());
+    const duration = Math.max(0, ms);
+    this.pausedUntil = Math.max(this.pausedUntil, this.now() + duration);
+    this.pauseWakeAt = Math.max(this.pauseWakeAt, Date.now() + duration);
+    this.schedulePauseWake();
+  }
+
+  // setTimeout can fire just before Date.now() reaches the deadline, so re-arm until the wake time has passed.
+  private schedulePauseWake(): void {
+    if (this.pauseTimer) clearTimeout(this.pauseTimer);
+    const timer = setTimeout(
+      () => {
+        this.pauseTimer = undefined;
+        if (Date.now() < this.pauseWakeAt) {
+          this.schedulePauseWake();
+          return;
+        }
+        this.drain();
+      },
+      Math.min(Math.max(0, this.pauseWakeAt - Date.now()), MAX_TIMEOUT_MS),
+    );
+    this.pauseTimer = timer;
     if (!this.waiting.length) (timer as unknown as { unref?: () => void }).unref?.();
   }
 

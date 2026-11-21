@@ -2,9 +2,30 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { defaultHarnessEnvironment } from '../src/runtime/environment.ts';
 
 const moduleUrl = new URL('../src/runtime/environment.ts', import.meta.url).href;
 const image = `sha256:${'a'.repeat(64)}`;
+test('implicit Linux x64 dependencies are Docker-only while explicit dependencies apply to both backends', () => {
+  const previous = process.env.OMS_BENCH_DEPENDENCIES;
+  try {
+    delete process.env.OMS_BENCH_DEPENDENCIES;
+    assert.equal(defaultHarnessEnvironment(undefined, 'host').dependencies, undefined);
+    assert.equal(
+      defaultHarnessEnvironment(undefined, 'docker').dependencies,
+      process.platform === 'linux' && process.arch === 'x64'
+        ? new URL('../../../', import.meta.url).pathname
+        : undefined,
+    );
+    process.env.OMS_BENCH_DEPENDENCIES = '/explicit/locked-dependencies';
+    for (const backend of ['host', 'docker'] as const)
+      assert.equal(defaultHarnessEnvironment(undefined, backend).dependencies, '/explicit/locked-dependencies');
+  } finally {
+    if (previous === undefined) delete process.env.OMS_BENCH_DEPENDENCIES;
+    else process.env.OMS_BENCH_DEPENDENCIES = previous;
+  }
+});
+
 function environmentFor(configuredImage: string, programs: boolean) {
   return execFileSync(
     process.execPath,
