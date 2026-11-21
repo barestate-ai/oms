@@ -18,20 +18,25 @@ import { Conversation } from '../src/tui/transcript.ts';
 import { barrier, InterfaceTerminal } from '../test-support/interface-terminal.ts';
 import { chatFixture, clickText, fixture, quit, withHelpers } from '../test-support/fake-session.ts';
 
+/** A turn or command is running: the spinner row (a braille frame and what it is doing) sits above the composer. */
+const working = (screen: string): boolean => /(?:^|── )[⠁-⣿] \S/m.test(screen);
+/** The interface has drawn and nothing is running. A toast may be replacing the status row's hints for a moment. */
+const idle = (screen: string): boolean => screen.trim() !== '' && !working(screen);
+
 test('pointer navigation controls switch the same session without submitting its draft', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(120, 36);
   const session = f.harness.session;
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('Harness'));
+    await terminal.until((screen) => screen.includes('chat'));
     terminal.send('preserve pointer draft');
-    const before = await terminal.until((screen) => screen.includes('Workbench') && screen.includes('Commands'));
-    clickText(terminal, before, 'Workbench');
+    const before = await terminal.until((screen) => screen.includes('workbench') && screen.includes('chat'));
+    clickText(terminal, before, 'workbench');
     const editor = await terminal.until((screen) => screen.includes('No file open'));
     assert.equal(f.harness.session, session);
     assert.equal(editor.includes('preserve pointer draft'), false);
-    clickText(terminal, editor, 'Harness');
+    clickText(terminal, editor, 'chat');
     await terminal.until((screen) => screen.includes('preserve pointer draft'));
     assert.deepEqual(f.prompts, []);
     assert.equal(f.closed(), false);
@@ -73,30 +78,29 @@ test('cancelled workbench toolbar SGR gestures preserve composer focus and draft
   }
 });
 
-test('compact-start resize restores visible and usable composer controls', async () => {
+test('compact-start resize restores the full chrome and keeps the draft, Enter sends and Esc interrupts', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(40, 12);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('Harness'));
+    await terminal.until((screen) => idle(screen) || screen.includes('❯'));
     terminal.send('resized composer draft');
     await terminal.until((screen) => screen.includes('resized composer draft'));
     terminal.setSize(80, 24);
-    const expanded = await terminal.until((screen) => screen.includes('[ ↑ Send ]') && screen.includes('[ × Cancel ]'));
+    const expanded = await terminal.until((screen) => idle(screen));
     assert.ok(expanded.includes('resized composer draft'));
-    clickText(terminal, expanded, 'Send');
+    assert.doesNotMatch(expanded, /\[ [^\]]+ \]/, 'no bracket buttons');
+    terminal.send('\r');
     await terminal.until(() => f.prompts.length === 1);
     assert.deepEqual(f.prompts, ['resized composer draft']);
-    const running = await terminal.until(
-      (screen) => screen.includes('[ × Cancel ]') && screen.split('\n')[0]?.includes('agent') === true,
-    );
-    clickText(terminal, running, 'Cancel');
+    await terminal.until((screen) => working(screen));
+    terminal.send('\x1b');
     await terminal.until(() => f.abortRequested());
     f.abortGate.resolve();
     f.promptGate.resolve();
-    await terminal.until((screen) => screen.split('\n')[0]?.includes('idle') === true);
+    await terminal.until((screen) => idle(screen));
     terminal.setSize(40, 12);
-    await terminal.until((screen) => !screen.includes('[ ↑ Send ]'));
+    await terminal.until((screen) => !working(screen));
     terminal.send('compact typing');
     await terminal.until((screen) => screen.includes('compact typing'));
   } finally {
@@ -126,14 +130,15 @@ for (const [columns, rows] of [
     };
     const run = runOmsInterface(f.harness, { terminal });
     try {
-      await terminal.until((screen) => screen.split('\n')[0]?.includes('Harness') === true);
+      await terminal.until((screen) => screen.includes('❯'));
       terminal.send('agent draft 界');
       terminal.send('\x0b');
       terminal.send('open file.ts');
       terminal.send('\r');
       const editor = await terminal.until((screen) => screen.includes('SOURCE'));
       assert.ok(!editor.includes('agent draft 界'), 'inactive composer must not occupy editor space');
-      assert.ok(editor.includes('Ctrl+K'), 'global command entry stays discoverable');
+      // Hints give way to the facts on a narrow row; from 80 columns the editor offers the command menu.
+      if (columns >= 80) assert.ok(editor.includes('ctrl+k commands'), 'global command entry stays discoverable');
       terminal.send('/');
       terminal.send('\t');
       terminal.send('\x0b');
@@ -181,7 +186,8 @@ test('read-only status and help remain reachable during work without dispatching
     terminal.send('\x1b/');
     terminal.send('help');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Ctrl+K'));
+    // The help ends with the keyboard section; the conversation follows its end.
+    await terminal.until((screen) => screen.includes('F6 optionally cycles panes'));
     terminal.send('\x1b');
     terminal.send('!');
     await terminal.until((screen) => screen.includes('retained draft!'));
@@ -317,15 +323,15 @@ test('view switching during agent work preserves the live session, pending draft
     await terminal.until(() => f.prompts.length === 1);
     terminal.send('next draft 界🙂');
     terminal.send('\x1b[13~');
-    await terminal.until((screen) => screen.includes('Workbench') && !screen.includes('next draft 界🙂'));
+    await terminal.until((screen) => screen.includes('No file open') && !screen.includes('next draft 界🙂'));
     assert.equal(f.harness.session, session);
     assert.equal(f.closed(), false);
     assert.equal(f.abortRequested(), false);
     assert.deepEqual(f.prompts, ['running request']);
     terminal.send('\x1b[13~');
-    await terminal.until((screen) => screen.includes('Harness') && screen.includes('next draft 界🙂'));
+    await terminal.until((screen) => screen.includes('next draft 界🙂') && !screen.includes('No file open'));
     f.promptGate.resolve();
-    await terminal.until((screen) => screen.includes('idle'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 2);
     assert.deepEqual(f.prompts, ['running request', 'next draft 界🙂']);
@@ -511,7 +517,7 @@ test('Escape dismisses slash discovery without aborting the running session', as
     terminal.send('\x01');
     terminal.send('next request');
     f.promptGate.resolve();
-    await terminal.until((screen) => screen.includes('idle'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 2);
     assert.deepEqual(f.prompts, ['current request', 'next request']);
@@ -599,7 +605,7 @@ test('multiline paste and modified Enter submit losslessly; busy submit preserve
     await terminal.until((s) => s.includes('next draft'));
     assert.equal(f.prompts.length, 1);
     f.promptGate.resolve();
-    await terminal.until((s) => s.includes('idle'));
+    await terminal.until((s) => idle(s));
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 2);
     assert.equal(f.prompts[1], 'next draft');
@@ -620,10 +626,10 @@ test('with nothing connected the status line asks to connect instead of naming t
   const terminal = new InterfaceTerminal(120, 36);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    const screen = await terminal.until((s) => s.includes('No model selected'));
-    assert.match(screen, /No model selected · \/connect then \/model/);
+    const screen = await terminal.until((s) => s.includes('no model'));
+    assert.match(screen, /Run \/connect to sign in/);
     assert.doesNotMatch(screen, /default-model/);
-    assert.doesNotMatch(screen, /unavailable · \/model/);
+    assert.doesNotMatch(screen, /unavailable/);
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();
@@ -640,8 +646,8 @@ test('a chosen model whose provider needs setup still shows as unavailable once 
   const terminal = new InterfaceTerminal(120, 36);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    const screen = await terminal.until((s) => s.includes('other/chosen-model'));
-    assert.match(screen, /other\/chosen-model · unavailable · \/model/);
+    const screen = await terminal.until((s) => s.includes('chosen-model · unavailable'));
+    assert.match(screen, /chosen-model · unavailable/);
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();
@@ -695,6 +701,8 @@ test('stream snapshots and contextual tool results are visible without terminal 
       isError: false,
       result: { content: [{ type: 'text', text: '\x1b]52;c;INJECT\x07safe result\x1b[2J' }] },
     });
+    await terminal.until((s) => s.includes('1 line'));
+    terminal.send('\x0f');
     await terminal.until((s) => s.includes('safe result'));
     assert.ok(!terminal.output.includes('\x1b]52;c;INJECT'));
   } finally {
@@ -740,9 +748,10 @@ for (const awaitFrame of [false, true]) {
       terminal.send('draft survives');
       terminal.send('\x1b[12~');
       terminal.send('\t');
-      await terminal.until((s) => s.split('\n').at(-1)?.startsWith('requirements') === true);
+      await terminal.until((s) => /› .*R1/.test(s));
       terminal.setSize(40, 12);
-      if (awaitFrame) await terminal.until((s) => s.split('\n').at(-1)?.startsWith('input') === true);
+      // The sidebar gives way to the status chip in the next frame, and the focus returns to the composer.
+      if (awaitFrame) await terminal.until((s) => !s.includes('requirements'));
       terminal.send('!');
       await terminal.until((s) => s.includes('draft survives!'));
       terminal.setSize(110, 30);
@@ -777,7 +786,7 @@ test('agent cancellation stays busy until abort and the actual prompt both settl
     await terminal.until((s) => s.includes('after cancel'));
     assert.equal(f.prompts.length, 1);
     f.promptGate.resolve();
-    await terminal.until((s) => s.includes('idle'));
+    await terminal.until((s) => idle(s));
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 2);
     assert.equal(f.prompts[1], 'after cancel');
@@ -893,7 +902,7 @@ test('an admitted provider error leaves the input empty so the next message star
       message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Provider interrupted' },
     });
     f.promptGate.resolve();
-    await terminal.until((s) => s.includes('idle') && s.includes('Provider interrupted'));
+    await terminal.until((s) => idle(s) && s.includes('Provider interrupted'));
     terminal.send('next');
     const screen = await terminal.until((s) => s.includes('next'));
     assert.ok(!screen.includes('retry the precise requestnext'));
@@ -1044,7 +1053,7 @@ test('buffered submit and Escape retain the draft without starting a prompt', as
     terminal.send('do not dispatch');
     terminal.send('\r');
     terminal.send('\x1b');
-    await terminal.until((s) => s.includes('idle') && s.includes('do not dispatch'));
+    await terminal.until((s) => idle(s) && s.includes('do not dispatch'));
     assert.deepEqual(f.prompts, []);
     terminal.send('\x01');
     terminal.send('corrected request');
@@ -1092,16 +1101,16 @@ test('cancellation during delayed prompt preflight aborts the actual agent and r
     terminal.send('\r');
     await entered.promise;
     terminal.send('\x1b');
-    await terminal.until((s) => s.includes('cancelling'));
+    await terminal.until((s) => s.includes('Cancelling'));
     terminal.send('\x01');
     terminal.send('newer draft');
     preflight.resolve();
     await terminal.until(() => effectiveAborts === 1);
     terminal.send('\r');
-    await terminal.until((s) => s.split('\n')[0]?.includes('cancelling') === true && s.includes('newer draft'));
+    await terminal.until((s) => s.includes('Cancelling') && s.includes('newer draft'));
     assert.equal(calls, 1);
     f.abortGate.resolve();
-    await terminal.until((s) => s.includes('idle') && s.includes('newer draft'));
+    await terminal.until((s) => idle(s) && s.includes('newer draft'));
   } finally {
     preflight.resolve();
     stopped.resolve();
@@ -1195,7 +1204,7 @@ test('real SDK missing-auth preflight hides internal guidance while retaining an
     await terminal.screen();
     terminal.send('keep the auth-refused draft');
     terminal.send('\r');
-    const screen = await terminal.until((s) => s.includes('idle') && s.includes('keep the auth-refused draft'));
+    const screen = await terminal.until((s) => idle(s) && s.includes('keep the auth-refused draft'));
     assert.ok(!screen.includes('/login') && !screen.includes('pi-coding-agent') && !screen.includes('providers.md'));
     assert.equal(session.messages.length, 0);
     terminal.send('!');
@@ -1370,7 +1379,7 @@ for (const diagnostic of [
       await terminal.screen();
       terminal.send('auth draft');
       terminal.send('\r');
-      const screen = await terminal.until((s) => s.includes('idle') && s.includes('auth draft'));
+      const screen = await terminal.until((s) => idle(s) && s.includes('auth draft'));
       assert.ok(!screen.includes('/login') && !screen.includes('/internal/') && !screen.includes('providers.md'));
       terminal.send('!');
       await terminal.until((s) => s.includes('auth draft!'));
@@ -1396,10 +1405,13 @@ test('a large multiline diagnostic stays once in contextual conversation, not in
     await terminal.screen();
     terminal.send('editable diagnostic draft');
     terminal.send('\r');
+    const summary = await terminal.until((s) => s.includes('DIAGNOSTIC-BEGIN') && s.includes('ctrl+o to expand'));
+    assert.ok(!summary.includes('DIAGNOSTIC-END'), 'the error is a few rows until Ctrl+O opens it');
+    terminal.send('\x0f');
     const screen = await terminal.until((s) => s.includes('DIAGNOSTIC-END'));
     const rows = screen.split('\n');
     assert.ok(rows[0]?.includes('rental-ledger'), 'workspace header must remain at the top of the parsed viewport');
-    assert.ok(screen.includes('Budget low') && screen.includes('/status'));
+    assert.ok(screen.includes('budget 0% left'), 'a nearly spent budget shows in the status row');
     assert.ok(screen.includes('editable diagnostic draft'));
     assert.equal(screen.split('DIAGNOSTIC-END').length - 1, 1);
     assert.ok(!rows.at(-1)?.includes('detail-') && !rows.at(-1)?.includes('DIAGNOSTIC'));
@@ -1436,9 +1448,9 @@ test('untrusted metadata cannot add physical rows to the header, model badge, or
     terminal.send('\r');
     const screen = await terminal.until((s) => s.includes('Calculate'));
     assert.ok(screen.split('\n')[0]?.includes('repo metadata'));
-    assert.ok(screen.includes('local provider/test model'));
+    assert.ok(screen.includes('test model · ask'), 'the model name sits on the composer rule, on one row');
     assert.ok(screen.includes('Calculate rent exactly'));
-    assert.ok(screen.includes('Ctrl+K'));
+    assert.ok(screen.includes('/ commands'));
     terminal.send('usable composer');
     await terminal.until((s) => s.includes('usable composer'));
   } finally {
@@ -1468,7 +1480,7 @@ test('an admitted error is displayed once and cannot replace a newer editable dr
     });
     f.promptGate.resolve();
     const screen = await terminal.until(
-      (s) => s.includes('idle') && s.includes('newer draft') && s.includes('original provider detail'),
+      (s) => idle(s) && s.includes('newer draft') && s.includes('original provider detail'),
     );
     assert.equal(screen.split('ONCE-DIAGNOSTIC').length - 1, 1);
     assert.ok(!screen.split('\n').at(-1)?.includes('ONCE-DIAGNOSTIC'));
@@ -1487,7 +1499,7 @@ test('palette switching during live work preserves the session, editable draft a
   const f = fixture();
   const terminal = new InterfaceTerminal();
   const changes: string[] = [];
-  const run = runOmsInterface(f.harness, { terminal, onThemeChange: (theme) => changes.push(theme) });
+  const run = runOmsInterface(f.harness, { terminal, theme: 'gruvbox', onThemeChange: (theme) => changes.push(theme) });
   const liveSession = f.harness.session;
   const foreground = () =>
     terminal.vt.buffer.active
@@ -1573,11 +1585,15 @@ for (const [columns, rows] of [
       await terminal.screen();
       terminal.send('viewport draft');
       const screen = await terminal.until((s) => s.includes('viewport draft'));
-      assert.ok(screen.split('\n')[0]?.includes('rental-ledger'));
-      assert.ok(screen.includes('Budget low') && screen.includes('/status'));
+      // The header names the workspace from 30 rows; on a shorter terminal the empty state (and the status row when
+      // there is room) does.
+      const rowsOnScreen = screen.split('\n');
+      assert.ok((rows >= 30 ? rowsOnScreen[0] : screen)?.includes('rental-ledger'));
+      assert.ok(screen.includes('budget 0% left'), 'a nearly spent budget shows in the status row');
       for (let row = 0; row < rows; row++) {
         const edge = terminal.vt.buffer.active.getLine(row)?.getCell(columns - 1);
-        assert.ok(edge?.isBgDefault(), `row ${row} overrides the terminal background`);
+        assert.ok(edge?.isBgRGB(), `row ${row} paints the theme background`);
+        assert.equal(edge?.getBgColor(), Number.parseInt(getTheme('oms-ember')!.background.slice(1), 16));
       }
       terminal.send('\x1b[19~');
       terminal.send('!');
@@ -1634,7 +1650,7 @@ for (const restored of [false, true]) {
         f.emit({ type: 'message_start', message: { ...message, errorMessage: undefined } });
         f.emit({ type: 'message_end', message });
         f.promptGate.resolve();
-        await terminal.until((s) => s.includes('idle'));
+        await terminal.until((s) => idle(s));
         assert.equal(JSON.stringify(f.messages), canonical);
       }
       const screen = await terminal.until((s) => s.includes('RESERVED-FAILURE:'));
@@ -1697,7 +1713,7 @@ for (const diagnostic of [
           f.promptGate.resolve();
         }
         const screen = await terminal.until((s) => s.includes('anthropic'));
-        assert.ok(screen.includes('openai/current-model'), 'the current model badge remains unchanged');
+        assert.ok(screen.includes('current-model · ask'), 'the current model badge remains unchanged');
         assert.ok(!screen.includes('/login') && !screen.includes('/internal/') && !screen.includes('providers.md'));
         if (restored) assert.deepEqual(f.messages, [message]);
         else assert.deepEqual(f.messages, [{ role: 'user', content: 'current provider draft' }]);
@@ -1715,7 +1731,7 @@ for (const diagnostic of [
 }
 
 for (const accounting of ['unknown', 'exhausted'] as const) {
-  test(`critical budget ${accounting} remains visible in a narrow focused editor`, async () => {
+  test(`a ${accounting} budget ${accounting === 'exhausted' ? 'stays visible' : 'is left to /status'} in a narrow focused editor`, async () => {
     const f = fixture();
     const terminal = new InterfaceTerminal(40, 12);
     const original = f.harness.budget.snapshot();
@@ -1729,9 +1745,13 @@ for (const accounting of ['unknown', 'exhausted'] as const) {
       await terminal.screen();
       terminal.send('/workbench');
       terminal.send('\r');
-      const screen = await terminal.until((value) => value.includes('Workbench'));
-      assert.ok(screen.toLowerCase().includes(accounting));
-      assert.ok(screen.includes('/status'));
+      const screen = await terminal.until((value) => value.includes('No file open'));
+      if (accounting === 'exhausted') assert.ok(screen.includes('budget used up'));
+      else
+        assert.ok(
+          !/budget|unknown/i.test(screen.split('\n').at(-1) ?? ''),
+          'unknown accounting is not steady-state chrome',
+        );
       terminal.send('\x0b');
       terminal.send('harness');
       terminal.send('\r');
@@ -1755,7 +1775,7 @@ test('palette commands cannot consume an identical pending composer draft', asyn
     terminal.send('\x0b');
     terminal.send('workbench');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Workbench'));
+    await terminal.until((screen) => screen.includes('No file open'));
     terminal.send('\x0b');
     terminal.send('harness');
     terminal.send('\r');
@@ -1789,7 +1809,7 @@ test('Codex authentication choices stay visible inside the 40x12 interface viewp
   };
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('/ commands'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('/connect');
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('Codex'));
@@ -1811,15 +1831,15 @@ test('dismissed slash discovery reopens after clearing and retyping before anoth
   const terminal = new InterfaceTerminal(80, 24);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('/ commands'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('/');
-    await terminal.until((screen) => screen.includes('/files') && screen.includes('Navigate'));
+    await terminal.until((screen) => screen.includes('/files'));
     terminal.send('\x1b');
     await terminal.until((screen) => !screen.includes('/files'));
     terminal.send('\x01');
     terminal.send('\x7f');
     terminal.send('/');
-    await terminal.until((screen) => screen.includes('/files') && screen.includes('Navigate'));
+    await terminal.until((screen) => screen.includes('/files'));
     assert.deepEqual(f.prompts, []);
   } finally {
     await quit(terminal, run);
@@ -1833,7 +1853,7 @@ test('dirty quit at 40 columns shows its confirmation key before allowing discar
   f.harness.files = { ...f.harness.files, read: async () => ({ bytes: Buffer.from('source'), revision: 'r1' }) };
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('/ commands'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('/open file.ts');
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('source'));
@@ -1862,12 +1882,12 @@ test('plain slash navigates an empty workbench and file browser without consumin
   f.harness.files = { ...f.harness.files, list: async () => [{ path: 'one.ts', kind: 'file' }] };
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('/ commands'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('keep this draft');
     terminal.send('\x0b');
     terminal.send('workbench');
     terminal.send('\r');
-    await terminal.until((screen) => screen.split('\n')[0]?.includes('Workbench') === true);
+    await terminal.until((screen) => screen.includes('No file open'));
     terminal.send('/');
     terminal.send('files');
     terminal.send('\r');
@@ -1943,6 +1963,10 @@ const ART_INDEX = (
 ).map((entry) => ({ ...entry, label: `${entry.number} / ${entry.title}` }));
 
 /** The startup art on screen: its title row, picture and glyph span, found from the title line under it. */
+const CANVAS = Number.parseInt(getTheme('oms-ember')!.background.slice(1), 16);
+/** The conversation's width: a task shows its requirements sidebar (34 columns and a divider) from 120 columns. */
+const conversationWidth = (terminal: InterfaceTerminal): number =>
+  terminal.columns >= 120 ? terminal.columns - 35 : terminal.columns;
 function artOnScreen(terminal: InterfaceTerminal, screen: string) {
   const rows = screen.split('\n');
   const entry = ART_INDEX.find((candidate) => screen.includes(candidate.label));
@@ -1955,16 +1979,17 @@ function artOnScreen(terminal: InterfaceTerminal, screen: string) {
     glyphs = 0,
     coloured = 0;
   const colours = new Set<number>();
-  for (let y = titleRow - 2; y >= 0 && !rows[y]!.startsWith('╭'); y--) {
+  for (let y = titleRow - 2; y >= 0; y--) {
     const line = buffer.getLine(y)!;
     let rowGlyphs = 0;
-    for (let x = left; x < terminal.columns - 2; x++) {
-      // inside the frame and its scrollbar
+    for (let x = left; x < conversationWidth(terminal) - 2; x++) {
+      // inside the conversation and its scrollbar; the theme canvas is empty space
       const cell = line.getCell(x)!;
-      if (cell.getChars().trim() === '' && !cell.isBgRGB()) continue;
+      const painted = cell.isBgRGB() && cell.getBgColor() !== CANVAS;
+      if (cell.getChars().trim() === '' && !painted) continue;
       rowGlyphs++;
       right = Math.max(right, x);
-      if (cell.isBgRGB()) {
+      if (painted) {
         coloured++;
         colours.add(cell.getBgColor());
       }
@@ -2000,18 +2025,20 @@ function distinctColours(terminal: InterfaceTerminal): number {
 test('an empty session opens with startup art above the placeholder, and the art scrolls away with the conversation', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
-  const run = runOmsInterface(f.harness, { terminal });
+  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
   try {
-    const screen = await terminal.until((s) => !!artOnScreen(terminal, s) && s.includes('What are we building?'));
+    const screen = await terminal.until((s) => !!artOnScreen(terminal, s) && s.includes('Try:'));
     const art = artOnScreen(terminal, screen)!;
-    assert.ok(art.titleRow < screen.split('\n').findIndex((row) => row.includes('What are we building?')));
-    assert.ok(art.rows >= 20, `art is ${art.rows} rows`);
+    assert.ok(art.titleRow < screen.split('\n').findIndex((row) => row.includes('Try:')));
+    // A third of the window at most (50 rows), so the conversation keeps the rest.
+    assert.ok(art.rows >= 12 && art.rows <= Math.floor(50 / 3), `art is ${art.rows} rows`);
     assert.ok(
       Math.abs(Math.round((art.width * art.entry.height) / art.entry.width / 2) - art.rows) <= 1,
       `a ${art.width}-column art block should be about ${art.rows} rows`,
     );
     assert.ok(
-      art.width <= 156 && Math.abs(art.left - (160 - art.left - art.width)) <= 4,
+      art.width <= conversationWidth(terminal) - 4 &&
+        Math.abs(art.left - (conversationWidth(terminal) - art.left - art.width)) <= 4,
       `art at ${art.left}+${art.width} is not centred`,
     );
     assert.ok(
@@ -2038,10 +2065,10 @@ test('an empty session opens with startup art above the placeholder, and the art
   }
 });
 
-test('startup art follows the window size and is hidden when under 60 columns of picture fit in half the window', async () => {
+test('startup art follows the window size and is hidden when under 44 columns of picture fit in a third of the window', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
-  const run = runOmsInterface(f.harness, { terminal });
+  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
   try {
     const wide = artOnScreen(terminal, await terminal.until((s) => !!artOnScreen(terminal, s)))!;
     terminal.setSize(100, 50);
@@ -2053,12 +2080,12 @@ test('startup art follows the window size and is hidden when under 60 columns of
     const narrow = artOnScreen(terminal, await terminal.until(fits))!;
     assert.ok(narrow.width <= 98 && narrow.rows >= 10, `${narrow.width}x${narrow.rows}`);
     for (const [columns, rows] of [
-      [59, 40],
+      [43, 50],
       [100, 15],
       [120, 24],
     ] as const) {
       terminal.setSize(columns, rows);
-      const screen = await terminal.until((s) => s.includes('/workbench') && !s.includes(wide.entry.label));
+      const screen = await terminal.until((s) => s.includes('Try:') && !s.includes(wide.entry.label));
       assert.ok(distinctColours(terminal) < 30, `art still drawn at ${columns}x${rows}:\n${screen}`);
     }
   } finally {
@@ -2071,7 +2098,11 @@ test('/art names the picture, /art next changes it, /art off and on change the s
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
   const changes: string[] = [];
-  const run = runOmsInterface(f.harness, { terminal, onStartupArtChange: (mode) => changes.push(mode) });
+  const run = runOmsInterface(f.harness, {
+    terminal,
+    firstRun: true,
+    onStartupArtChange: (mode) => changes.push(mode),
+  });
   try {
     const first = artOnScreen(terminal, await terminal.until((s) => !!artOnScreen(terminal, s)))!;
     terminal.send('/art');
@@ -2118,11 +2149,12 @@ test('/art image uploads the real picture once over Kitty graphics, places what 
     const label = art.entry.label;
     assert.equal(art.coloured, 0, 'no mosaic under the picture');
 
-    const text = Array.from({ length: 20 }, (_, line) => `conversation line ${line + 1}`).join('\n');
+    // Enough lines that the top of the picture (a third of the 50 rows) scrolls away while its bottom stays.
+    const text = Array.from({ length: 36 }, (_, line) => `conversation line ${line + 1}`).join('\n');
     const message = { role: 'assistant', content: [{ type: 'text', text }] };
     f.emit({ type: 'message_start', message });
     f.emit({ type: 'message_end', message });
-    await terminal.until((s) => s.includes('conversation line 20'));
+    await terminal.until((s) => s.includes('conversation line 36'));
     assert.equal(uploads(), 1, 'scrolling re-places the uploaded picture instead of sending it again');
     // The picture's top scrolled away: the rest is placed again, cropped (the frame keeps pi-tui from doing it).
     assert.match(terminal.output, /\x1b_Ga=p,q=2,C=1,c=\d+,i=\d+,y=\d+,h=\d+,r=\d+\x1b\\/);
@@ -2153,7 +2185,7 @@ for (const [key, expected] of [
     };
     const run = runOmsInterface(f.harness, { terminal, view: 'workbench' });
     try {
-      await terminal.until((screen) => screen.includes('Workbench'));
+      await terminal.until((screen) => screen.includes('No file open'));
       assert.ok(approve);
       let settled = false;
       const pending = approve({ command: 'cat ~/.ssh/example', reasons: ['credential or wallet files'] }).then(
@@ -2162,7 +2194,7 @@ for (const [key, expected] of [
           return value;
         },
       );
-      await terminal.until((screen) => screen.includes('Allow host command?') && screen.includes('Y = allow'));
+      await terminal.until((screen) => screen.includes('Allow host command?') && screen.includes('Allow once'));
       assert.equal(settled, false);
       terminal.send(key);
       assert.equal(await pending, expected);
@@ -2183,7 +2215,7 @@ test('host approval denies on cancellation and shutdown', async () => {
   };
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('Harness'));
+    await terminal.until((screen) => idle(screen));
     assert.ok(approve);
     const controller = new AbortController();
     const pending = approve({ command: 'sudo true', reasons: ['sudo'] }, controller.signal);
@@ -2210,9 +2242,9 @@ test('a host approval from a helper names the helper', async () => {
   };
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('Harness'));
+    await terminal.until((screen) => idle(screen));
     const pending = approve!({ command: 'python x.py', reasons: ['sudo'], requester: 'build#2' });
-    await terminal.until((screen) => screen.includes('Allow host command from build#2?'));
+    await terminal.until((screen) => screen.includes('Allow host command?') && screen.includes('from build#2'));
     terminal.send('y');
     assert.equal(await pending, true);
   } finally {
@@ -2248,7 +2280,7 @@ test('/review runs keyless Phase A and opens counts and disclaimer in a read-onl
     },
   });
   try {
-    await terminal.until((screen) => screen.includes('Harness'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('/review');
     terminal.send('\r');
     const screen = await terminal.until((screen) => screen.includes('Security report fixture'));
@@ -2267,7 +2299,7 @@ test('/review runs keyless Phase A and opens counts and disclaimer in a read-onl
   }
 });
 
-test('the Cancel button is enabled only while cancellable work runs: a command, not a review or verification', async () => {
+test('Esc cancels only cancellable work: a command, not a review or verification', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(120, 36);
   const reviewGate = barrier<void>();
@@ -2278,23 +2310,24 @@ test('the Cancel button is enabled only while cancellable work runs: a command, 
       return 0;
     },
   });
-  const cancelRefused = (screen: string) => screen.includes('cancellation is unavailable');
   try {
-    await terminal.until((screen) => screen.includes('Harness'));
+    await terminal.until((screen) => idle(screen));
     terminal.send('/review');
     terminal.send('\r');
-    const reviewing = await terminal.until((screen) => screen.split('\n')[0]?.includes('review') === true);
-    // Disabled controls have no hit area: pressing Cancel must not produce the refusal.
-    clickText(terminal, reviewing, 'Cancel');
-    await new Promise((done) => setTimeout(done, 50));
-    assert.equal(cancelRefused(await terminal.until(() => true)), false);
+    await terminal.until((screen) => screen.includes('Reviewing the code'));
+    // A review runs to its backend timeout: Esc is refused and says so. (The first Esc closes the command menu the
+    // running command's draft still opens.)
+    terminal.send('\x1b');
+    terminal.send('\x1b');
+    await terminal.until((screen) => screen.includes('cancellation is unavailable'));
     reviewGate.resolve();
-    await terminal.until((screen) => screen.split('\n')[0]?.includes('idle') === true);
-    // A sandbox command is cancellable: its button works and aborts it.
+    await terminal.until((screen) => idle(screen));
+    // A sandbox command is cancellable: Esc aborts it.
     terminal.send('/run sleep 1');
     terminal.send('\r');
-    const running = await terminal.until((screen) => screen.split('\n')[0]?.includes('command') === true);
-    clickText(terminal, running, 'Cancel');
+    await terminal.until((screen) => screen.includes('Running a command'));
+    terminal.send('\x1b');
+    terminal.send('\x1b');
     await terminal.until((screen) => screen.includes('Cancellation requested'));
     f.commandGate.resolve({ exitCode: 0, stdout: '', stderr: '', timedOut: false, cancelled: true, truncated: false });
   } finally {
@@ -2558,7 +2591,7 @@ for (const model of ['sonnet', 'opus', 'haiku'])
       terminal.send(model);
       terminal.send('\r');
       const ready = await terminal.until((s) => s.includes(`Native Claude chat selected: claude-code/${model}`));
-      assert.match(ready, /\/help/);
+      assert.match(ready, new RegExp(`${model} · ask`), 'the composer rule names the chosen model');
       assert.doesNotMatch(ready, /\/connect|\/model/);
       assert.deepEqual(selections, [`claude-code/${model}`]);
       assert.deepEqual(f.prompts, []);
@@ -2618,7 +2651,7 @@ test('/session reports native Claude identity while a turn runs and /clear keeps
   };
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((s) => s.includes('Native chat') && s.includes('claude-code/sonnet'));
+    await terminal.until((s) => s.includes('sonnet · ask'));
     terminal.send('long native request');
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 1);
@@ -2719,7 +2752,7 @@ test('/clear starts a fresh conversation in the same task, keeping the session a
     terminal.send('first question');
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 1);
-    await terminal.until((s) => s.includes('idle'));
+    await terminal.until((s) => idle(s));
     terminal.send('/clear extra');
     terminal.send('\r');
     await terminal.until((s) => s.includes('Usage: /clear'));
@@ -2787,7 +2820,7 @@ test('Solana commands use the local chain, and /airdrop refuses a chain that is 
     calls.length = 0;
     terminal.send(`/airdrop ${wallet} 2`);
     terminal.send('\r');
-    await terminal.until((s) => s.includes('Refusing') && s.includes('devnet or mainnet'));
+    await terminal.until((s) => s.includes('Refusing') && s.includes('devnet or'));
     assert.deepEqual(calls, []);
     terminal.send('\x01');
     terminal.send('/program system');
@@ -2819,7 +2852,7 @@ test('/help lists the new commands under Solana; a bare /account still opens the
   }
 });
 
-test('a folder chat shows its folder in the footer, no panes or requirements, and hides the task commands', async () => {
+test('a folder chat shows its folder in the header, no requirements sidebar or frames, and hides the task commands', async () => {
   const f = fixture();
   const chat = f.harness as unknown as Record<string, unknown>;
   for (const field of ['workspace', 'task', 'evaluator', 'verify']) delete chat[field];
@@ -2842,8 +2875,8 @@ test('a folder chat shows its folder in the footer, no panes or requirements, an
   });
   try {
     const header = await terminal.until((screen) => screen.includes('solana-vault'));
-    assert.match(header, /\/projects\/solana-vault/);
-    assert.doesNotMatch(header, /Requirements|task|Harness|Workbench|╭|│/i);
+    assert.match(header.split('\n')[0]!, /◆ oms +solana-vault/, 'the folder is named, not its path');
+    assert.doesNotMatch(header, /\/projects\/solana-vault|requirements|╭|│/i);
     assert.match(header, /No project here, so this chat uses a scratch folder\./);
     terminal.send('/re');
     const menu = await terminal.until((screen) => screen.includes('/review'));
@@ -2886,21 +2919,24 @@ test('/yolo toggles unasked, unsandboxed commands and says so once', async () =>
   }
 });
 
-test('a chat opens to its conversation, keyboard legend, input and one footer line', async () => {
+test('a chat opens to a three-line empty state, a one-line composer and one status row', async () => {
   const f = chatFixture();
   const terminal = new InterfaceTerminal(100, 30);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    const screen = await terminal.until((s) => s.includes('/help'));
+    const screen = await terminal.until((s) => idle(s));
     assert.doesNotMatch(screen, /\/connect|\/model/);
-    assert.match(screen, /\/fixtures\/rental-ledger +local\/test-model/);
-    assert.match(screen.replace(/\s+/g, ' '), /Press Enter to send\..*Press Ctrl\+Q to quit\./);
-    assert.doesNotMatch(screen, /Harness|Workbench|Commands \]|╭|╰|Conversation|Agent ·|input ·/);
-    const rows = screen.split('\n').filter((row) => row.trim());
-    assert.ok(
-      rows.length <= 6,
-      `only the hint, wrapped legend, two rules and the footer are drawn, got ${rows.length}`,
-    );
+    const rows = screen.split('\n');
+    assert.match(rows[0]!, /^◆ oms +rental-ledger +chat +workbench\s*$/);
+    const empty = rows.findIndex((row) => row.startsWith('◆ oms 0.'));
+    assert.ok(empty > 0, 'the empty state names OMS and its version');
+    assert.match(rows[empty + 1]!, /^ {2}test-model · rental-ledger\s*$/);
+    assert.match(rows[empty + 2]!, /^ {2}Try: /);
+    assert.match(screen, /^❯ Ask OMS to build, test or explain a program…\s*$/m);
+    assert.match(screen, /^─+ test-model · ask ─\s*$/m, 'the composer rule names the model and the approval mode');
+    assert.match(rows.at(-1)!, /^ {2}\/ commands · \? shortcuts · ctrl\+q quit/);
+    assert.doesNotMatch(screen, /Press Enter|\[ |╭|╰|Conversation|Agent ·|input ·/);
+    assert.ok(rows.filter((row) => row.trim()).length <= 9, 'header, three lines, two rules, the input and the status');
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();
@@ -2952,11 +2988,14 @@ for (const [columns, rows] of [
       for (let i = 0; i < 3; i++) terminal.send('\x1b[B');
       terminal.send('\r');
       const full = await terminal.until((s) => s.includes('Provider 4 API key'));
-      clickText(terminal, full, 'Back');
+      assert.ok(full.includes('esc back'), 'the panel border says how to go back');
+      terminal.send('\x1b');
       const short = await terminal.until((s) => s.includes('Other providers (2 more)'));
       assert.doesNotMatch(short, /Provider 4 API key/);
-      clickText(terminal, short, 'Back');
-      const home = await terminal.until((s) => s.includes('/connect to sign in'));
+      terminal.send('\x1b');
+      const home = await terminal.until(
+        (s) => s.includes('/connect to sign in') && !s.includes('Choose how to sign in'),
+      );
       assert.doesNotMatch(home, /Choose how to sign in/);
       assert.deepEqual(f.prompts, []);
     } finally {
@@ -2974,9 +3013,8 @@ test('with nothing connected the chat shows the full setup hint', async () => {
   const run = runOmsInterface(f.harness, { terminal });
   try {
     const screen = await terminal.until((s) => s.includes('/connect to sign in'));
-    assert.ok(
-      screen.replace(/\s+/g, ' ').includes('Run /connect to sign in, then /model to pick a model. Run /help for help.'),
-    );
+    assert.ok(screen.replace(/\s+/g, ' ').includes('Run /connect to sign in, then /model to pick a model'));
+    assert.match(screen, /No model connected · rental-ledger/);
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();
@@ -3021,7 +3059,7 @@ test('chat setup hint updates live after OAuth connection and model selection', 
     await terminal.until((s) => s.includes('Codex model'));
     terminal.send('\r');
     const ready = await terminal.until((s) => s.includes('Model: openai-codex/gpt-6.1-sol'));
-    assert.match(ready, /\/help/);
+    assert.match(ready, /gpt-6\.1-sol · ask/, 'the composer rule names the chosen model');
     assert.doesNotMatch(ready, /\/connect|\/model/);
   } finally {
     await quit(terminal, run);
@@ -3054,7 +3092,7 @@ for (const [columns, rows] of [
           .includes(notice),
         screen,
       );
-      assert.match(screen, /^Run \/connect to sign in or \/model/m);
+      assert.match(screen, /^! Run \/connect to sign in or \/model/m, 'a warning is marked and stays until replaced');
       assert.doesNotMatch(screen, /\.\.\.|…/);
       assert.deepEqual(f.prompts, []);
       terminal.send('!');
@@ -3070,36 +3108,30 @@ for (const [columns, rows] of [
   [80, 24],
   [60, 18],
 ] as const) {
-  test(`folder chat keeps its real keyboard legend and recovery visible at ${columns}x${rows}`, async () => {
+  test(`folder chat keeps its shortcuts hint and recovery visible at ${columns}x${rows}`, async () => {
     const f = chatFixture();
     f.model(false);
     (f.harness as unknown as { listModels(): unknown[] }).listModels = () => [];
     const terminal = new InterfaceTerminal(columns, rows);
     const run = runOmsInterface(f.harness, { terminal });
-    const legend =
-      'Press Enter to send. Use Shift+Enter for a newline. Type / for commands. Run /help keys for help. Press Ctrl+Q to quit.';
     const normalized = (screen: string) => screen.replace(/\s+/g, ' ');
     try {
       const initial = await terminal.until((s) => s.includes('/connect to sign in'));
-      assert.doesNotMatch(initial, /·/);
-      assert.ok(normalized(initial).includes(legend), initial);
-      assert.ok(
-        normalized(initial).includes('Run /connect to sign in, then /model to pick a model. Run /help for help.'),
-        initial,
-      );
-      assert.match(initial, /\/fixtures\/rental-ledger/);
+      assert.ok(normalized(initial).includes('Run /connect to sign in, then /model to pick a model'), initial);
+      assert.ok(initial.includes('/ commands'), 'the status row offers the command menu');
+      assert.match(initial, /rental-ledger/);
+      assert.doesNotMatch(initial, /Press Enter|Shift\+Enter/);
       terminal.send('Explain');
       terminal.send('\x1b[13;2u');
       terminal.send('this folder.');
       const draft = await terminal.until((s) => s.includes('this folder.'));
       assert.deepEqual(f.prompts, []);
-      assert.ok(normalized(draft).includes(legend), draft);
+      assert.match(draft, /^❯ Explain\s*$/m, 'the composer grew to two lines');
       terminal.send('\r');
       const refused = await terminal.until((s) => normalized(s).includes('Your draft is kept. No model is available.'));
-      assert.ok(normalized(refused).includes(legend), refused);
       assert.match(refused, /this folder\./);
       assert.ok(normalized(refused).includes('Run /connect to sign in or /model to choose a model.'));
-      assert.match(refused, /\/fixtures\/rental-ledger/);
+      assert.match(refused, /rental-ledger/);
       assert.deepEqual(f.prompts, []);
       assert.doesNotMatch(refused, /…|\.\.\./);
       f.model(true);
@@ -3142,7 +3174,7 @@ for (const [columns, rows] of [
           assert.match(screen, /Spend:/);
           assert.match(screen.replace(/\s+/g, ' '), /no model calls yet/);
         }
-        if (command === '/theme nord') assert.match(screen, /Theme:/);
+        if (command === '/theme nord') assert.match(screen, /Theme set to Nord/);
         assert.deepEqual(f.prompts, []);
       }
       terminal.send('/usage');
@@ -3168,7 +3200,7 @@ test('/exit leaves exactly as /quit does, cleanup included', async () => {
     const f = chatFixture();
     const terminal = new InterfaceTerminal(100, 30);
     const run = runOmsInterface(f.harness, { terminal });
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => idle(s));
     terminal.send(command);
     terminal.send('\r');
     await run;
@@ -3182,7 +3214,7 @@ test('Ctrl+D leaves from an empty input and does nothing while there is a draft'
   const f = chatFixture();
   const terminal = new InterfaceTerminal(100, 30);
   const run = runOmsInterface(f.harness, { terminal });
-  await terminal.until((s) => s.includes('/help'));
+  await terminal.until((s) => idle(s));
   terminal.send('draft text');
   await terminal.until((s) => s.includes('draft text'));
   terminal.send('\x04');
@@ -3200,37 +3232,31 @@ for (const [columns, rows] of [
   [80, 24],
   [60, 18],
 ] as const) {
-  test(`folder chat explains existing transcript scrolling at ${columns}x${rows}`, async () => {
+  test(`folder chat scrolls its transcript from the conversation and returns to the composer at ${columns}x${rows}`, async () => {
     const f = chatFixture();
     f.model(false);
     f.harness.listModels = () => [];
     const terminal = new InterfaceTerminal(columns, rows);
     const run = runOmsInterface(f.harness, { terminal });
     const normalized = (screen: string) => screen.replace(/\s+/g, ' ');
-    const hint = 'Press Tab, then PgUp/PgDn to scroll.';
     try {
-      const initial = await terminal.until((s) => s.includes('/connect to sign in'));
-      assert.ok(normalized(initial).includes(hint), initial);
+      await terminal.until((s) => s.includes('/connect to sign in'));
       terminal.send('/help');
       terminal.send('\r');
-      const help = await terminal.until((s) => s.includes('Look and account'));
-      assert.ok(normalized(help).includes(hint), help);
+      await terminal.until((s) => s.includes('Look and account'));
       terminal.send('\t');
-      await terminal.until((s) => normalized(s).includes('Use PgUp/PgDn to scroll.'));
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 8; i++) {
         terminal.send('\x1b[5~');
         await terminal.screen();
       }
       const scrolled = await terminal.until((s) => /\/connect +Sign in/.test(s));
       assert.match(scrolled, /\/model +Pick a model/);
       terminal.send('\x1b');
-      await terminal.until((s) => normalized(s).includes(hint));
       terminal.send('Explain this folder.');
       terminal.send('\r');
       const refused = await terminal.until((s) => normalized(s).includes('Your draft is kept. No model is available.'));
-      assert.ok(normalized(refused).includes(hint), refused);
       assert.match(refused, /Explain this folder\./);
-      assert.ok(refused.includes('/fixtures/rental-ledger'), refused);
+      assert.ok(refused.includes('rental-ledger'), refused);
       assert.deepEqual(f.prompts, []);
     } finally {
       await quit(terminal, run);
@@ -3244,7 +3270,7 @@ test('/help is a short list with one entry for leaving, and /help keys has the r
   const terminal = new InterfaceTerminal(110, 40);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => idle(s));
     terminal.send('/help');
     terminal.send('\r');
     const help = await terminal.until((s) => s.includes('/exit (or /quit)'));
@@ -3271,7 +3297,7 @@ test('/agents lists the agents with their source, then the helpers of this sessi
   const terminal = new InterfaceTerminal(130, 40);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => idle(s));
     terminal.send('/agents');
     terminal.send('\r');
     const screen = await terminal.until((s) => s.includes('This session'));
@@ -3293,7 +3319,7 @@ test('/agents new writes the file and says where; a bad name is refused in the n
   const terminal = new InterfaceTerminal(130, 40);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => idle(s));
     terminal.send('/agents new scanner --project --edit Scan programs for missing checks');
     terminal.send('\r');
     await terminal.until((s) => s.includes('/home/dev/.oms/agents/scanner.md'));
@@ -3315,7 +3341,7 @@ test('/team hands the goal to the agent with the instruction to use helpers', as
   const terminal = new InterfaceTerminal(130, 40);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => idle(s));
     terminal.send('/team add a header comment to each module');
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 1);
@@ -3338,7 +3364,7 @@ test('/team says plainly that helpers need a direct model when Claude Code is se
   const terminal = new InterfaceTerminal(130, 40);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => idle(s));
     terminal.send('/team do something');
     terminal.send('\r');
     await terminal.until((s) => s.includes('Helpers need a direct model'));

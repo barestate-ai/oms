@@ -10,7 +10,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from '@earendil-works/pi-tui';
-import { colorText, type OmsTheme } from './theme.ts';
+import { colorBg, colorText, type OmsTheme, type ThemeRole } from './theme.ts';
 import { displayText } from './transcript.ts';
 
 export interface ActionItem {
@@ -25,6 +25,12 @@ interface ActionBarOptions {
   theme: () => OmsTheme;
   render: () => void;
   onEscape?: () => void;
+  /** Columns of padding either side of a label (also its clickable area). Default 2. */
+  padding?: number;
+  /** Columns between actions. Default 1. */
+  gap?: number;
+  /** Color of an action that is neither active, selected nor disabled. Default foreground. */
+  inactive?: ThemeRole;
 }
 interface ActionHit {
   id: string;
@@ -37,7 +43,10 @@ function actionText(item: ActionItem): string {
   return displayText(`${item.icon ? item.icon + ' ' : ''}${item.label}`, 1000).replace(/[\r\n\t]/g, ' ');
 }
 
-/** One row of labelled actions; only fully visible actions can be activated. */
+/**
+ * One row of labelled actions drawn as plain words: the active one in accent and bold, a disabled one faint, and the
+ * keyboard-selected one on the raised surface. Only fully visible actions can be activated.
+ */
 export class ActionBar implements Component, Focusable {
   private readonly items: () => readonly ActionItem[];
   private readonly options: ActionBarOptions;
@@ -82,16 +91,18 @@ export class ActionBar implements Component, Focusable {
     if (!items.some((item) => item.id === this.selected && !item.disabled)) {
       this.selected = items.find((item) => !item.disabled)?.id;
     }
+    const padding = this.options.padding ?? 2;
+    const gap = this.options.gap ?? 1;
     const texts = items.map(actionText);
-    const sizes = texts.map((text) => visibleWidth(text) + 4);
+    const sizes = texts.map((text) => visibleWidth(text) + 2 * padding);
     const selectedIndex = items.findIndex((item) => item.id === this.selected);
     let start = 0;
     let used = 0;
     for (let index = 0; index <= selectedIndex; index++) {
-      used += sizes[index]! + (index > 0 ? 1 : 0);
+      used += sizes[index]! + (index > 0 ? gap : 0);
     }
     while (used > width && start < selectedIndex) {
-      used -= sizes[start]! + 1;
+      used -= sizes[start]! + gap;
       start++;
     }
     let line = '';
@@ -99,17 +110,20 @@ export class ActionBar implements Component, Focusable {
     const theme = this.options.theme();
     for (let index = start; index < items.length && column < width; index++) {
       const item = items[index]!;
-      if (column > 0) {
-        line += ' ';
-        column++;
+      if (column > 0 && gap > 0) {
+        const space = Math.min(gap, width - column);
+        line += ' '.repeat(space);
+        column += space;
       }
       if (column >= width) break;
       const text = texts[index]!;
       const full = sizes[index]! <= width - column;
       const selected = this.focused && item.id === this.selected && !item.disabled;
-      const label = truncateToWidth(`[ ${text} ]`, width - column, '');
-      const role = item.disabled ? 'muted' : item.active || selected ? 'accent' : 'foreground';
-      line += colorText(theme, role, selected ? `\x1b[4m${label}\x1b[24m` : label);
+      const label = truncateToWidth(' '.repeat(padding) + text + ' '.repeat(padding), width - column, '');
+      if (item.disabled) line += colorText(theme, 'faint', label);
+      else if (selected) line += colorBg(theme, 'selection', colorText(theme, 'foreground', `\x1b[1m${label}\x1b[22m`));
+      else if (item.active) line += colorText(theme, 'accent', `\x1b[1m${label}\x1b[22m`);
+      else line += colorText(theme, this.options.inactive ?? 'foreground', label);
       if (full && !item.disabled) this.hits.push({ id: item.id, text, start: column, end: column + sizes[index]! });
       column += visibleWidth(label);
       if (!full) break;

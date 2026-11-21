@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { setKeybindings } from '@earendil-works/pi-tui';
-import { displayDefinition } from '../src/tui/display-tools.ts';
-import { omsKeybindings } from '../src/tui/interface.ts';
+import { getTheme } from '../src/tui/theme.ts';
 import { Conversation } from '../src/tui/transcript.ts';
-
-setKeybindings(omsKeybindings({}));
 
 const usage = {
   input: 1,
@@ -59,15 +55,10 @@ const helperMessages = [
 function chat(): Conversation {
   const options = {
     cwd: '/work/project',
-    toolDefinition: (name: string) =>
-      displayDefinition(
-        name,
-        { name },
-        {
-          transcript: (id) =>
-            id === 'explore#1' ? new Conversation(helperMessages, undefined, { cwd: '/work/project' }) : undefined,
-        },
-      ),
+    helpers: {
+      transcript: (id: string) =>
+        id === 'explore#1' ? new Conversation(helperMessages, undefined, { cwd: '/work/project' }) : undefined,
+    },
   };
   return new Conversation([], undefined, options);
 }
@@ -93,7 +84,7 @@ function call(conversation: Conversation, id: string, agent: string, task: strin
   } as never);
 }
 
-test('a helper is one line: agent, task, then how it is going and its one-line result', () => {
+test('a helper is a row with its agent and task, and under it how it is going', () => {
   const conversation = chat();
   call(conversation, 'a1', 'explore', 'find what each module exports');
   conversation.accept({
@@ -106,7 +97,10 @@ test('a helper is one line: agent, task, then how it is going and its one-line r
       details: { id: 'explore#1', agent: 'explore', status: 'running', elapsedMs: 4000, tokens: 0 },
     },
   } as never);
-  assert.match(plain(conversation.render(120)), /explore "find what each module exports" · running 4s/);
+  assert.match(
+    plain(conversation.render(120)),
+    /[●○] Agent {2}explore · find what each module exports +4s\n {2}⎿ {2}running/,
+  );
   conversation.accept({
     type: 'tool_execution_end',
     toolCallId: 'a1',
@@ -125,17 +119,17 @@ test('a helper is one line: agent, task, then how it is going and its one-line r
     },
   } as never);
   const screen = plain(conversation.render(160));
-  const line = screen.split('\n').filter((row) => row.includes('explore'));
-  assert.equal(line.length, 1, 'one line for the helper');
-  assert.match(
-    line[0]!,
-    /explore "find what each module exports" · done 14s · 22k tokens · a\.ts exports a\. b\.ts exports b\./,
-  );
+  const rows = screen.split('\n').filter((row) => row.trim());
+  assert.equal(rows.length, 2, 'the helper is a row and one line of status');
+  assert.match(rows[0]!, /^● Agent {2}explore · find what each module exports +14s$/);
+  assert.match(rows[1]!, /^ {2}⎿ {2}done · 22k tokens · a\.ts exports a\. b\.ts exports b\./);
   assert.doesNotMatch(screen, /\[explore \| 14s/);
 });
 
-test('a helper that failed shows why, in the same line', () => {
+test('a helper that failed shows why under its row, in the error color', () => {
   const conversation = chat();
+  const theme = getTheme('gruvbox')!;
+  conversation.applyTheme(theme);
   call(conversation, 'a2', 'build', 'change a.ts');
   conversation.accept({
     type: 'tool_execution_end',
@@ -144,13 +138,19 @@ test('a helper that failed shows why, in the same line', () => {
     isError: true,
     result: { content: [{ type: 'text', text: 'build failed after 3s: stopped after 40 turns' }] },
   } as never);
+  const lines = conversation.render(160);
   assert.match(
-    plain(conversation.render(160)),
-    /build "change a\.ts" · failed · build failed after 3s: stopped after 40 turns/,
+    plain(lines),
+    /● Agent {2}build · change a\.ts\n {2}⎿ {2}failed · build failed after 3s: stopped after 40 turns/,
+  );
+  const error = theme.sgr.fg.error;
+  assert.ok(
+    lines.every((row) => row.includes(`\x1b[${error}m`)),
+    'the dot and the reason are in the error color',
   );
 });
 
-test("Ctrl+O opens the helper's own conversation: thinking, one-line tools, secrets masked", () => {
+test("Ctrl+O opens the helper's own conversation: thinking folded, one-line tools, secrets masked", () => {
   const conversation = chat();
   call(conversation, 'a1', 'explore', 'find exports');
   conversation.accept({
@@ -163,16 +163,16 @@ test("Ctrl+O opens the helper's own conversation: thinking, one-line tools, secr
       details: { id: 'explore#1', agent: 'explore', status: 'done', elapsedMs: 1000, tokens: 10 },
     },
   } as never);
-  assert.doesNotMatch(plain(conversation.render(120)), /Look at a\.ts first\./);
+  assert.doesNotMatch(plain(conversation.render(120)), /Thought/);
   conversation.toggleToolOutput();
   const expanded = plain(conversation.render(120));
-  assert.match(expanded, /Look at a\.ts first\./);
+  assert.match(expanded, /∴ Thought/);
   assert.match(expanded, /a\.ts exports a\./);
   assert.match(expanded, /API_TOKEN=••••/);
   assert.doesNotMatch(expanded, /abcdef123456/);
 });
 
-test('a long task is cut with an ellipsis, not with a display warning', () => {
+test('a long task is cut with an ellipsis at the width, not with a display warning', () => {
   const conversation = chat();
   const task =
     'In the project at /private/tmp/some/long/path read src/vault.ts and add a header comment naming its exports';
@@ -187,8 +187,9 @@ test('a long task is cut with an ellipsis, not with a display warning', () => {
       details: { id: 'build#3', agent: 'build', status: 'done', elapsedMs: 9000, tokens: 40_000 },
     },
   } as never);
-  const screen = plain(conversation.render(200));
-  assert.match(screen, /build "In the project at \/private\/tmp\/some\/long\/pa…" · done 9s · 40k tokens/);
+  const screen = plain(conversation.render(80));
+  assert.match(screen, /● Agent {2}build · In the project at \/private\/tmp\/some\/long\/path read src\/[^\n]*… +9s\n/);
+  assert.match(screen, /⎿ {2}done · 40k tokens/);
   assert.doesNotMatch(screen, /display truncated/);
 });
 
@@ -206,6 +207,6 @@ test('a helper stopped with the chat reads as cancelled, not failed', () => {
     },
   } as never);
   const screen = plain(conversation.render(160));
-  assert.match(screen, /explore "look around" · cancelled 55s · 0 tokens/);
+  assert.match(screen, /● Agent {2}explore · look around +55s\n {2}⎿ {2}cancelled · 0 tokens/);
   assert.doesNotMatch(screen, /failed/);
 });

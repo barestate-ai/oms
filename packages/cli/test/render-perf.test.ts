@@ -215,7 +215,7 @@ for (const kind of ['chat', 'task'] as const) {
     const terminal = new InterfaceTerminal(100, 30);
     const run = runOmsInterface(f.harness, { terminal, startupArt: 'off' });
     try {
-      await terminal.until((screen) => screen.includes('local/test-model') || screen.includes('/help'));
+      await terminal.until((screen) => screen.includes('/ commands'));
       for (const key of 'hello') {
         terminal.send(key);
         await settle();
@@ -238,7 +238,7 @@ test('an idle interface stops redrawing every second, and a running agent keeps 
   const terminal = new InterfaceTerminal(100, 30);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('/help'));
+    await terminal.until((screen) => screen.includes('/ commands'));
     await settle();
     const idle = frames.frames;
     t.mock.timers.tick(5000);
@@ -264,7 +264,7 @@ test('quitting with the workbench terminal running stops the shell before closin
   const terminal = new InterfaceTerminal(100, 30);
   const run = runOmsInterface(f.harness, { terminal });
   try {
-    await terminal.until((screen) => screen.includes('/help'));
+    await terminal.until((screen) => screen.includes('/ commands'));
     terminal.send('/terminal');
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('Terminal · running'));

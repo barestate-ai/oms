@@ -1,4 +1,4 @@
-import { homedir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { runReviewCommand } from '../review.ts';
 import {
   HStack,
@@ -9,14 +9,14 @@ import {
   Input,
   matchesKey,
   isKeyRelease,
+  stripTerminalSequences,
   truncateToWidth,
-  visibleWidth,
-  wrapTextWithAnsi,
   getKeybindings,
   setKeybindings,
   KeybindingsManager,
   TUI_KEYBINDINGS,
   type Component,
+  type OverlayHandle,
   type Terminal,
   type KeybindingsConfig,
 } from '@earendil-works/pi-tui';
@@ -26,7 +26,6 @@ import { createFileEditorPane } from './file-editor.ts';
 import {
   acceptsArgument,
   canRunWhileBusy,
-  commandMatches,
   findCommand,
   parseCommand,
   type CommandContext,
@@ -40,10 +39,35 @@ import { copyToClipboard } from '@earendil-works/pi-coding-agent';
 import { HarnessSettingsPane } from './harness-settings.ts';
 import { AccountPane } from './account.ts';
 import { ActionBar, PaneFrame } from './chrome.ts';
+import {
+  emptyStateRows,
+  headerLeft,
+  placeholderRow,
+  promptRow,
+  requirementsRows,
+  ruleRow,
+  warningRows,
+  type RuleLabel,
+} from './chrome-rows.ts';
+import { glyphsFor, inGlyphs } from './glyphs.ts';
+import { approvalCard, approvalCommandRows, approvalFullyShown, Panel } from './panel.ts';
+import { argumentUsage, popupStart, POPUP_ROWS, slashChoices, slashPopup } from './slash-popup.ts';
+import { SpinnerRow, toolVerb } from './spinner.ts';
+import {
+  budgetFact,
+  cachedBranch,
+  contextFact,
+  costFact,
+  shortModelName,
+  statusHints,
+  statusRow,
+  type StatusChip,
+  type StatusFact,
+} from './status-row.ts';
 import { WorkbenchPane } from './workbench.ts';
 import { TerminalPane } from './terminal-pane.ts';
-import { displayDefinition, type HelperDisplay } from './display-tools.ts';
-import { Conversation, describeValue, displayText, singleLine } from './transcript.ts';
+import type { HelperDisplay } from './display-tools.ts';
+import { Conversation, copyableText, describeValue, singleLine } from './transcript.ts';
 import { nativeChatDisplayHistory } from './claude-chat.ts';
 import type { CommandOutput, Prepared } from './prepared.ts';
 import { sessionLabel } from './inspect-commands.ts';
@@ -61,10 +85,15 @@ import {
   type OmsThemeId,
 } from './theme.ts';
 
+/** Only a selection that began in the conversation loses its glyph gutters; editor and terminal text is copied as it is. */
+export function selectionClipboardText(text: string, inTranscript: boolean): string {
+  return inTranscript ? copyableText(text) : text;
+}
+
 /** Clipboard writer for copy-on-select: true on success, otherwise the reason shown to the user. */
-async function copySelectionText(text: string): Promise<boolean | string> {
+async function copySelectionText(text: string, inTranscript: boolean): Promise<boolean | string> {
   try {
-    await copyToClipboard(text);
+    await copyToClipboard(selectionClipboardText(text, inTranscript));
     return true;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
@@ -87,17 +116,40 @@ interface Action {
 
 const MODEL_CONFIGURATION = 'Run /connect to sign in or /model to choose a model. Your draft is kept.';
 
+/** Starter ideas for the empty state and the composer's placeholder; one of each per session. */
+const SUGGESTIONS = [
+  'add a withdraw instruction with a signer check',
+  'write an Anchor test for the withdraw path',
+  'find why this account fails to deserialize',
+  'explain a program error and fix it',
+] as const;
+const PLACEHOLDERS = [
+  'Ask OMS to build, test or explain a program…',
+  'Try: write an Anchor test for the withdraw path',
+  'Try: add a transfer instruction with a signer check',
+  'Try: explain this program error and fix it',
+] as const;
+const hashOf = (text: string): number =>
+  [...text].reduce((sum, character) => (sum * 31 + character.charCodeAt(0)) >>> 0, 7);
+
+/** The release version for the empty state; empty when package.json is not where a source checkout keeps it. */
+function releaseVersion(): string {
+  try {
+    const version = (
+      JSON.parse(readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8')) as { version?: unknown }
+    ).version;
+    return typeof version === 'string' ? version.replace(/[^\w.+-]/g, '').slice(0, 32) : '';
+  } catch {
+    return '';
+  }
+}
+
 function hasModelConfiguration(model: { provider: string; id: string } | undefined): boolean {
   const provider = model?.provider.trim();
   const id = model?.id.trim();
   return !!provider && !!id && provider !== 'unknown' && id !== 'unknown';
 }
 
-function alignEnds(left: string, right: string, width: number): string {
-  if (visibleWidth(right) + 4 >= width) return truncateToWidth(left, width, '');
-  const start = truncateToWidth(left, width - visibleWidth(right) - 2, '');
-  return start + ' '.repeat(Math.max(1, width - visibleWidth(start) - visibleWidth(right))) + right;
-}
 /** Convert render-loop failures into rejection of this presentation's lifecycle. */
 class InterfaceRenderer extends TuiAltScreen {
   private readonly fail: (error: unknown) => void;
@@ -112,11 +164,26 @@ class InterfaceRenderer extends TuiAltScreen {
     mouseFocus: (component: Component) => Component,
   ) {
     // Selecting text copies it, like most coding CLIs; the terminal's own selection is captured by mouse mode.
-    super(terminal, true, undefined, { mouse: true, copyOnSelect: true, copySelection: copySelectionText });
+    const self: { renderer?: InterfaceRenderer } = {};
+    super(terminal, true, undefined, {
+      mouse: true,
+      copyOnSelect: true,
+      copySelection: (text) => copySelectionText(text, self.renderer?.selectionStartsInTranscript() ?? false),
+    });
+    self.renderer = this;
     this.fail = fail;
     this.palette = palette;
     this.prepareFrame = prepareFrame;
     this.mouseFocus = mouseFocus;
+  }
+  /** The conversation's scroll view, set once it exists. */
+  transcriptView: unknown;
+  /** Whether the current selection began inside the conversation. The renderer keeps its bounds in a private method. */
+  selectionStartsInTranscript(): boolean {
+    const bounds = (
+      this as unknown as { getSelectionBounds(): { start: { scrollView?: unknown } } | undefined }
+    ).getSelectionBounds?.();
+    return !!bounds && this.transcriptView !== undefined && bounds.start.scrollView === this.transcriptView;
   }
   /** Rows painted last frame, by their unpainted text; most rows do not change between frames. */
   private painted = new Map<string, string>();
@@ -169,7 +236,7 @@ export async function runOmsInterface(
     terminal?: Terminal;
     theme?: OmsThemeId;
     onThemeChange?: (theme: OmsThemeId) => void;
-    /** 'theme' paints the palette background on every row; the default 'terminal' keeps the terminal's own. */
+    /** 'theme' (the default) paints the palette background on every row; 'terminal' keeps the terminal's own. */
     background?: Backdrop;
     startupArt?: StartupArtMode;
     onStartupArtChange?: (mode: StartupArtMode) => void;
@@ -177,15 +244,30 @@ export async function runOmsInterface(
     onViewChange?: (view: 'harness' | 'workbench') => void;
     /** A note shown in the conversation when the interface opens. */
     startNote?: string;
+    /**
+     * Chips for the right side of the status row, read on every frame (cheap, no I/O): the local chain, connectors.
+     * Each draws as an optional colored dot and a short text, between the branch and the model. The local chain's own
+     * `surfpool` chip is added by the interface when the session's chain runs.
+     */
+    statusChips?: () => readonly StatusChip[];
+    /** The first launch: the startup art shows once. The launcher calls `onFirstRunShown` so it is not shown again. */
+    firstRun?: boolean;
+    onFirstRunShown?: () => void;
+    /** The version in the empty state; read from the release's package.json when omitted. */
+    version?: string;
   } = {},
 ): Promise<void> {
   const terminal = options.terminal ?? new ProcessTerminal();
-  const display = { depth: detectColorDepth(), backdrop: options.background ?? 'terminal' } as const;
-  let theme = getTheme(options.theme ?? DEFAULT_THEME_ID, display);
+  const display = { depth: detectColorDepth(), backdrop: options.background ?? 'theme' } as const;
+  // A 16-color terminal cannot draw the tinted themes: it gets the Terminal theme, which uses the terminal's own colors.
+  let theme = getTheme(display.depth === '16' ? 'terminal' : (options.theme ?? DEFAULT_THEME_ID), display);
   if (!theme) throw new Error(`Choose a theme from: ${THEME_IDS.join(', ')}`);
-  /** A folder chat is pi-minimal: the conversation, the input and one footer line. A pinned task keeps its panes. */
-  const minimal = harness.kind === 'chat';
-  let requirementsVisible = false;
+  /** The theme the user chose; a picker preview changes `theme` and goes back to this on Esc. */
+  let committedTheme = theme;
+  const glyphs = glyphsFor(process.env);
+  const chat = harness.kind === 'chat';
+  /** The user's F2 choice for the requirements sidebar; undefined follows the width (shown from 120 columns). */
+  let requirementsChoice: boolean | undefined;
   let view = options.view ?? 'harness';
   let terminalVisible = false;
   let agentPanelVisible = false;
@@ -216,10 +298,35 @@ export async function runOmsInterface(
   let harnessFocus: Focus = 'input';
   let workbenchFocus: Focus = 'editor';
   let selectedId: string | undefined;
+  /** A warning (or error) that stays until it is dismissed or replaced; confirmations are toasts instead. */
   let notice = '';
-  let hostApproval: { text: string; answer(allowed: boolean | 'session'): void } | undefined;
+  /** A confirmation shown in the status row for a few seconds. */
+  let toastText: string | undefined;
+  let toastTimer: NodeJS.Timeout | undefined;
+  let hostApproval:
+    | {
+        /** The conversation note's text; the card draws the same request as rows. */
+        text: string;
+        request: { requester?: string; reasons: readonly string[]; command: string; session: boolean };
+        /** The first command row the card shows; a command taller than the card scrolls. */
+        offset: number;
+        /** The last row of the command has been on screen, so Allow is open. */
+        read: boolean;
+        answer(allowed: boolean | 'session'): void;
+      }
+    | undefined;
+  /** A card that appears right after an answer ignores Allow until this time, so a repeated key cannot approve it unseen. */
+  let approvalGuardUntil = 0;
+  /** The running turn, for the spinner row, the terminal title and the progress bar. */
+  let busyStartedAt: number | undefined;
+  let currentTool: { id: string; name: string; args: unknown } | undefined;
+  let completedTokens = 0;
+  let streamingTokens = 0;
+  let shownTitle = '';
+  let progressShown = false;
   let checkedItems: Requirement[] = [];
   let setup: SetupPane | HarnessSettingsPane | AccountPane | undefined;
+  let overlayHandle: OverlayHandle | undefined;
   let commandIndex = 0;
   let commandDraft = '';
   let dismissedCommands: string | undefined;
@@ -245,8 +352,8 @@ export async function runOmsInterface(
         frameModels = undefined;
       });
       repairHiddenFocus();
-      composerLayoutEntry.basis = terminal.rows >= 24 ? 7 : terminal.rows >= 20 ? 6 : 3;
-      chatComposerEntry.basis = 2 + Math.max(1, Math.min(6, input.document.text.split('\n').length));
+      composerEntry.basis = 2 + composerLines();
+      syncActivity();
     },
     (component) => {
       if (setup) return setup.input;
@@ -270,18 +377,39 @@ export async function runOmsInterface(
   const requestRender = () => {
     if (!disposed) renderer.requestRender();
   };
+  /** The row above the composer while work runs; its Loader animates only while the turn does. */
+  const spinner = new SpinnerRow(
+    renderer,
+    () => theme!,
+    glyphs,
+    () => ({
+      verb: busyVerb(),
+      elapsedMs: busyStartedAt === undefined ? 0 : Date.now() - busyStartedAt,
+      tokens: completedTokens + streamingTokens,
+      canStop: canInterrupt(),
+    }),
+  );
   /** The model catalog is rebuilt on every read; a frame reads it once. */
   let frameModels: ReturnType<typeof harness.listModels> | undefined;
   let framing = false;
   const models = () => (framing ? (frameModels ??= harness.listModels()) : harness.listModels());
   /** The one busy rule: a model turn, a command, or a cancellation still settling. */
   const busy = () => !!active || externalBusy || !!externalCancellation;
-  /** Cancel does something only for cancellable work: the running action, or a turn this presentation did not start. */
-  const canCancel = () => (active ? active.cancellable : externalBusy);
-  const input = createFileEditorPane('', () => {
-    if (input.document.text !== dismissedCommands) dismissedCommands = undefined;
-    requestRender();
-  });
+  /** Esc can stop what is running: not a verification or review, nor a cancellation already under way, nor the shell's own keys. */
+  const canInterrupt = () =>
+    busy() &&
+    !closing &&
+    focus !== 'terminal' &&
+    !externalCancellation &&
+    (active ? active.cancellable && !active.cancellation : true);
+  const input = createFileEditorPane(
+    '',
+    () => {
+      if (input.document.text !== dismissedCommands) dismissedCommands = undefined;
+      requestRender();
+    },
+    { wrap: true },
+  );
   const workbench = new WorkbenchPane(harness, {
     theme: () => theme!,
     render: requestRender,
@@ -317,10 +445,10 @@ export async function runOmsInterface(
             const known = helperViews.get(id);
             if (known && known.count === messages.length) return known.view;
             const view = new Conversation(messages, (message, provider) => actionError('agent', message, provider), {
-              toolDefinition: (name) => displayDefinition(name, harness.session.getToolDefinition?.(name)),
               cwd: harness.root,
               requestRender: () => requestRender(),
             });
+            if (theme) view.applyTheme(theme);
             helperViews.set(id, { count: messages.length, view });
             return view;
           },
@@ -330,65 +458,55 @@ export async function runOmsInterface(
     nativeChatDisplayHistory(harness),
     (message, provider) => actionError('agent', message, provider),
     {
-      toolDefinition: (name) => displayDefinition(name, harness.session.getToolDefinition?.(name), helperDisplay),
+      helpers: helperDisplay,
+      rows: () => terminal.rows,
       cwd: harness.root,
       requestRender: () => requestRender(),
     },
   );
   conversation.applyTheme(theme);
   if (options.startNote) conversation.note('scratch folder', options.startNote);
-  const art = new StartupArt();
-  let artMode = options.startupArt ?? (minimal ? 'off' : 'auto');
+  // A third of the screen holds a picture of 44 or more columns from about 40 rows.
+  const art = new StartupArt(Math.random, 44);
+  // The picture shows on the first launch, or when /art turns it on.
+  let artMode = options.startupArt ?? (options.firstRun ? 'auto' : 'off');
   // Chosen from the environment (after the one Kitty graphics query over SSH) and again when /art changes the setting.
   let artShown = artShow(artMode, process.env);
   /** The image tier draws the mosaic until the picture is converted for Kitty graphics. */
   const loadArtImage = () => (artShown === 'image' ? art.loadImage().catch(() => {}) : Promise.resolve());
   let artViewport = 0,
     artHidden = 0;
+  const version = options.version ?? releaseVersion();
+  const sessionHash = hashOf(String(harness.session.sessionManager?.getSessionId?.() ?? ''));
+  const suggestion = SUGGESTIONS[sessionHash % SUGGESTIONS.length]!;
+  const composerPlaceholder = PLACEHOLDERS[sessionHash % PLACEHOLDERS.length]!;
+  /** The empty state: three lines at the top of a new conversation. */
   function placeholder(width: number): string[] {
-    const configured = hasModelConfiguration(harness.session.model);
-    if (minimal)
-      return wrapTextWithAnsi(
-        colorText(
-          theme!,
-          'muted',
-          !models().some((candidate) => candidate.configured)
-            ? 'Run /connect to sign in, then /model to pick a model. Run /help for help.'
-            : configured && selectedModelChoice()?.configured
-              ? 'Run /help for help.'
-              : 'Run /model to pick a model. Run /help for help.',
-        ),
-        Math.max(1, width - 1),
-      ).map((line) => ' ' + line);
-    const content = configured
-      ? [
-          colorText(theme!, 'accent', 'What are we building?'),
-          '',
-          'Describe a change below. Your agent works in this task.',
-          '',
-          '/workbench  Files and terminal',
-          '/help       Commands and keyboard controls',
-        ]
-      : [
-          colorText(theme!, 'accent', 'Start with your workspace'),
-          '',
-          '/connect    Connect a provider privately',
-          '/model      Choose a model',
-          '',
-          '/workbench  Edit files without a model',
-          'Never paste keys or sign-in codes into chat.',
-        ];
-    if (terminal.rows < 18)
-      return wrapTextWithAnsi(
-        configured ? '/workbench files · /help controls' : '/connect to begin · /workbench to edit',
-        width,
-      );
-    return ['', ...content.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width - 2)))].map((line) => ' ' + line);
+    const model = harness.session.model;
+    const connected = models().some((candidate) => candidate.configured);
+    const ready = !!model && hasModelConfiguration(model) && connected && selectedModelChoice()?.configured !== false;
+    return emptyStateRows(
+      theme!,
+      glyphs,
+      {
+        version,
+        model: ready ? shortModelName(model.id) : undefined,
+        folder: sessionLabel(harness),
+        rows: terminal.rows,
+      },
+      ready
+        ? `Try: ${suggestion}`
+        : !connected
+          ? 'Run /connect to sign in, then /model to pick a model'
+          : 'Run /model to pick a model',
+    ).map((line) => truncateToWidth(line, width, glyphs.ellipsis));
   }
   /** The art is the first block of the transcript, sized so it fits above the placeholder; it scrolls away with the conversation. */
   function artBlock(width: number, below: number, content: number): string[] {
     artViewport = transcript.viewportHeight;
-    const rows = Math.min(artViewport - 6, artViewport - 3 - below, Math.floor(terminal.rows / 2));
+    // A third of the screen at most, and none on a short terminal.
+    const rows =
+      terminal.rows < 20 ? 0 : Math.min(artViewport - 6, artViewport - 3 - below, Math.floor(terminal.rows / 3));
     const muted = (text: string) => colorText(theme!, 'muted', text);
     const block = art.block(width, rows, artShown, muted);
     // The layout scrolls after drawing: crop the picture for the rows it is about to scroll away, so no second frame.
@@ -396,14 +514,16 @@ export async function runOmsInterface(
     artHidden = transcript.isFollowingEnd ? end : Math.min(transcript.scrollTop, end);
     return artHidden ? art.block(width, rows, artShown, muted, artHidden) : block;
   }
+  let artRows = 0;
   const transcript = new (class extends ScrollView {
     // The viewport and scroll position are known only after the content renders: render again when they differ from
     // the ones the art was drawn for (the size, and for the real picture which rows are scrolled away).
     override updateLayout(contentHeight: number, viewportHeight: number, render: () => void): void {
       super.updateLayout(contentHeight, viewportHeight, render);
       if (
-        artMode !== 'off' &&
-        (Math.floor(viewportHeight) !== artViewport || (artShown === 'image' && this.scrollTop !== artHidden))
+        (artMode !== 'off' &&
+          (Math.floor(viewportHeight) !== artViewport || (artShown === 'image' && this.scrollTop !== artHidden))) ||
+        conversation.newOutputStale(this, contentHeight)
       )
         render();
     }
@@ -412,13 +532,21 @@ export async function runOmsInterface(
       invalidate() {
         conversation.invalidate();
       },
-      render(width) {
+      render(width): string[] {
         const lines = conversation.render(width);
         // The placeholder only shows, or sizes the art, when there is no conversation yet or art is on.
         const hint = lines.length && artShown === 'off' ? [] : placeholder(width);
         const body = lines.length ? lines : hint;
         const block = artBlock(width, hint.length, body.length);
-        return block.length ? [...block, ...body] : body;
+        artRows = block.length;
+        return conversation.withNewOutput(block.length ? [...block, ...body] : body, transcript, width);
+      },
+      // A click opens or folds the entry under it, or takes the view to the end from the '▼ new output' chip.
+      handleMouse(event) {
+        if (event.type !== 'click' || event.button !== 'left') return undefined;
+        const hit = conversation.click(event.y, artRows);
+        if (hit === 'end') transcript.scrollToEnd();
+        return hit ? { handled: true } : undefined;
       },
     },
     { primary: true, follow: 'end', scrollbar: 'auto' },
@@ -441,27 +569,125 @@ export async function runOmsInterface(
     }
   }
 
+  /** A warning that stays until it is replaced or dismissed with Escape. */
   function setNotice(text: string): void {
     notice = singleLine(text, 800);
     requestRender();
   }
+  /** A confirmation for three seconds, in place of the status row's hints. */
+  function toast(text: string): void {
+    toastText = singleLine(text, 200);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastText = undefined;
+      toastTimer = undefined;
+      requestRender();
+    }, 3000);
+    toastTimer.unref();
+    requestRender();
+  }
 
+  /** What the spinner row and the terminal title say the agent is doing. */
+  function busyVerb(): string {
+    if (hostApproval) return 'Waiting for approval';
+    if (closing) return 'Closing';
+    if (active?.cancellation || externalCancellation) return 'Cancelling';
+    if (currentTool) return toolVerb(currentTool.name, currentTool.args);
+    if (active && active.kind !== 'agent')
+      return active.kind === 'verification'
+        ? 'Verifying the requirements'
+        : active.kind === 'review'
+          ? 'Reviewing the code'
+          : 'Running a command';
+    return 'Thinking';
+  }
+  /**
+   * Once per frame: start and stop the spinner with the turn, keep the terminal's progress bar and its title
+   * (`⠹ oms · escrow — Reading lib.rs`) in step. Each is written only when it changes.
+   */
+  function syncActivity(): void {
+    const working = busy();
+    if (working && busyStartedAt === undefined) {
+      busyStartedAt = Date.now();
+      spinner.start();
+    } else if (!working && busyStartedAt !== undefined) {
+      busyStartedAt = undefined;
+      currentTool = undefined;
+      streamingTokens = 0;
+      spinner.stop();
+    }
+    if (working !== progressShown) {
+      progressShown = working;
+      terminal.setProgress(working);
+    }
+    if (!titleSaved) return;
+    const base =
+      harness.kind === 'chat'
+        ? `oms · ${singleLine(sessionLabel(harness), 120)}`
+        : `oms · ${singleLine(sessionLabel(harness), 120)} / ${singleLine(harness.task.id, 80)}`;
+    const frame =
+      glyphs.spinner[Math.floor((Date.now() - (busyStartedAt ?? 0)) / 1000) % glyphs.spinner.length] ?? glyphs.dot;
+    const title = working ? `${frame} ${base} — ${busyVerb()}` : base;
+    if (title !== shownTitle) {
+      shownTitle = title;
+      terminal.setTitle(title);
+    }
+  }
+
+  /** The text cursor takes the theme's accent (truecolor, painted themes); OSC 112 gives it back on exit. */
+  let cursorColored = false;
+  function colorCursor(): void {
+    if (disposed || display.depth !== 'truecolor' || theme!.ansi) return;
+    cursorColored = true;
+    terminal.write(`\x1b]12;${theme!.colors.accentFill}\x07`);
+  }
+  function applyTheme(next: OmsTheme): void {
+    theme = next;
+    conversation.applyTheme(next);
+    // Each helper transcript draws with its own style: recolor the ones already built.
+    for (const { view } of helperViews.values()) view.applyTheme(next);
+    if (cursorColored) colorCursor();
+    requestRender();
+  }
   function changeTheme(id: string): boolean {
     const next = getTheme(id, display);
     if (!next) {
       setNotice(`Unknown theme. Choose: ${THEME_IDS.join(', ')}; draft retained.`);
       return false;
     }
-    theme = next;
-    conversation.applyTheme(next);
+    committedTheme = next;
+    applyTheme(next);
     options.onThemeChange?.(next.id);
-    setNotice(`Theme: ${next.name}`);
+    toast(`Theme set to ${next.name}`);
     return true;
   }
+  /** The theme picker shows each theme as the cursor reaches it; closing without choosing restores the chosen one. */
+  function previewTheme(id: string): void {
+    const next = getTheme(id, display);
+    if (next && next !== theme) applyTheme(next);
+  }
   function closeSetup(): void {
+    if (theme !== committedTheme) applyTheme(committedTheme);
     setup?.dispose();
     setup = undefined;
+    overlayHandle?.hide();
+    overlayHandle = undefined;
     setFocus(focus);
+    requestRender();
+  }
+  /** The panel floats over the conversation; the setup pane owns the keys while it is open. */
+  function showPanel(pane: SetupPane | HarnessSettingsPane | AccountPane): void {
+    setup = pane;
+    overlayHandle ??= renderer.showOverlay(setupPanel, {
+      width: 72,
+      margin: 1,
+      anchor: 'center',
+      maxHeight: '100%',
+      nonCapturing: true,
+    });
+    // The approval card is never drawn under a panel: the panel waits behind it until the answer.
+    overlayHandle.setHidden(!!hostApproval);
+    renderer.setFocus(pane.input);
     requestRender();
   }
   function openSetup(mode: 'model' | 'connect' | 'theme' | 'settings', query = '', draft?: string): void {
@@ -474,19 +700,19 @@ export async function runOmsInterface(
     const shared = {
       theme: () => theme!,
       rows: () => terminal.rows,
-      bodyRows: () => Math.max(1, terminal.rows - (terminal.rows >= 20 ? 7 : 6) - (notice ? 1 : 0)),
+      bodyRows: () => setupPanel.bodyRows(),
       render: requestRender,
       close: closeSetup,
-      notice: setNotice,
+      notice: toast,
+      warn: setNotice,
     };
-    setup =
+    const pane =
       mode === 'settings'
         ? new HarnessSettingsPane(harness, shared)
-        : new SetupPane(harness, { ...shared, mode, query, selectTheme: changeTheme });
+        : new SetupPane(harness, { ...shared, mode, query, selectTheme: changeTheme, previewTheme });
     if (draft !== undefined) clearDraft(draft);
     notice = '';
-    renderer.setFocus(setup.input);
-    requestRender();
+    showPanel(pane);
   }
   function openAccount(mode: 'login' | 'logout' | 'account', draft?: string): void {
     if (closing) return;
@@ -495,16 +721,15 @@ export async function runOmsInterface(
       return;
     }
     setup?.dispose();
-    setup = new AccountPane(harness.account, {
+    const pane = new AccountPane(harness.account, {
       mode,
       theme: () => theme!,
       render: requestRender,
       close: closeSetup,
-      bodyRows: () => Math.max(1, terminal.rows - (terminal.rows >= 20 ? 7 : 6) - (notice ? 1 : 0)),
+      bodyRows: () => setupPanel.bodyRows(),
     });
     clearDraft(draft);
-    renderer.setFocus(setup.input);
-    requestRender();
+    showPanel(pane);
   }
   function openPalette(): void {
     if (setup) closeSetup();
@@ -516,7 +741,7 @@ export async function runOmsInterface(
   function currentCommands(): readonly OmsCommand[] | undefined {
     const draft = paletteInput?.getValue() ?? input.document.text;
     if (setup || closing || (!paletteInput && (focus !== 'input' || draft === dismissedCommands))) return undefined;
-    const choices = commandMatches(draft, harness.kind);
+    const choices = slashChoices(draft, harness.kind);
     if (draft !== commandDraft) {
       commandDraft = draft;
       commandIndex = 0;
@@ -598,25 +823,55 @@ export async function runOmsInterface(
     } else setNotice('Use /terminal, /terminal stop or /terminal hide.');
     requestRender();
   }
+  /** The requirements sidebar: a task, the conversation view, and room for it (shown from 120 columns, or when asked for from 100). */
   function requirementsShown(width = terminal.columns): boolean {
-    return view === 'harness' && requirementsVisible && width >= 78;
+    return harness.kind === 'task' && view === 'harness' && width >= 100 && (requirementsChoice ?? width >= 120);
   }
   function repairHiddenFocus(): void {
     if (setup) return;
     if (focus === 'requirements' && !requirementsShown()) setFocus('input');
+    // The header, and the actions bar in it, hide on a short terminal: its keys must not stay trapped there.
+    if (focus === 'actions' && !headerShown()) setFocus(view === 'harness' ? 'input' : 'editor');
     if (view === 'harness' && (focus === 'editor' || focus === 'terminal')) setFocus('input');
     if (view === 'workbench' && focus === 'terminal' && !terminalVisible) setFocus('editor');
     if (view === 'workbench' && focus === 'conversation' && (!agentPanelVisible || terminal.columns < 118))
       setFocus('input');
   }
   function toggleRequirements(): void {
-    requirementsVisible = !requirementsVisible;
+    requirementsChoice = !(requirementsChoice ?? terminal.columns >= 120);
     repairHiddenFocus();
     requestRender();
   }
   function selectedModelChoice() {
     const model = harness.session.model;
     return model && models().find((choice) => choice.provider === model.provider && choice.id === model.id);
+  }
+  // Earlier prompts and commands, for Up and Down in the composer; kept in memory for this session only.
+  const sent: string[] = [];
+  let sentIndex = 0;
+  let unsent = '';
+  function remember(text: string): void {
+    if (sent.at(-1) !== text) sent.push(text);
+    if (sent.length > 100) sent.shift();
+    sentIndex = sent.length;
+  }
+  /** Up on the first row recalls the previous message; Down on the last row goes forward again. True when it did. */
+  function recall(direction: -1 | 1): boolean {
+    const rows = input.rows(Math.max(1, terminal.columns - 2));
+    if (
+      direction < 0
+        ? input.position.line !== 1 || sentIndex === 0
+        : input.position.line < rows || sentIndex >= sent.length
+    )
+      return false;
+    if (sentIndex === sent.length) unsent = input.document.text;
+    sentIndex += direction;
+    const text = sentIndex === sent.length ? unsent : sent[sentIndex]!;
+    input.document.select(0, input.document.text.length);
+    input.document.insert(text);
+    input.focus.invalidate();
+    requestRender();
+    return true;
   }
   function clearDraft(snapshot: string | undefined): void {
     if (snapshot === undefined || input.document.text !== snapshot) return;
@@ -680,11 +935,11 @@ export async function runOmsInterface(
       if (active.cancellation) return;
       active.controller.abort();
       const action = active;
-      setNotice('Cancellation requested; awaiting the actual operation outcome.');
+      toast('Cancellation requested; awaiting the actual operation outcome.');
       if (action.kind === 'agent' && action.accepted) abortAgent(action);
       else action.cancellation = Promise.resolve();
     } else if (externalBusy && !externalCancellation) {
-      setNotice('Cancellation requested; awaiting the live session outcome.');
+      toast('Cancellation requested; awaiting the live session outcome.');
       externalCancellation = Promise.resolve()
         .then(() => harness.session.abort())
         .catch((error) => {
@@ -942,6 +1197,7 @@ export async function runOmsInterface(
     const composerDraft = fromPalette ? undefined : draft;
     if (!draft.trim()) return;
     const trimmed = draft.trim();
+    if (!fromPalette) remember(draft);
     if (trimmed === '/quit' || trimmed === '/exit') {
       quit();
       return;
@@ -998,213 +1254,306 @@ export async function runOmsInterface(
     });
   }
 
+  const component = (render: (width: number) => string[]): Component => ({ render, invalidate() {} });
+  const headerShown = () => terminal.rows >= 30;
+
+  // The requirements sidebar of a task: a divider, then the list.
   const rail: Component = {
     invalidate() {},
-    render(width) {
-      const lines = [colorText(theme!, 'muted', 'Requirements'), ''];
-      for (const item of checkedItems) {
-        const selected = item.id === selectedId;
-        lines.push(
-          colorText(
-            theme!,
-            selected ? 'accent' : 'foreground',
-            truncateToWidth(
-              `${selected ? '> ' : '  '}${singleLine(item.id, 80)}  ${singleLine(item.status, 80)}`,
-              width,
-            ),
-          ),
-        );
-        lines.push(truncateToWidth(`  ${singleLine(item.title, 400)}`, width), '');
-      }
-      if (lines.length === 2) lines.push('Task state unavailable');
-      return lines;
-    },
+    render: (width) =>
+      requirementsRows(theme!, glyphs, checkedItems, selectedId, focus === 'requirements', Math.max(1, width - 2)).map(
+        (line) => ' ' + line,
+      ),
   };
   const railView = new ScrollView(rail, { scrollbar: 'auto', overscroll: 'contain' });
+  let dividerLines: string[] = [];
+  let dividerKey = '';
+  const divider: Component = {
+    invalidate() {},
+    render() {
+      const line = colorText(theme!, 'border', glyphs.vertical);
+      const key = `${line}${terminal.rows}`;
+      if (key !== dividerKey) {
+        dividerKey = key;
+        dividerLines = Array<string>(terminal.rows).fill(line);
+      }
+      return dividerLines;
+    },
+  };
+
+  // Header: the mark, the folder or task and its branch on the left; the two views, as plain words, on the right.
   const appActions = new ActionBar(
     () => [
-      { id: 'harness', label: 'Harness', active: view === 'harness', onPress: () => submit('/harness', true) },
-      { id: 'workbench', label: 'Workbench', active: view === 'workbench', onPress: () => submit('/workbench', true) },
-      { id: 'commands', label: 'Commands', icon: '≡', onPress: () => openPalette() },
-      { id: 'files', label: 'Files', icon: '▸', onPress: () => submit('/files', true) },
-      { id: 'model', label: 'Model', disabled: busy(), onPress: () => openSetup('model') },
-      { id: 'settings', label: 'Settings', onPress: () => openSetup('settings') },
-      { id: 'help', label: 'Help', icon: '?', onPress: () => submit('/help', true) },
+      { id: 'chat', label: 'chat', active: view === 'harness', onPress: () => submit('/harness', true) },
+      { id: 'workbench', label: 'workbench', active: view === 'workbench', onPress: () => submit('/workbench', true) },
     ],
-    { theme: () => theme!, render: requestRender, onEscape: () => setFocus(view === 'harness' ? 'input' : 'editor') },
+    {
+      theme: () => theme!,
+      render: requestRender,
+      onEscape: () => setFocus(view === 'harness' ? 'input' : 'editor'),
+      padding: 1,
+      gap: 0,
+      inactive: 'faint',
+    },
   );
-  const composerActions = new ActionBar(
-    () => [
-      {
-        id: 'send',
-        label: 'Send',
-        icon: '↑',
-        disabled: !input.document.text.trim() || busy(),
-        onPress: () => submit(),
-      },
-      { id: 'cancel', label: 'Cancel', icon: '×', disabled: !canCancel(), onPress: cancel },
-      { id: 'commands', label: 'Commands', icon: '/', onPress: () => openPalette() },
-    ],
-    { theme: () => theme!, render: requestRender },
-  );
-  const setupActions = new ActionBar(
-    () => [
-      { id: 'back', label: 'Back', icon: '‹', onPress: () => setup?.handleInput('\x1b') },
-      { id: 'confirm', label: 'Confirm', icon: '↵', onPress: () => setup?.handleInput('\r') },
-    ],
-    { theme: () => theme!, render: requestRender },
-  );
-  const component = (render: (width: number) => string[]): Component => ({ render, invalidate() {} });
-  const header = component((width) => {
-    const state = closing
-      ? 'closing'
-      : active
-        ? active.cancellation
-          ? 'cancelling'
-          : active.kind
-        : externalBusy
-          ? 'agent running'
-          : 'idle';
-    const workspace = `${colorText(theme!, 'warning', 'oms')} · ${view === 'harness' ? 'Harness' : 'Workbench'} · ${singleLine(sessionLabel(harness), 160)}`;
-    const activity = `${state}${shell.cleanupUncertain ? ' · shell cleanup unknown' : shell.running ? ' · shell running' : ''}`;
-    return [paintThemeRow(theme!, alignEnds(workspace, activity, width), width)];
-  });
+  const branchName = () => (harness.kind === 'task' ? harness.task.branch : cachedBranch(harness.folder.path));
+  const header = new HStack([
+    {
+      component: component((width) => [headerLeft(theme!, glyphs, sessionLabel(harness), branchName(), width)]),
+      basis: 0,
+      grow: 1,
+      shrink: 1,
+      minSize: 0,
+    },
+    { component: appActions, basis: 17, shrink: 0 },
+    { component: component(() => [' ']), basis: 1, shrink: 0 },
+  ]);
+
+  // Composer: two rules, the prompt and the input, growing up to eight lines.
+  const composerMax = () => Math.max(1, Math.min(8, Math.floor(terminal.rows * 0.4)));
+  /** Rows of the draft, wrapped, at least one; one while the conversation has the focus. */
+  function composerLines(): number {
+    if (focus === 'conversation') return 1;
+    // The prompt takes two columns; long lines wrap onto more rows, up to the same cap.
+    return Math.max(1, Math.min(input.rows(Math.max(1, terminal.columns - 2)), composerMax()));
+  }
+  const composerLabel = (): RuleLabel[] => {
+    const model = harness.session.model;
+    const ready = !!model && hasModelConfiguration(model) && models().some((candidate) => candidate.configured);
+    const yolo = chat && harness.yolo.enabled();
+    return [
+      ready ? { text: shortModelName(model.id), role: 'muted' } : { text: 'no model', role: 'warning' },
+      yolo ? { text: 'yolo', role: 'error' } : { text: 'ask', role: 'muted' },
+    ];
+  };
+  const spinnerInRule = () => busy() && terminal.rows < 20 && !hostApproval;
+  // A draft taller than the composer scrolls: the top rule counts the rows above the view, so nothing is lost silently.
+  const clipped = (): RuleLabel[] =>
+    input.view.scrollTop > 0 && input.document.text
+      ? [{ text: inGlyphs(glyphs, `↑ ${Math.round(input.view.scrollTop)} more`), role: 'muted' }]
+      : [];
+  const topRule = component((width) => [
+    ruleRow(theme!, glyphs, width, focus === 'input', clipped(), spinnerInRule() ? spinnerLine() : undefined),
+  ]);
+  const bottomRule = component((width) => [ruleRow(theme!, glyphs, width, focus === 'input', composerLabel())]);
+  const promptColumn = component(() => [promptRow(theme!, glyphs, focus === 'input' && !setup)]);
+  const composerHint = (): string =>
+    inGlyphs(
+      glyphs,
+      !models().some((candidate) => candidate.configured)
+        ? 'Type /connect to sign in and pick a model'
+        : // The empty state above already suggests something to try.
+          (harness.session.messages?.length ?? 0) === 0
+          ? PLACEHOLDERS[0]
+          : composerPlaceholder,
+    );
+  const emptyComposer: Component = {
+    invalidate() {},
+    handleMouse(event) {
+      if (event.button !== 'left') return undefined;
+      if (event.type === 'click') setFocus('input');
+      return event.type === 'click' || event.type === 'press' ? { handled: true, focus: false } : undefined;
+    },
+    render: (width) => [placeholderRow(theme!, glyphs, composerHint(), !!input.focus.focused, width)],
+  };
+  const composerBody = new HStack([
+    { component: promptColumn, basis: 2, shrink: 0 },
+    { component: input.view, basis: 0, grow: 1, minSize: 1, visible: () => input.document.text !== '' },
+    { component: emptyComposer, basis: 0, grow: 1, minSize: 1, visible: () => input.document.text === '' },
+  ]);
+  const composer = new VStack([
+    { component: topRule, basis: 1, shrink: 0 },
+    { component: composerBody, basis: 0, grow: 1, minSize: 1 },
+    { component: bottomRule, basis: 1, shrink: 0 },
+  ]);
+  const paletteField = component((width) => paletteInput?.render(width) ?? []);
+  const paletteComposer = new VStack([
+    { component: component((width) => [ruleRow(theme!, glyphs, width, true)]), basis: 1, shrink: 0 },
+    { component: paletteField, basis: 1, shrink: 0 },
+    {
+      component: component((width) => [
+        ruleRow(theme!, glyphs, width, true, [{ text: 'commands · esc to close', role: 'muted' }]),
+      ]),
+      basis: 1,
+      shrink: 0,
+    },
+  ]);
+
+  // The row above the composer while work runs. On a short terminal it moves into the composer's top rule.
+  const spinnerLine = (): string => spinner.compact(Math.max(1, terminal.columns - 8));
+
+  // Slash popup: directly above the composer. A click runs the command under it; the wheel moves the selection.
+  const popupRows = () => Math.max(1, Math.min(POPUP_ROWS, terminal.rows - 10));
+  const commandMenu: Component = {
+    invalidate() {},
+    render(width) {
+      const choices = currentCommands();
+      if (!choices) return [];
+      return slashPopup(theme!, glyphs, choices, commandIndex, width, popupRows());
+    },
+    handleMouse(event) {
+      const choices = currentCommands();
+      if (!choices?.length) return undefined;
+      if (event.type === 'wheel' && event.wheelDelta) {
+        commandIndex = Math.max(0, Math.min(choices.length - 1, commandIndex + (event.wheelDelta < 0 ? -1 : 1)));
+        return { handled: true, focus: false };
+      }
+      if (event.button !== 'left') return undefined;
+      if (event.type === 'press') return { handled: true, focus: false };
+      if (event.type !== 'click') return undefined;
+      const choice = choices[popupStart(commandIndex, choices.length, popupRows()) + event.y];
+      if (choice) completeCommand(choice, true);
+      return { handled: true, focus: false };
+    },
+  };
+
+  // The warning that stays until dismissed, and the card for a host command that needs a yes or no.
+  const noticeRow = component((width) => warningRows(theme!, notice, width));
+  /** How many command rows the card shows at this terminal height; a longer command scrolls inside it. */
+  const approvalWindow = () => Math.max(2, Math.min(12, terminal.rows - 17));
+  /** The farthest the card's command can scroll. */
+  const approvalMaxOffset = () =>
+    hostApproval
+      ? Math.max(0, approvalCommandRows(hostApproval.request.command, terminal.columns).length - approvalWindow())
+      : 0;
+  /** Allow is open once the whole command has been on screen. */
+  const approvalRead = () => {
+    if (!hostApproval) return true;
+    const total = approvalCommandRows(hostApproval.request.command, terminal.columns).length;
+    hostApproval.read ||= approvalFullyShown(total, { rows: approvalWindow(), offset: hostApproval.offset });
+    return hostApproval.read;
+  };
+  let approvalLines: string[] = [];
+  const approvalRow: Component = {
+    invalidate() {},
+    render(width) {
+      approvalLines = hostApproval
+        ? approvalCard(theme!, glyphs, hostApproval.request, width, {
+            rows: approvalWindow(),
+            offset: hostApproval.read ? Math.min(hostApproval.offset, approvalMaxOffset()) : hostApproval.offset,
+          })
+        : [];
+      return approvalLines;
+    },
+    // A click on an option answers like its key: Allow stays shut until the command has been read.
+    handleMouse(event) {
+      if (!hostApproval || event.button !== 'left') return undefined;
+      if (event.type === 'press') return { handled: true, focus: false };
+      if (event.type !== 'click') return undefined;
+      const letter = /^│ {2}([ysn]) {2}/.exec(stripTerminalSequences(approvalLines[event.y] ?? ''))?.[1];
+      if (letter) answerApproval(letter as 'y' | 's' | 'n');
+      return { handled: true, focus: false };
+    },
+  };
+  /** Answer the approval card as its key does: n always denies; y and s wait for a fully shown command and the guard. */
+  function answerApproval(letter: 'y' | 's' | 'n'): void {
+    const asked = hostApproval;
+    if (!asked) return;
+    if (letter === 'n') asked.answer(false);
+    else if (!approvalRead() || Date.now() < approvalGuardUntil) return;
+    else if (letter === 'y') asked.answer(true);
+    else if (harness.kind === 'chat') asked.answer('session');
+  }
+
+  // Status row: key hints (or a toast) on the left, session facts on the right.
   const status = component((width) => {
     const model = harness.session.model;
     const choice = selectedModelChoice();
-    // Before anything is connected the session still holds a default model; do not present it as a pick the user made.
-    const nothingConnected = !models().some((candidate) => candidate.configured);
-    const modelLabel =
-      model && hasModelConfiguration(model) && !(nothingConnected && choice?.selectable === false)
-        ? `${model.provider === 'claude-code' ? 'Native chat · ' : ''}${singleLine(model.provider, 80)}/${singleLine(model.id, 120)}${choice?.selectable === false ? ' · unavailable · /model' : ''}`
-        : model && hasModelConfiguration(model)
-          ? 'No model selected · /connect then /model'
-          : 'No model · /connect or /model';
-    const budget = harness.budget.snapshot();
-    const scope =
-      budget.executionMode === 'interactive'
-        ? (['tokens', 'wallClockMs'] as const)
-        : (['tokens', 'spendMicroUsd', 'wallClockMs'] as const);
-    const low = scope.some((key) => budget.remaining[key] <= 0 || budget.remaining[key] <= budget.caps[key] * 0.1);
-    const exhausted = budget.exhausted;
-    const risk = exhausted
-      ? `Budget EXHAUSTED${budget.accounting === 'unknown' ? ' · unknown' : ''}`
-      : budget.accounting === 'unknown'
-        ? 'Budget unknown'
-        : low
-          ? 'Budget low'
-          : '';
-    const summary = risk ? `${risk} · /status${width >= 65 ? '  |  ' + modelLabel : ''}` : modelLabel;
-    return [truncateToWidth(colorText(theme!, risk ? 'warning' : 'muted', summary), width)];
-  });
-  const inputLabel = component((width) => {
-    if (minimal && !setup && !paletteInput) {
-      const scroll =
-        view !== 'harness'
-          ? ''
-          : focus === 'input'
-            ? ' Press Tab, then PgUp/PgDn to scroll.'
-            : ' Use PgUp/PgDn to scroll.';
-      return wrapTextWithAnsi(
-        colorText(
-          theme!,
-          'muted',
-          `Press Enter to send. Use Shift+Enter for a newline. Type / for commands. Run /help keys for help. Press Ctrl+Q to quit.${scroll}`,
-        ),
-        width,
-      );
-    }
-    const label = truncateToWidth(
-      setup
-        ? setup.label
-        : paletteInput
-          ? '─ Commands · Esc back'
-          : `─ ${focus === 'input' ? '> ' : ''}Agent · / commands${width >= 55 ? ' · Enter send · Shift+Enter newline' : ' · Enter send'}`,
-      width,
-      '',
-    );
-    return [
-      colorText(theme!, 'accent', label) +
-        colorText(theme!, 'muted', '─'.repeat(Math.max(0, width - visibleWidth(label)))),
-    ];
-  });
-  const noticeRow = component((width) => wrapTextWithAnsi(colorText(theme!, 'warning', notice), width));
-  const workingRow = component((width) => [
-    truncateToWidth(colorText(theme!, 'muted', ` ${active?.cancellation ? 'Cancelling...' : 'Working...'}`), width),
-  ]);
-  /** The folder, then the model, how full its context is, and YOLO when it is on. One line. */
-  const chatFooter = component((width) => {
-    const model = harness.session.model;
     const connected = models().some((candidate) => candidate.configured);
-    const parts: string[] = [];
-    if (model && hasModelConfiguration(model) && connected)
-      parts.push(colorText(theme!, 'muted', `${singleLine(model.provider, 60)}/${singleLine(model.id, 100)}`));
+    const facts: StatusFact[] = [];
+    if (!headerShown()) {
+      facts.push({ key: 'folder', text: sessionLabel(harness), role: 'muted' });
+      const branch = branchName();
+      if (branch) facts.push({ key: 'branch', text: branch, role: 'muted' });
+    }
+    if (harness.chain?.rpcUrl()) facts.push({ key: 'chip', text: 'surfpool', role: 'muted', dot: 'success' });
+    for (const chip of options.statusChips?.() ?? [])
+      facts.push({
+        key: 'chip',
+        text: singleLine(chip.text, 24),
+        role: chip.role ?? 'muted',
+        ...(chip.dot ? { dot: chip.dot } : {}),
+      });
+    if (shell.cleanupUncertain) facts.push({ key: 'chip', text: 'shell cleanup unknown', role: 'warning' });
+    if (harness.kind === 'task' && !requirementsShown(width) && checkedItems.length) {
+      const item = checkedItems.find((candidate) => candidate.id === selectedId) ?? checkedItems[0]!;
+      const closed = checkedItems.filter((candidate) => /^(?:closed|done|verified|passed)$/.test(candidate.status));
+      facts.push({
+        key: 'chip',
+        text: `${singleLine(item.id, 20)} ${singleLine(item.status, 20)} · ${closed.length}/${checkedItems.length}`,
+        role: 'muted',
+      });
+    }
+    // The composer's bottom rule already names the model; the status row does when that rule is not on screen, or the
+    // model needs attention.
+    const composerOnScreen = !paletteInput && (view === 'harness' || focus === 'input');
+    if (model && hasModelConfiguration(model) && connected) {
+      const name = shortModelName(model.id);
+      if (choice?.selectable === false) facts.push({ key: 'model', text: `${name} · unavailable`, role: 'warning' });
+      else if (!composerOnScreen) facts.push({ key: 'model', text: name, role: 'muted' });
+    } else if (!composerOnScreen) facts.push({ key: 'model', text: 'no model', role: 'warning' });
     const usage = harness.session.getContextUsage?.();
-    if (usage?.percent != null) parts.push(colorText(theme!, 'muted', `${usage.percent.toFixed(1)}%`));
+    if (usage?.percent != null) facts.push(contextFact(usage.percent));
     const budget = harness.budget.snapshot();
-    if (budget.accounting === 'unknown') parts.push(colorText(theme!, 'warning', 'usage unknown · /status'));
-    else if (budget.exhausted) parts.push(colorText(theme!, 'warning', 'budget used up · /status'));
-    if (harness.kind === 'chat' && harness.yolo.enabled()) parts.unshift(colorText(theme!, 'warning', 'YOLO'));
-    const right = parts.join(colorText(theme!, 'muted', ' · '));
-    const folderPath = harness.kind === 'chat' ? harness.folder.path : harness.root;
-    const home = homedir();
-    const folder = singleLine(
-      folderPath === home || folderPath.startsWith(home + '/') ? '~' + folderPath.slice(home.length) : folderPath,
-      400,
-    );
-    const room = Math.max(8, width - visibleWidth(right) - 4);
-    // The end of a long path says more than its start.
-    const shown = folder.length > room ? '…' + folder.slice(folder.length - room + 1) : folder;
-    return [paintThemeRow(theme!, alignEnds(colorText(theme!, 'muted', shown), right, width), width)];
-  });
-  const rule = component((width) => [colorText(theme!, 'border', '─'.repeat(Math.max(0, width)))]);
-  const chatComposer = new VStack([
-    { component: rule, basis: 1, shrink: 0 },
-    { component: input.view, basis: 0, grow: 1, minSize: 1 },
-    { component: rule, basis: 1, shrink: 0 },
-  ]);
-  const footer = component((width) => [
-    truncateToWidth(
-      colorText(
-        theme!,
-        'muted',
-        setup
-          ? setup.hint
-          : paletteInput
-            ? '↑↓ choose · Enter run · Esc back'
-            : focus === 'editor' || focus === 'terminal'
-              ? `${focus} · Ctrl+K commands · Ctrl+L agent${width >= 65 ? ' · /help keys' : ''}`
-              : `${focus} · Ctrl+K commands · /help${width >= 65 ? ' keys · Ctrl+L agent' : ''}`,
-      ),
-      width,
-      '',
-    ),
-  ]);
-  const commandMenu = component((width) => {
-    const choices = currentCommands();
-    if (!choices) return [];
-    if (!choices.length) return [colorText(theme!, 'warning', 'No matching commands. Use /help.')];
-    const count = Math.max(1, Math.min(10, terminal.rows - 10));
-    const start = Math.max(0, commandIndex - count + 1);
+    const cost = budget.accounting === 'unknown' ? undefined : costFact(budget.used.spendMicroUsd);
+    if (cost) facts.push(cost);
+    // An unknown allowance is reported by /status; only a nearly spent or used-up one interrupts the steady state.
+    const low = budget.accounting === 'unknown' && !budget.exhausted ? undefined : budgetFact(budget);
+    if (low) facts.push(low);
+    if (chat && harness.yolo.enabled()) facts.push({ key: 'yolo', text: 'YOLO', role: 'error', bold: true });
+    const draft = paletteInput?.getValue() ?? input.document.text;
+    const popup = currentCommands() !== undefined;
+    const usageHint = popup || paletteInput ? undefined : argumentUsage(draft, harness.kind);
     return [
-      colorText(theme!, 'muted', `Commands · ${commandIndex + 1}/${choices.length}`),
-      ...choices
-        .slice(start, start + count)
-        .map((command, offset) =>
-          colorText(
-            theme!,
-            start + offset === commandIndex ? 'accent' : 'foreground',
-            truncateToWidth(
-              `${start + offset === commandIndex ? '> ' : '  '}/${command.name.padEnd(12)} ${command.group}${width >= 65 ? ' · ' + command.description : ''}`,
-              width,
-              '',
-            ),
-          ),
-        ),
+      statusRow(theme!, glyphs, {
+        width,
+        facts,
+        ...(toastText !== undefined && !hostApproval ? { toast: toastText } : {}),
+        hints: statusHints({
+          ...(hostApproval
+            ? {
+                approval: !approvalRead()
+                  ? ('read' as const)
+                  : hostApproval.request.session
+                    ? ('once-or-session' as const)
+                    : ('once' as const),
+              }
+            : {}),
+          overlay: !!setup,
+          busy: busy(),
+          canInterrupt: canInterrupt(),
+          popup: popup || !!paletteInput,
+          ...(usageHint ? { usage: usageHint } : {}),
+          view,
+          focus,
+        }),
+      }),
     ];
   });
-  const setupBody = component((width) => setup?.body.render(width) ?? []);
+
+  const setupBody: Component = {
+    invalidate() {},
+    render: (width) => setup?.body.render(width) ?? [],
+    handleMouse: (event) => setup?.body.handleMouse?.(event),
+  };
   const setupInput = component((width) => setup?.input.render(width) ?? []);
+  /** The floating panel for the model, connect, theme, settings and account screens: 60% of the rows, 72 columns. */
+  const overlayRows = () =>
+    terminal.rows < 24
+      ? // From 20 rows the centered panel stays clear of the composer's rules and the status row; below that every row counts.
+        Math.max(5, terminal.rows - (terminal.rows >= 20 ? 8 : 2))
+      : Math.min(terminal.rows - 2, Math.max(14, Math.floor(terminal.rows * 0.6)));
+  const setupPanel = new Panel({
+    theme: () => theme!,
+    glyphs,
+    title: () => setup?.label ?? '',
+    hint: () => setup?.hint ?? '',
+    body: setupBody,
+    input: setupInput,
+    maxRows: overlayRows,
+    compact: () => terminal.rows < 24,
+  });
+  // The conversation, with no frame; a task's requirements sit in a sidebar to its right.
   const conversationFrame = new PaneFrame(transcript, {
     theme: () => theme!,
     title: () => 'Conversation',
@@ -1213,33 +1562,11 @@ export async function runOmsInterface(
     compact: () => terminal.rows < 20,
     onFocus: () => setFocus('conversation'),
   });
-  const composerBody = new VStack([
-    { component: input.view, basis: 0, grow: 1, minSize: 1 },
-    { component: composerActions, basis: 1, shrink: 0, visible: () => terminal.rows >= 20 },
+  const body = new HStack([
+    { component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+    { component: divider, basis: 1, shrink: 0, visible: (viewport) => requirementsShown(viewport.width) },
+    { component: railView, basis: 33, shrink: 0, visible: (viewport) => requirementsShown(viewport.width) },
   ]);
-  const composerFrame = new PaneFrame(composerBody, {
-    theme: () => theme!,
-    title: () => 'Agent · Enter send · / commands',
-    focused: () => focus === 'input',
-    rows: () => terminal.rows,
-    compact: () => terminal.rows < 20,
-    onFocus: () => setFocus('input'),
-  });
-  const setupFrame = new PaneFrame(setupBody, {
-    theme: () => theme!,
-    title: () => setup?.label ?? 'Setup',
-    focused: () => !!setup,
-    rows: () => terminal.rows,
-    compact: () => terminal.rows < 20,
-  });
-  const paletteField = component((width) => paletteInput?.render(width) ?? []);
-  const body = new HStack(
-    [
-      { component: railView, basis: 27, shrink: 0, visible: (viewport) => requirementsShown(viewport.width) },
-      { component: conversationFrame, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-    ],
-    { gap: 2 },
-  );
   const workbenchBody = new HStack(
     [
       { component: workbench.body, basis: 0, grow: 1, minSize: 1 },
@@ -1268,74 +1595,28 @@ export async function runOmsInterface(
       visible: () => terminalVisible && (terminal.rows >= 20 || focus === 'terminal'),
     },
   ]);
-  const approvalRow = component((width) =>
-    hostApproval ? wrapTextWithAnsi(displayText(hostApproval.text, 4096), width) : [],
-  );
   const layoutRoot = new VStack([
+    { component: header, basis: 1, shrink: 0, visible: headerShown },
+    { component: component(() => ['']), basis: 1, shrink: 0, visible: headerShown },
+    { component: body, basis: 0, grow: 1, shrink: 1, minSize: 1, visible: () => view === 'harness' },
+    { component: workbenchLayout, basis: 0, grow: 1, shrink: 1, minSize: 1, visible: () => view === 'workbench' },
     { component: approvalRow, basis: 'auto', shrink: 0, visible: () => !!hostApproval },
-    { component: header, basis: 'auto', shrink: 1, minSize: 1, visible: () => !minimal },
-    { component: appActions, basis: 1, shrink: 0, visible: () => !minimal && !setup && !paletteInput },
-    {
-      component: transcript,
-      basis: 0,
-      grow: 1,
-      shrink: 1,
-      minSize: 1,
-      visible: () => minimal && !setup && view === 'harness',
-    },
-    {
-      component: body,
-      basis: 0,
-      grow: 1,
-      shrink: 1,
-      minSize: 1,
-      visible: () => !minimal && !setup && view === 'harness',
-    },
-    {
-      component: workbenchLayout,
-      basis: 0,
-      grow: 1,
-      shrink: 1,
-      minSize: 1,
-      visible: () => !setup && view === 'workbench',
-    },
-    { component: setupFrame, basis: 0, grow: 1, shrink: 1, minSize: 1, visible: () => !!setup },
+    { component: spinner, basis: 1, shrink: 0, visible: () => busy() && !spinnerInRule() },
     { component: commandMenu, basis: 'auto', shrink: 0, visible: () => currentCommands() !== undefined },
     {
-      component: inputLabel,
-      basis: 'auto',
-      shrink: 0,
-      visible: () =>
-        !!paletteInput ||
-        (!!setup && terminal.rows < 20) ||
-        ((minimal || terminal.rows < 20) && (view === 'harness' || focus === 'input')),
-    },
-    {
-      component: composerFrame,
-      basis: terminal.rows >= 24 ? 7 : terminal.rows >= 20 ? 6 : 3,
-      shrink: 1,
-      minSize: 1,
-      visible: () => !minimal && !setup && !paletteInput && (view === 'harness' || focus === 'input'),
-    },
-    { component: workingRow, basis: 1, shrink: 0, visible: () => minimal && (!!active || externalBusy) },
-    {
-      component: chatComposer,
+      component: composer,
       basis: 3,
       shrink: 1,
       minSize: 3,
-      visible: () => minimal && !setup && !paletteInput && (view === 'harness' || focus === 'input'),
+      visible: () => !paletteInput && (view === 'harness' || focus === 'input'),
     },
-    { component: paletteField, basis: 1, shrink: 0, visible: () => !!paletteInput },
-    { component: setupInput, basis: 1, shrink: 0, visible: () => !!setup },
-    { component: setupActions, basis: 1, shrink: 0, visible: () => !!setup },
+    { component: paletteComposer, basis: 3, shrink: 0, visible: () => !!paletteInput },
     { component: noticeRow, basis: 'auto', shrink: 0, visible: () => !!notice },
-    { component: status, basis: 1, shrink: 0, visible: () => !minimal },
-    { component: footer, basis: 1, shrink: 0, visible: () => !minimal || !!setup || !!paletteInput },
-    { component: chatFooter, basis: 1, shrink: 0, visible: () => minimal && !setup && !paletteInput },
+    { component: status, basis: 1, shrink: 0 },
   ]);
-  const composerLayoutEntry = layoutRoot[LAYOUT_NODE]().entries.find((entry) => entry.component === composerFrame)!;
-  const chatComposerEntry = layoutRoot[LAYOUT_NODE]().entries.find((entry) => entry.component === chatComposer)!;
+  const composerEntry = layoutRoot[LAYOUT_NODE]().entries.find((entry) => entry.component === composer)!;
   renderer.setLayoutRoot(layoutRoot);
+  renderer.transcriptView = transcript;
   setFocus(focus);
   function changeFocus(backward = false): void {
     const order: Focus[] =
@@ -1362,17 +1643,28 @@ export async function runOmsInterface(
         const finish = (allowed: boolean | 'session') => {
           signal?.removeEventListener('abort', abort);
           hostApproval = undefined;
+          approvalGuardUntil = Date.now() + 700;
+          overlayHandle?.setHidden(false);
           requestRender();
           resolve(allowed);
         };
         const choices =
           harness.kind === 'chat' ? 'y = once · s = this session · n / Escape = deny' : 'Y = allow · N / Escape = deny';
-        hostApproval = {
+        const pending = (hostApproval = {
           text: `Allow host command${request.requester ? ` from ${singleLine(request.requester, 40)}` : ''}? ${request.reasons.join(', ')}\n${request.command}\n${choices}`,
+          request: {
+            ...(request.requester ? { requester: request.requester } : {}),
+            reasons: request.reasons,
+            command: request.command,
+            session: harness.kind === 'chat',
+          },
+          offset: 0,
+          read: false,
           answer: finish,
-        };
+        });
         signal?.addEventListener('abort', abort, { once: true });
-        conversation.note('Host approval required', hostApproval.text);
+        overlayHandle?.setHidden(true);
+        conversation.note('Host approval required', pending.text);
         requestRender();
       }),
   );
@@ -1381,9 +1673,26 @@ export async function runOmsInterface(
       repairHiddenFocus();
       if (isKeyRelease(data)) return { consume: true };
       if (hostApproval) {
-        if (data.toLowerCase() === 'y') hostApproval.answer(true);
-        else if (data.toLowerCase() === 's' && harness.kind === 'chat') hostApproval.answer('session');
-        else if (data.toLowerCase() === 'n' || matchesKey(data, 'escape')) hostApproval.answer(false);
+        const scroll = matchesKey(data, 'up')
+          ? -1
+          : matchesKey(data, 'down')
+            ? 1
+            : matchesKey(data, 'pageUp')
+              ? -approvalWindow()
+              : matchesKey(data, 'pageDown')
+                ? approvalWindow()
+                : matchesKey(data, 'home')
+                  ? -Infinity
+                  : matchesKey(data, 'end')
+                    ? Infinity
+                    : 0;
+        if (scroll) {
+          hostApproval.offset = Math.max(0, Math.min(approvalMaxOffset(), hostApproval.offset + scroll));
+          approvalRead();
+          requestRender();
+        } else if (data.toLowerCase() === 'y' || (data.toLowerCase() === 's' && harness.kind === 'chat'))
+          answerApproval(data.toLowerCase() as 'y' | 's');
+        else if (data.toLowerCase() === 'n' || matchesKey(data, 'escape')) answerApproval('n');
         else if (matchesKey(data, 'ctrl+q') || matchesKey(data, 'ctrl+c')) {
           hostApproval.answer(false);
           quit();
@@ -1446,7 +1755,7 @@ export async function runOmsInterface(
         switchView(view === 'harness' ? 'workbench' : 'harness');
         return { consume: true };
       }
-      if (matchesKey(data, 'f10')) {
+      if (matchesKey(data, 'f10') && headerShown()) {
         setFocus('actions');
         return { consume: true };
       }
@@ -1478,17 +1787,24 @@ export async function runOmsInterface(
         shell.focus.handleInput?.(data);
         return { consume: true };
       }
+      // Esc stops running work from the editor too, once it has nothing of its own to close.
+      if (focus === 'editor' && matchesKey(data, 'escape') && canInterrupt() && workbench.atRest) {
+        cancel();
+        return { consume: true };
+      }
       if (focus === 'editor') {
         workbench.handleInput(data);
         return { consume: true };
       }
       if (matchesKey(data, 'ctrl+o')) {
-        setNotice(conversation.toggleToolOutput() ? 'Tool output expanded. Ctrl+O to collapse.' : '');
+        if (conversation.toggleToolOutput()) toast('Tool output expanded. Ctrl+O to collapse.');
+        else toast('Tool output collapsed.');
         requestRender();
         return { consume: true };
       }
       if (matchesKey(data, 'ctrl+t')) {
-        setNotice(conversation.toggleThinking() ? 'Thinking hidden. Ctrl+T to show.' : '');
+        if (conversation.toggleThinking()) toast('Thinking hidden. Ctrl+T to show.');
+        else toast('Thinking shown.');
         requestRender();
         return { consume: true };
       }
@@ -1497,8 +1813,12 @@ export async function runOmsInterface(
           dismissedCommands = input.document.text;
           requestRender();
         } else if (focus !== 'input') setFocus('input');
+        else if (canInterrupt()) cancel();
         else if (view === 'workbench') setFocus('editor');
-        else cancel();
+        else if (notice && !busy()) {
+          notice = '';
+          requestRender();
+        } else cancel();
         return { consume: true };
       }
       if (matchesKey(data, 'f2')) {
@@ -1527,7 +1847,17 @@ export async function runOmsInterface(
         changeFocus(matchesKey(data, 'shift+tab'));
         return { consume: true };
       }
+      if (
+        focus === 'input' &&
+        (matchesKey(data, 'up') || matchesKey(data, 'down')) &&
+        recall(matchesKey(data, 'up') ? -1 : 1)
+      )
+        return { consume: true };
       if (focus === 'input') {
+        if (data === '?' && !input.document.text) {
+          submit('/help keys', true);
+          return { consume: true };
+        }
         if (matchesKey(data, 'shift+enter') || matchesKey(data, 'alt+enter') || data === '\x1b\r') {
           input.focus.handleInput?.('\r');
           return { consume: true };
@@ -1601,6 +1931,9 @@ export async function runOmsInterface(
           active.errorDisplayed = !!event.message.errorMessage;
         }
         if (event.type === 'agent_start') {
+          completedTokens = 0;
+          streamingTokens = 0;
+          currentTool = undefined;
           externalBusy = true;
           if (active?.kind === 'agent') {
             active.accepted = true;
@@ -1613,6 +1946,15 @@ export async function runOmsInterface(
           if (!closing) refreshRequirements();
           sessionSettled?.();
           maybeFinish();
+        }
+        if (event.type === 'tool_execution_start')
+          currentTool = { id: event.toolCallId, name: event.toolName, args: event.args };
+        if (event.type === 'tool_execution_end' && currentTool?.id === event.toolCallId) currentTool = undefined;
+        if (event.type === 'message_update' && event.message.role === 'assistant')
+          streamingTokens = event.message.usage?.output ?? streamingTokens;
+        if (event.type === 'message_end' && event.message.role === 'assistant') {
+          completedTokens += event.message.usage?.output ?? 0;
+          streamingTokens = 0;
         }
         if (
           event.type === 'tool_execution_end' &&
@@ -1636,11 +1978,9 @@ export async function runOmsInterface(
     renderer.start();
     terminal.write('\x1b[22;0t');
     titleSaved = true;
-    terminal.setTitle(
-      harness.kind === 'chat'
-        ? `oms · ${singleLine(sessionLabel(harness), 120)}`
-        : `oms · ${singleLine(sessionLabel(harness), 120)} / ${singleLine(harness.task.id, 80)}`,
-    );
+    colorCursor();
+    syncActivity();
+    if (options.firstRun) options.onFirstRunShown?.();
     // Running work and a bounded budget's wall clock change with time; nothing else on screen does.
     clock = setInterval(() => {
       if (busy() || harness.budget.snapshot().executionMode === 'bounded') requestRender();
@@ -1651,6 +1991,8 @@ export async function runOmsInterface(
     hostApproval?.answer(false);
     harness.setHostApproval?.(undefined);
     clearInterval(clock);
+    clearTimeout(toastTimer);
+    spinner.stop();
     process.off('SIGINT', onSignal);
     setup?.dispose();
     process.off('SIGTERM', onSignal);
@@ -1688,6 +2030,8 @@ export async function runOmsInterface(
           throw error;
         } finally {
           try {
+            if (progressShown) terminal.setProgress(false);
+            if (cursorColored) terminal.write('\x1b]112\x07');
             if (titleSaved) terminal.write('\x1b[23;0t');
           } finally {
             setKeybindings(previousKeybindings);

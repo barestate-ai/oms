@@ -25,7 +25,7 @@ Helpers work in a folder chat (plain `oms` in a folder). Pinned tasks and `oms r
    | `review` | Reads a diff or program and reports problems, most serious first. Read-only. |
    | `build` | Makes one scoped change in files it is given, runs its check, and reports. |
 
-2. Watch the conversation. Each helper shows as one line with its agent, task, status, time and tokens. Press Ctrl+O to open a helper's own transcript.
+2. Watch the conversation. Each helper shows as a row with its agent, task and time, and a line under it with its status and tokens. Press Ctrl+O to open a helper's own transcript.
 
 3. Read the reports. Each one goes back to the chat's agent, which should check the result before it tells you it is done. Review changes with `/diff` as usual.
 

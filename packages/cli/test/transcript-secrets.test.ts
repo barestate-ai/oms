@@ -1,20 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  createBashToolDefinition,
-  createReadToolDefinition,
-  createWriteToolDefinition,
-} from '@earendil-works/pi-coding-agent';
-import { displayDefinition } from '../src/tui/display-tools.ts';
 import { Conversation } from '../src/tui/transcript.ts';
 
 const cwd = '/work/project';
-const definitions: Record<string, unknown> = {
-  read: createReadToolDefinition(cwd),
-  write: createWriteToolDefinition(cwd),
-  bash: createBashToolDefinition(cwd),
-};
-const options = { cwd, toolDefinition: (name: string) => displayDefinition(name, definitions[name] ?? { name }) };
+const options = { cwd };
 const usage = {
   input: 1,
   output: 1,

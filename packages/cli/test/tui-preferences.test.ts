@@ -11,7 +11,7 @@ function stateRoot(t: TestContext): string {
   return join(base, 'state');
 }
 
-const DEFAULTS = { theme: 'gruvbox', background: 'theme' };
+const DEFAULTS = { theme: 'oms-ember', background: 'theme' };
 
 test('a missing file gives the defaults and reading never creates anything', (t) => {
   const root = stateRoot(t);
@@ -76,7 +76,7 @@ test('a failed write reports false and leaves the previous file intact', (t) => 
 test('interface options start from the saved choices and save every change', (t) => {
   const root = stateRoot(t);
   const first = interfacePreferences(root);
-  assert.equal(first.theme, 'gruvbox');
+  assert.equal(first.theme, 'oms-ember');
   assert.equal(first.background, 'theme');
   assert.equal('startupArt' in first, false, 'an unsaved art mode keeps the interface default');
   first.onThemeChange('rose-pine');
@@ -96,4 +96,17 @@ test('an unreadable file is left alone instead of being replaced with defaults',
   assert.equal(saveTuiPreferences(root, { theme: 'dracula' }), false);
   chmodSync(file, 0o600);
   assert.deepEqual(readTuiPreferences(root), { theme: 'nord', background: 'terminal', startupArt: 'off' });
+});
+
+test('the startup art is for the first launch only: it is marked shown once and never again', (t) => {
+  const root = stateRoot(t);
+  const first = interfacePreferences(root);
+  assert.equal(first.firstRun, true);
+  first.onFirstRunShown();
+  assert.deepEqual(readTuiPreferences(root), { ...DEFAULTS, welcomed: true });
+  assert.equal(interfacePreferences(root).firstRun, false);
+  assert.equal(saveTuiPreferences(root, { theme: 'nord' }), true);
+  assert.equal(interfacePreferences(root).firstRun, false, 'other choices keep the mark');
+  writeFileSync(join(root, 'tui.json'), '{"welcomed":"yes"}');
+  assert.equal(interfacePreferences(root).firstRun, true, 'only true counts');
 });

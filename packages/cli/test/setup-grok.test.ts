@@ -57,7 +57,7 @@ async function pane(t: TestContext, mode: 'connect' | 'model') {
     rows: () =>
       stripVTControlCharacters([...setup.body.render(120)].join('\n'))
         .split('\n')
-        .map((row) => row.replace(/^[\s→>]+/, '').trim())
+        .map((row) => row.replace(/^[\s→>›]+/, '').trim())
         .filter(Boolean),
   };
 }

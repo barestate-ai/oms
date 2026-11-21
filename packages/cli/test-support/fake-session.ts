@@ -10,7 +10,7 @@
  *     const f = chatFixture(); // fixture() for the task layout with panes
  *     const { terminal, close } = start(f.harness, 100, 30);
  *     try {
- *       await terminal.until((s) => s.includes('/help'));
+ *       await terminal.until((s) => s.includes('/ commands'));
  *       terminal.send('hello');
  *       terminal.send('\r');
  *       await terminal.until(() => f.prompts.length === 1);

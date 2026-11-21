@@ -9,6 +9,8 @@ import { runOmsInterface } from '../src/tui/interface.ts';
 import { InterfaceTerminal } from '../test-support/interface-terminal.ts';
 import { skipUnavailable } from '../../sandbox/test-support/infrastructure.ts';
 
+/** The spinner row, or the spinner in the composer's top rule, shows while the agent works. */
+const working = (screen: string): boolean => /(?:^|── )[⠁-⣿] \S/m.test(screen);
 const binary = process.env.SURFPOOL_BINARY;
 const image = process.env.OMS_SANDBOX_IMAGE;
 const forwarderImage = process.env.OMS_SANDBOX_FORWARDER_IMAGE;
@@ -58,9 +60,7 @@ test(
       assert.equal(readFileSync(join(f.repo, 'amount.mjs'), 'utf8'), 'export const amount = 0;\n');
       assert.equal(f.faux.state.callCount, 0);
       terminal.send('\x1b[13~');
-      await terminal.until(
-        (screen) => screen.includes('preserved agent draft') && /Harness.*idle/.test(screen.split('\n')[0] ?? ''),
-      );
+      await terminal.until((screen) => screen.includes('preserved agent draft') && !working(screen));
       terminal.send('\x1b[13~');
       await terminal.until((screen) => screen.includes('export const amount = 10;'));
       command(terminal, 'terminal');
@@ -68,7 +68,7 @@ test(
       terminal.send("printf 'shared-terminal-ready\\n'\r");
       await terminal.until((screen) => screen.includes('shared-terminal-ready'), 30_000);
       terminal.send('\x1b[13~');
-      await terminal.until((screen) => /Harness.*idle/.test(screen.split('\n')[0] ?? ''));
+      await terminal.until((screen) => screen.trim() !== '' && !working(screen));
       terminal.send('\x0c');
       terminal.send('\x01');
       terminal.send('Read the current amount.');

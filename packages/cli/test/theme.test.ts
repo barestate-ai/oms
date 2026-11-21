@@ -18,6 +18,8 @@ import {
 } from '../src/tui/theme.ts';
 
 const TERMINAL: ThemeDisplay = { depth: 'truecolor', backdrop: 'terminal' };
+/** Every theme that draws RGB colors; the Terminal theme draws the terminal's own and has its own tests below. */
+const RGB_IDS = THEME_IDS.filter((id) => id !== 'terminal');
 const ROLES: ThemeRole[] = [
   'foreground',
   'muted',
@@ -86,7 +88,7 @@ test('terminal backdrop rows preserve terminal-default backgrounds through neste
   }
 });
 
-for (const id of THEME_IDS) {
+for (const id of RGB_IDS) {
   test(`${id}: terminal backdrop rows use terminal-default backgrounds including trailing blanks`, async () => {
     const palette = theme(id, TERMINAL);
     for (const text of ['', 'OMS']) {
@@ -342,7 +344,7 @@ test('256-color picks the nearest of the color cube and the gray ramp, so dark n
     const cube = [0, 95, 135, 175, 215, 255];
     return [cube[Math.floor((n - 16) / 36)]!, cube[Math.floor((n - 16) / 6) % 6]!, cube[(n - 16) % 6]!];
   };
-  for (const id of THEME_IDS) {
+  for (const id of RGB_IDS) {
     const palette = theme(id, { depth: '256', backdrop: 'theme' });
     for (const [hex, sgr] of [
       [palette.background, palette.sgr.bg.background],

@@ -14,6 +14,7 @@ import {
 import { copyToClipboard } from '@earendil-works/pi-coding-agent';
 import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai';
 import type { OmsSession, ProviderModelChoice } from '@oms/engine';
+import { glyphsFor } from './glyphs.ts';
 import { colorText, getTheme, THEME_IDS, type OmsTheme } from './theme.ts';
 import { displayText } from './transcript.ts';
 
@@ -38,7 +39,11 @@ interface SetupOptions {
   render: () => void;
   close: () => void;
   notice: (message: string) => void;
+  /** A warning that stays until dismissed (credentials may be stored); defaults to `notice`. */
+  warn?: (message: string) => void;
   selectTheme: (id: string) => boolean;
+  /** The theme picker shows a theme as the cursor reaches it; closing without choosing restores the chosen one. */
+  previewTheme?: (id: string) => void;
   copyAuthUrl?: (url: string) => Promise<void>;
 }
 const line = (value: string) => displayText(value, 400).replace(/\s+/g, ' ').trim();
@@ -85,12 +90,19 @@ export class SetupPane {
       this.choices = THEME_IDS.map((id) => ({
         value: id,
         label: getTheme(id)!.name,
-        description: `${id}${id === options.theme().id ? ' · selected' : ''}`,
+        description: id === options.theme().id ? 'current' : '',
       }));
+      this.selected = options.theme().id;
     } else {
       this.buildTopLevel();
     }
-    this.body = { invalidate() {}, render: (width) => this.renderBody(width) };
+    this.body = {
+      invalidate() {},
+      render: (width) => this.renderBody(width),
+      // A click or the wheel on the list, with y counted from the list's first row.
+      handleMouse: (event) =>
+        this.listTop < 0 || !this.list ? undefined : this.list.handleMouse?.({ ...event, y: event.y - this.listTop }),
+    };
     this.input = {
       focused: false,
       invalidate() {},
@@ -122,16 +134,16 @@ export class SetupPane {
 
   get label(): string {
     if (this.stage === 'auth' || this.stage === 'models') return line(this.provider ?? '');
-    return this.options.mode === 'model' ? 'Model' : 'Sign in';
+    return this.options.mode === 'model' ? 'Model' : this.options.mode === 'theme' ? 'Theme' : 'Sign in';
   }
   get hint(): string {
     if (this.stage === 'auth') {
-      if (this.prompt?.type === 'select') return '↑↓ Enter · Ctrl+X copy link · PgUp/PgDn · Esc';
+      if (this.prompt?.type === 'select') return '↑↓ choose · enter select · ctrl+x copy link · esc cancel';
       return this.prompt
-        ? 'Enter · Ctrl+X copy link · PgUp/PgDn · Esc'
-        : 'Waiting · Ctrl+X copy link · PgUp/PgDn · Esc cancel';
+        ? 'enter submit · ctrl+x copy link · pgup/pgdn scroll · esc cancel'
+        : 'ctrl+x copy link · pgup/pgdn scroll · esc cancel';
     }
-    return '↑↓ Enter · Esc back · Ctrl+K commands';
+    return this.stage === 'theme' ? '↑↓ preview · enter choose · esc cancel' : '↑↓ choose · enter select · esc back';
   }
 
   private buildTopLevel(): void {
@@ -247,6 +259,9 @@ export class SetupPane {
     this.note = '';
   }
 
+  /** The body row the list's first item was drawn on last frame; -1 when no list is on screen. */
+  private listTop = -1;
+
   private bodyHeight(): number {
     return Math.max(1, this.options.bodyRows?.() ?? this.options.rows() - 5);
   }
@@ -277,8 +292,8 @@ export class SetupPane {
       this.listItems = items;
       const palette = () => this.options.theme();
       this.list = new SelectList(items, rows, {
-        selectedPrefix: (text) => colorText(palette(), 'accent', text),
-        selectedText: (text) => colorText(palette(), 'accent', text),
+        selectedPrefix: (text) => colorText(palette(), 'accentFill', text.replace('→', glyphsFor().pointer)),
+        selectedText: (text) => colorText(palette(), 'accent', text.replace(/^→/, glyphsFor().pointer)),
         description: (text) => colorText(palette(), 'muted', text),
         scrollInfo: (text) => colorText(palette(), 'muted', text),
         noMatch: () => colorText(palette(), 'warning', 'No matches · Ctrl+U clear · Esc back'),
@@ -291,6 +306,7 @@ export class SetupPane {
       );
       this.list.onSelectionChange = (item) => {
         this.selected = item.value;
+        if (this.stage === 'theme') this.options.previewTheme?.(item.value);
       };
       this.list.onSelect = (item) => {
         void this.choose(item.value);
@@ -302,10 +318,11 @@ export class SetupPane {
   }
 
   private renderBody(width: number): string[] {
+    this.listTop = -1;
     const palette = this.options.theme();
     const title =
       this.stage === 'theme'
-        ? 'Theme'
+        ? 'Choose a theme'
         : this.stage === 'providers'
           ? this.options.mode === 'model'
             ? 'Choose a provider'
@@ -318,8 +335,14 @@ export class SetupPane {
       lines.push(
         ...wrapTextWithAnsi(colorText(palette, 'muted', 'No provider is connected yet. Choose one to sign in.'), width),
       );
-    if (this.stage === 'providers')
+    // The warning about keys is always shown where a key might be pasted; the filter tip goes first when rows run short.
+    const connecting = this.stage === 'providers' && this.options.mode === 'connect';
+    if (this.stage === 'providers' && !(connecting && this.bodyHeight() < 12))
       lines.push(...wrapTextWithAnsi(colorText(palette, 'muted', 'Type a provider name to filter.'), width));
+    if (connecting)
+      lines.push(
+        ...wrapTextWithAnsi(colorText(palette, 'faint', 'Never paste keys or sign-in codes into chat.'), width),
+      );
     if (this.note) lines.push(...wrapTextWithAnsi(colorText(palette, 'muted', line(this.note)), Math.max(1, width)));
     if (this.stage === 'auth' && this.authUrl) {
       lines.push(
@@ -351,6 +374,7 @@ export class SetupPane {
         ].flatMap((text) => wrapTextWithAnsi(colorText(palette, 'muted', text), Math.max(1, width))),
       );
       if (this.prompt?.type === 'select') {
+        this.listTop = 2;
         const fixed = [
           lines[0]!,
           colorText(palette, 'accent', truncateToWidth(line(this.prompt.message), width, '')),
@@ -387,6 +411,7 @@ export class SetupPane {
             ),
           );
       }
+      this.listTop = lines.length;
       lines.push(...list.render(width));
     }
     if (this.stage === 'auth' && this.prompt?.type !== 'select') {
@@ -565,7 +590,8 @@ export class SetupPane {
         notify: (event) => this.notify(event),
       });
       if (!this.disposed) {
-        this.options.notice(
+        const uncertain = result.outcomes.some((item) => item.status === 'may_have_saved');
+        (uncertain ? (this.options.warn ?? this.options.notice) : this.options.notice)(
           result.outcomes
             .map(
               (item) =>

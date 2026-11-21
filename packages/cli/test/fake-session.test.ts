@@ -6,7 +6,7 @@ test('the fake session kit drives a chat from first screen to quit', async () =>
   const f = chatFixture();
   const { terminal, close } = start(f.harness, 100, 30);
   try {
-    await terminal.until((s) => s.includes('/help'));
+    await terminal.until((s) => s.includes('/ commands'));
     terminal.send('hello from the kit');
     terminal.send('\r');
     await terminal.until(() => f.prompts.length === 1);

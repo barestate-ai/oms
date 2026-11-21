@@ -1,23 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  createBashToolDefinition,
-  createEditToolDefinition,
-  createReadToolDefinition,
-  createWriteToolDefinition,
-} from '@earendil-works/pi-coding-agent';
-import { displayDefinition } from '../src/tui/display-tools.ts';
-import { setKeybindings } from '@earendil-works/pi-tui';
-import { omsKeybindings } from '../src/tui/interface.ts';
 import { Conversation } from '../src/tui/transcript.ts';
 
 const cwd = '/work/project';
-const definitions: Record<string, unknown> = {
-  read: createReadToolDefinition(cwd),
-  write: createWriteToolDefinition(cwd),
-  edit: createEditToolDefinition(cwd),
-  bash: createBashToolDefinition(cwd),
-};
 const usage = {
   input: 1,
   output: 1,
@@ -65,10 +50,7 @@ const assistant = {
   model: 'm',
   timestamp: 2,
 };
-const options = {
-  cwd,
-  toolDefinition: (name: string) => displayDefinition(name, definitions[name] ?? { name }),
-};
+const options = { cwd };
 
 function streamed(): Conversation {
   const conversation = new Conversation([], undefined, options);
@@ -90,33 +72,42 @@ function streamed(): Conversation {
   return conversation;
 }
 
-test('tool calls show what happened, not what was read or written', () => {
+test('tool calls are one-line rows that say what happened, not what was read or written', () => {
   const screen = plain(streamed().render(100));
-  assert.match(screen, /Plan: write, run, edit\./, 'thinking is shown');
-  assert.match(screen, /read .*src\/big\.ts/);
+  assert.match(screen, /∴ Thought/, 'thinking is one folded line');
+  assert.ok(!screen.includes('Plan: write, run, edit.'), 'the thinking itself waits for Ctrl+T');
+  assert.match(screen, /● Read {2}src\/big\.ts:1-80\n {2}⎿ {2}80 lines/);
   assert.ok(!screen.includes('line 40 of the file'), 'a read never dumps the file');
-  assert.match(screen, /Wrote hello\.mjs \(2 lines\)/);
+  assert.match(screen, /● Wrote {2}hello\.mjs\n {2}⎿ {2}2 lines/);
   assert.ok(!screen.includes('console.log(1)'), 'a new file shows no content');
-  assert.match(screen, /write old\.txt/);
-  assert.match(screen, /-1 old line/);
-  assert.match(screen, /\+1 new line/);
-  assert.match(screen, /-1 console\.log\("hello"\);/);
-  assert.match(screen, /\+1 console\.log\("hi"\);/);
-  assert.match(screen, /\$ node hello\.mjs/);
+  assert.match(screen, /● Wrote {2}old\.txt {2}\+1 −1/);
+  assert.match(screen, /1 − old line/);
+  assert.match(screen, /1 \+ new line/);
+  assert.match(screen, /● Edited {2}hello\.mjs {2}\+1 −1/);
+  assert.match(screen, /1 − console\.log\("hello"\);/);
+  assert.match(screen, /1 \+ console\.log\("hi"\);/);
+  assert.match(screen, /● Ran {2}node hello\.mjs/);
   assert.match(screen, /out 12/);
-  assert.doesNotMatch(screen, /out 1 *\n/, 'a command shows its last lines only');
-  assert.match(screen, /Fetched https:\/\/solana\.com\/docs/);
-  assert.match(screen, /Searched Solana docs: "priority fees"/);
+  assert.match(screen, /out 1\n/, 'a command shows its first rows');
+  assert.match(screen, /… \+7 lines/, 'and its last, with the count of what is left out');
+  assert.doesNotMatch(screen, /out 5\n/);
+  assert.match(screen, /● Explored {2}1 search · 1 page/);
+  assert.match(screen, /Searched "priority fees"/);
+  assert.match(screen, /Opened solana\.com\/docs/);
   assert.ok(!screen.includes('"raw"') && !screen.includes('"results"'), 'no raw JSON');
 });
 
-test('Ctrl+O shows the whole output and Ctrl+T hides thinking', () => {
+test('Ctrl+O shows the whole output and Ctrl+T opens the thinking', () => {
   const conversation = streamed();
   assert.equal(conversation.toggleToolOutput(), true);
   const expanded = plain(conversation.render(100));
   assert.match(expanded, /line 40 of the file/);
   assert.match(expanded, /console\.log\(1\)/);
-  assert.match(expanded, /out 1 *\n/);
+  assert.match(expanded, /out 1\n/);
+  assert.match(expanded, /out 5\n/);
+  assert.match(expanded, /Searched Solana docs "priority fees" · 1 result/);
+  assert.equal(conversation.toggleThinking(), false, 'false: the thinking is no longer folded');
+  assert.match(plain(conversation.render(100)), /Plan: write, run, edit\./);
   assert.equal(conversation.toggleThinking(), true);
   assert.ok(!plain(conversation.render(100)).includes('Plan: write, run, edit.'));
 });
@@ -167,13 +158,14 @@ test('an absolute path inside the folder is shown relative to it, and the edit d
     } as never);
   }
   const screen = plain(conversation.render(100));
-  assert.match(screen, /edit src\/hello\.mjs/);
-  assert.match(screen, /read src\/big\.ts/);
+  assert.match(screen, /Edited {2}src\/hello\.mjs/);
+  assert.match(screen, /Read {2}src\/big\.ts/);
   assert.ok(!screen.includes(cwd), 'the folder prefix is dropped');
-  assert.match(screen, /\+1 console\.log\("hi"\);/);
+  assert.match(screen, /1 \+ console\.log\("hi"\);/);
 });
 
-test('collapsed output names the key that expands it', () => {
-  setKeybindings(omsKeybindings({}));
-  assert.match(plain(streamed().render(100)), /ctrl\+o to expand/);
+test('only the latest collapsed entry names the key that expands it', () => {
+  const screen = plain(streamed().render(100));
+  assert.equal(screen.match(/ctrl\+o to expand/g)?.length, 1);
+  assert.match(screen, /Opened solana\.com\/docs \(ctrl\+o to expand\)$/, 'on the last entry');
 });

@@ -13,8 +13,8 @@ interface AccountOptions {
 export class AccountPane {
   readonly body: Component;
   readonly input: Component & Focusable;
-  readonly label = 'OMS ACCOUNT · hosted web search sign-in';
-  readonly hint = 'Ctrl+X copy device code · PgUp/PgDn · Esc return';
+  readonly label = 'Account';
+  readonly hint = 'ctrl+x copy code · pgup/pgdn scroll · esc close';
   private readonly controls: Pick<OmsAccountControls, 'snapshot' | 'login' | 'logout' | 'refresh'>;
   private readonly options: AccountOptions;
   private readonly controller = new AbortController();

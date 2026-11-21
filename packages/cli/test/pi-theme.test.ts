@@ -67,6 +67,12 @@ test('every theme and color depth builds a complete pi theme', () => {
       const palette = theme(id, { depth, backdrop: 'theme' });
       const pi = piTheme(palette);
       const out = pi.fg('syntaxKeyword', 'k') + pi.bg('userMessageBg', 'u') + pi.fg('toolDiffRemoved', '-');
+      // The Terminal theme draws the terminal's own 16 colors at any depth.
+      if (palette.ansi) {
+        if (depth !== 'none') assert.ok(/38;5;([0-9]|1[0-5])m/.test(out) && !/;2;|48;/.test(out), out);
+        else assert.ok(!/[34]8;/.test(out), out);
+        continue;
+      }
       if (depth === 'truecolor') assert.match(out, /38;2;/);
       if (depth === '256') {
         assert.ok(/38;5;/.test(out) && !/;2;/.test(out), out);

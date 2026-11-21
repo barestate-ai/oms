@@ -11,6 +11,8 @@ import { getTheme } from '../src/tui/theme.ts';
 import { InterfaceTerminal } from '../test-support/interface-terminal.ts';
 import { skipUnavailable } from '../../sandbox/test-support/infrastructure.ts';
 
+/** The spinner row, or the spinner in the composer's top rule, shows while the agent works. */
+const working = (screen: string): boolean => /(?:^|── )[⠁-⣿] \S/m.test(screen);
 const binary = process.env.SURFPOOL_BINARY;
 const image = process.env.OMS_SANDBOX_IMAGE;
 const forwarderImage = process.env.OMS_SANDBOX_FORWARDER_IMAGE;
@@ -221,7 +223,7 @@ test(
       assert.equal(JSON.parse(readFileSync(auth, 'utf8'))['oms-ui-keyed'].key, secret);
       assert.equal(terminal.output.includes(secret), false);
       terminal.send('\r');
-      await terminal.until((screen) => screen.includes('Continued after in-app setup.') && screen.includes('idle'));
+      await terminal.until((screen) => screen.includes('Continued after in-app setup.') && !working(screen));
       assert.equal(provider.state.callCount, 1);
       assert.equal(f.faux.state.callCount, 0);
       assert.equal(JSON.stringify(session.messages).includes(secret), false);

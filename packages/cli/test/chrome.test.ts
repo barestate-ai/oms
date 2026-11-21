@@ -66,7 +66,9 @@ test('focus, active state, disabled actions and Escape have keyboard equivalents
   bar.handleInput('\r');
   assert.deepEqual(calls, []);
   bar.focused = true;
-  assert.match(bar.render(80)[0]!, /\x1b\[4m/);
+  // Keyboard focus is the raised-surface background; underline is for links only.
+  assert.match(bar.render(80)[0]!, /\x1b\[48;/);
+  assert.doesNotMatch(bar.render(80)[0]!, /\x1b\[4m/);
   bar.handleInput('\t');
   bar.render(80);
   bar.handleInput(' ');

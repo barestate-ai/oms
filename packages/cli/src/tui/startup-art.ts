@@ -155,9 +155,12 @@ export class StartupArt {
   private png: { entry: ArtEntry; data: string; size: ImageDimensions; id: number } | undefined;
   private readonly cache = new Map<string, Picture>();
   private readonly random: () => number;
+  /** The narrowest picture worth drawing; the interface lowers it because it caps the art at a third of the screen. */
+  private readonly minCols: number;
 
-  constructor(random = Math.random) {
+  constructor(random = Math.random, minCols = MIN_COLS) {
     this.random = random;
+    this.minCols = minCols;
     this.entry = INDEX[Math.floor(random() * INDEX.length)]!;
   }
 
@@ -213,8 +216,8 @@ export class StartupArt {
 
   private mosaic(width: number, maxRows: number, tier: ArtTier | 'title'): Picture | undefined {
     let cols = Math.min(width - 2, MAX_COLS);
-    while (cols >= MIN_COLS && artRows(cols, this.entry) > maxRows) cols--;
-    if (cols < MIN_COLS) return undefined;
+    while (cols >= this.minCols && artRows(cols, this.entry) > maxRows) cols--;
+    if (cols < this.minCols) return undefined;
     if (tier === 'title') return { cols, lines: [] };
     let picture = this.cache.get(`${tier} ${cols}`);
     if (!picture) {
@@ -249,6 +252,6 @@ export class StartupArt {
       };
       this.cache.set(key, picture);
     }
-    return picture.cols >= MIN_COLS ? picture : undefined;
+    return picture.cols >= this.minCols ? picture : undefined;
   }
 }

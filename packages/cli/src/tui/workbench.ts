@@ -153,6 +153,10 @@ export class WorkbenchPane {
   get dirty(): boolean {
     return [...this.buffers.values()].some(bufferDirty);
   }
+  /** Showing the editors with no prompt, file list or confirmation open: Esc has nothing here to close. */
+  get atRest(): boolean {
+    return this.mode === 'editor';
+  }
   get acceptsText(): boolean {
     return this.mode !== 'browser' && (this.mode !== 'editor' || !!this.slots[this.side]);
   }

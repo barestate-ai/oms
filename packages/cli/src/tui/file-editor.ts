@@ -19,6 +19,8 @@ export interface FileEditorPane {
   view: ScrollView;
   focus: Component & Focusable;
   readonly position: { line: number; column: number };
+  /** Rows the text takes at this width: its lines, and with soft wrap the extra rows long lines wrap onto. */
+  rows(width: number): number;
 }
 
 /** One grapheme's display cells; start/end are offsets within its line. */
@@ -40,6 +42,8 @@ interface SourceLine {
   start: number;
   end: number;
   breakEnd: number;
+  /** A row cut from a longer line by soft wrap: the line goes on in the next row, so no line break ends this one. */
+  soft?: boolean;
 }
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 /**
@@ -57,7 +61,35 @@ function displayText(text: string): string {
   });
 }
 
-function project(text: string): SourceLine[] {
+/** Rows of one source line wrapped at `wrap` cells: after the last space that fits, or in the word when none does. */
+function wrapLine(base: number, text: string, wrap: number, layout: (text: string) => LineLayout): SourceLine[] {
+  const runs = layout(text).runs;
+  const rows: SourceLine[] = [];
+  let first = 0;
+  let index = 0;
+  while (index < runs.length) {
+    const run = runs[index]!;
+    if (index === first || run.column + run.width - runs[first]!.column <= wrap) {
+      index++;
+      continue;
+    }
+    let cut = index;
+    for (let back = index - 1; back > first; back--) {
+      if (/^\s/.test(text.slice(runs[back]!.start, runs[back]!.end))) {
+        cut = back + 1;
+        break;
+      }
+    }
+    const edge = base + runs[cut]!.start;
+    rows.push({ start: base + runs[first]!.start, end: edge, breakEnd: edge, soft: true });
+    first = cut;
+    index = cut;
+  }
+  rows.push({ start: base + (runs[first]?.start ?? 0), end: base + text.length, breakEnd: base + text.length });
+  return rows;
+}
+
+function project(text: string, wrap = 0, layout: (text: string) => LineLayout = layoutLine): SourceLine[] {
   const lines: SourceLine[] = [];
   const breaks = /\r\n|\r|\n/g;
   let start = 0;
@@ -65,7 +97,12 @@ function project(text: string): SourceLine[] {
     const delimiter = breaks.exec(text);
     const end = delimiter?.index ?? text.length;
     const breakEnd = delimiter ? end + delimiter[0].length : end;
-    lines.push({ start, end, breakEnd });
+    // A line of n code units is at most 2n cells wide, so only the long ones need measuring.
+    if (wrap > 0 && (end - start) * 2 > wrap) {
+      const rows = wrapLine(start, text.slice(start, end), wrap, layout);
+      rows[rows.length - 1]!.breakEnd = breakEnd;
+      lines.push(...rows);
+    } else lines.push({ start, end, breakEnd });
     if (!delimiter) return lines;
     start = breakEnd;
   }
@@ -90,6 +127,10 @@ function layoutLine(text: string): LineLayout {
 class FileEditor implements Component, Focusable {
   focused = false;
   private projectedText: string | undefined;
+  private projectedWrap = 0;
+  /** Cells a row may use when soft wrap is on (one less than the width, for the cursor's cell); 0 means no wrap. */
+  private wrapWidth = 0;
+  private readonly wrap: boolean;
   private lines: SourceLine[] = [];
   private readonly layouts = new Map<string, LineLayout>();
   /** The last drawing, returned unchanged while nothing it depends on changed. */
@@ -119,7 +160,9 @@ class FileEditor implements Component, Focusable {
     lineNumbers = false,
     requestFocus?: () => boolean | void,
     readOnly = false,
+    wrap = false,
   ) {
+    this.wrap = wrap;
     this.readOnly = readOnly;
     this.requestFocus = requestFocus;
     this.lineNumbers = lineNumbers;
@@ -134,23 +177,33 @@ class FileEditor implements Component, Focusable {
   }
 
   private sourceLines(): SourceLine[] {
-    if (this.projectedText !== this.document.text) {
-      this.lines = project(this.document.text);
+    if (this.projectedText !== this.document.text || this.projectedWrap !== this.wrapWidth) {
+      this.lines = project(this.document.text, this.wrapWidth, (text) => this.layoutText(text));
       this.projectedText = this.document.text;
+      this.projectedWrap = this.wrapWidth;
       // ponytail: drop every cached line layout once edits leave too many stale ones; visible rows rebuild in microseconds.
       if (this.layouts.size > 2 * this.lines.length + 256) this.layouts.clear();
     }
     return this.lines;
   }
 
-  private layoutOf(line: SourceLine): LineLayout {
-    const text = this.document.text.slice(line.start, line.end);
+  private layoutText(text: string): LineLayout {
     let layout = this.layouts.get(text);
     if (!layout) {
       layout = layoutLine(text);
       this.layouts.set(text, layout);
     }
     return layout;
+  }
+
+  private layoutOf(line: SourceLine): LineLayout {
+    return this.layoutText(this.document.text.slice(line.start, line.end));
+  }
+
+  /** Rows the text takes when drawn `width` cells wide. */
+  rows(width: number): number {
+    this.wrapWidth = this.wrap ? Math.max(1, Math.floor(width) - 1) : 0;
+    return this.sourceLines().length;
   }
 
   private cursorLine(): number {
@@ -197,6 +250,7 @@ class FileEditor implements Component, Focusable {
   /** Content height stays the line count, but only rows near the viewport are drawn; the rest are blank. */
   render(width: number): string[] {
     width = Math.max(0, Math.floor(width));
+    this.wrapWidth = this.wrap && width > 0 ? Math.max(1, width - 1) : 0;
     const lines = this.sourceLines();
     const row = this.cursorLine();
     const line = lines[row]!;
@@ -359,7 +413,10 @@ class FileEditor implements Component, Focusable {
         const row = this.cursorLine();
         let target: number;
         if (direction === 'home' || direction === 'end') {
-          target = direction === 'home' ? lines[row]!.start : lines[row]!.end;
+          const line = lines[row]!;
+          // A wrapped row ends before the one it goes on in: End stops on its last character, not in the next row.
+          const lastRun = line.soft ? this.layoutOf(line).runs.at(-1) : undefined;
+          target = direction === 'home' ? line.start : lastRun ? line.start + lastRun.start : line.end;
           this.goalColumn = undefined;
         } else {
           this.goalColumn ??= this.columnAt(lines[row]!, doc.cursor);
@@ -449,10 +506,17 @@ class EditorScrollView extends ScrollView {
 export function createFileEditorPane(
   text: string | FileDocument,
   requestRender: () => void,
-  options: { readOnly?: boolean; lineNumbers?: boolean; requestFocus?: () => boolean | void } = {},
+  options: { readOnly?: boolean; lineNumbers?: boolean; wrap?: boolean; requestFocus?: () => boolean | void } = {},
 ): FileEditorPane {
   const document = typeof text === 'string' ? new FileDocument(text) : text;
-  const focus = new FileEditor(document, requestRender, options.lineNumbers, options.requestFocus, options.readOnly);
+  const focus = new FileEditor(
+    document,
+    requestRender,
+    options.lineNumbers,
+    options.requestFocus,
+    options.readOnly,
+    options.wrap,
+  );
   const view = new EditorScrollView(focus);
   focus.view = view;
   return {
@@ -462,5 +526,6 @@ export function createFileEditorPane(
     get position() {
       return focus.position;
     },
+    rows: (width) => focus.rows(width),
   };
 }

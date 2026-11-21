@@ -10,6 +10,8 @@ export interface TuiPreferences {
   background: Backdrop;
   /** Absent until the user picks one with /art, so each layout keeps its own default. */
   startupArt?: StartupArtMode;
+  /** Set once the first launch has shown the startup art; absent until then. */
+  welcomed?: true;
 }
 
 const ART_MODES: readonly string[] = ['auto', 'image', 'truecolor', '256', 'off'] satisfies StartupArtMode[];
@@ -30,6 +32,7 @@ export function readTuiPreferences(stateRoot: string): TuiPreferences {
     theme: getTheme(text('theme'))?.id ?? DEFAULT_THEME_ID,
     background: text('background') === 'terminal' ? 'terminal' : 'theme',
     ...(ART_MODES.includes(startupArt) ? { startupArt: startupArt as StartupArtMode } : {}),
+    ...(saved.welcomed === true ? { welcomed: true as const } : {}),
   };
 }
 
@@ -61,6 +64,9 @@ export function interfacePreferences(stateRoot: string) {
     theme: saved.theme,
     background: saved.background,
     ...(saved.startupArt ? { startupArt: saved.startupArt } : {}),
+    /** The art shows once, on the first launch. */
+    firstRun: !saved.welcomed,
+    onFirstRunShown: () => void saveTuiPreferences(stateRoot, { welcomed: true }),
     onThemeChange: (theme: OmsThemeId) => void saveTuiPreferences(stateRoot, { theme }),
     onStartupArtChange: (startupArt: StartupArtMode) => void saveTuiPreferences(stateRoot, { startupArt }),
   };
