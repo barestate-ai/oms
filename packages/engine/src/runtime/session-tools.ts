@@ -123,6 +123,7 @@ export function createSessionExtensions(
   initiallyKnown: boolean,
   endRunOnProposal?: boolean,
   helpers?: ExtensionFactory,
+  injected: readonly ExtensionFactory[] = [],
 ): ExtensionFactory[] {
   const { taskRoot, knowledgeSource } = tools;
   const extra: ExtensionFactory[] = [
@@ -135,6 +136,7 @@ export function createSessionExtensions(
       tools.edgeCheck?.extension,
       helpers,
     ].filter((extension) => extension !== undefined),
+    ...injected,
   ];
   const shared = {
     guards: { approveHostCommands: tools.backend.approvesCommands },

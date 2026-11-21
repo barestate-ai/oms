@@ -1,4 +1,9 @@
-import type { AgentSession, AgentSessionRuntime, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type {
+  AgentSession,
+  AgentSessionRuntime,
+  ExtensionFactory,
+  ModelRuntime,
+} from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { EvaluateResult, Evaluator, TaskContract } from '@oms/contract';
 import type { BudgetCaps, BudgetLedger, ExecutionMode } from '@oms/core';
@@ -119,6 +124,10 @@ export interface ChatSessionOptions extends CommonSessionOptions {
   stateRoot: string;
   /** Start with YOLO on. */
   yolo?: boolean;
+  /** Trusted host injection from the launching CLI; never repository-discovered. They load after the built-in extensions. */
+  extensions?: readonly ExtensionFactory[];
+  /** The tools those extensions register. The session's tool list drops any tool it does not name (`*` patterns allowed). */
+  extensionTools?: readonly string[];
 }
 export type OmsSession = HarnessSession | ChatSession;
 export interface HarnessSession extends SessionCore {

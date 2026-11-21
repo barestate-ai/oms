@@ -37,6 +37,9 @@ export async function assembleSession(
     owner: string;
     /** A chat's helper tool; pinned tasks never get one. */
     helpers?: ExtensionFactory;
+    /** A chat's host-injected extensions and the tool names they register; pinned tasks never get them. */
+    extensions?: readonly ExtensionFactory[];
+    extensionTools?: readonly string[];
   },
 ): Promise<SessionApiParts> {
   privateDirectory(env.root.agentRoot);
@@ -58,7 +61,17 @@ export async function assembleSession(
     initiallyKnown,
     extras.endRunOnProposal,
     extras.helpers,
+    extras.extensions,
   );
-  const model = await createSessionModel(options, life, env, tools, hooks, extensions, initiallyKnown);
+  const model = await createSessionModel(
+    options,
+    life,
+    env,
+    tools,
+    hooks,
+    extensions,
+    initiallyKnown,
+    extras.extensionTools,
+  );
   return { options, life, env, tools, model, account, owner: extras.owner };
 }

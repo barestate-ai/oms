@@ -86,7 +86,12 @@ export async function createChatSession(options: ChatSessionOptions): Promise<Ch
       trust,
     });
     life.helpers = helpers;
-    const parts = await assembleSession(options, life, env, { owner: 'this folder', helpers: helpers.extension });
+    const parts = await assembleSession(options, life, env, {
+      owner: 'this folder',
+      helpers: helpers.extension,
+      extensions: options.extensions,
+      extensionTools: options.extensionTools,
+    });
     helpers.bind(parts);
     const core = createCoreApi(parts);
     return {

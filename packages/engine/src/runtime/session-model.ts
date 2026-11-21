@@ -70,6 +70,7 @@ export async function createSessionModel(
   hooks: SessionHooks,
   extensions: ExtensionFactory[],
   initiallyKnown: boolean,
+  injectedTools: readonly string[] = [],
 ): Promise<SessionModel> {
   const { environment } = options;
   const { controller } = life;
@@ -133,6 +134,7 @@ export async function createSessionModel(
       ...KNOWLEDGE_TOOL_NAMES,
       ...(tools.web?.toolNames ?? []),
       ...(env.contract ? [] : [AGENT_TOOL]),
+      ...injectedTools,
     ],
   });
   const { session } = created;
