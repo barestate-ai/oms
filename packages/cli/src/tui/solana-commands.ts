@@ -10,6 +10,8 @@ import {
   type OmsSession,
   type Idl,
 } from '@oms/engine';
+import { explorerUrl, remoteRpc, splitCluster, type RemoteCluster } from '../connectors/solana.ts';
+import type { Connectors } from '../connectors/runtime.ts';
 import { refuse, type Prepared } from './prepared.ts';
 
 // ---------------------------------------------------------------- base58 and formatting
@@ -81,6 +83,47 @@ export function localChain(harness: OmsSession) {
     );
   }
   return { chain, url };
+}
+
+/** Where an account or transaction is read from: the task's own chain, or a remote cluster read-only. */
+interface RpcSource {
+  call(method: string, params?: unknown[], signal?: AbortSignal): Promise<unknown>;
+  /** "on the local chain", "on devnet". */
+  where: string;
+  explorer(kind: 'address' | 'tx', id: string): string;
+}
+function chainSource(harness: OmsSession): RpcSource {
+  const { chain, url } = localChain(harness);
+  return {
+    call: (method, params) => chain.call(method, params),
+    where: 'on the local chain',
+    explorer: (kind, id) => explorerUrl(kind, id, 'local', url),
+  };
+}
+function remoteSource(cluster: RemoteCluster, connectors: Connectors): RpcSource {
+  return {
+    call: (method, params, signal) =>
+      remoteRpc(cluster, method, params ?? [], {
+        saved: connectors.option('solana-rpc', 'rpc'),
+        env: connectors.env,
+        signal,
+      }),
+    where: `on ${cluster}`,
+    explorer: (kind, id) => explorerUrl(kind, id, cluster),
+  };
+}
+/** `--cluster` needs the Solana RPC connector on: nothing leaves the machine for a remote RPC before the user says so. */
+function clusterRefusal(argument: string, connectors: Connectors | undefined, usage: string): Prepared | undefined {
+  const { cluster, invalid } = splitCluster(argument);
+  if (invalid) return refuse(`${usage} · devnet or mainnet only`);
+  if (cluster && (!connectors || connectors.access('solana-rpc') === 'off'))
+    return refuse(`Looking up ${cluster} needs Solana RPC. Turn it on in /connectors.`);
+  return undefined;
+}
+/** The local chain by default; a remote cluster for `--cluster`. */
+function sourceFor(argument: string, harness: OmsSession, connectors: Connectors | undefined): RpcSource {
+  const { cluster } = splitCluster(argument);
+  return cluster ? remoteSource(cluster, connectors!) : chainSource(harness);
 }
 
 const value = (result: unknown): unknown =>
@@ -215,20 +258,25 @@ const TOKEN_PROGRAMS = new Set([
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
 ]);
 
-export function prepareAccount(argument: string, harness: OmsSession): Prepared {
-  if (!isBase58Bytes(argument.trim(), 32)) return refuse('Usage: /account <address> · base58, 32 bytes');
-  const address = argument.trim();
+export function prepareAccount(argument: string, harness: OmsSession, connectors?: Connectors): Prepared {
+  const { rest } = splitCluster(argument);
+  if (!isBase58Bytes(rest, 32))
+    return refuse('Usage: /account <address> [--cluster devnet|mainnet] · base58, 32 bytes');
+  const refusal = clusterRefusal(argument, connectors, 'Usage: /account <address> [--cluster devnet|mainnet]');
+  if (refusal) return refusal;
+  const address = rest;
   return {
     ok: true,
-    async run() {
-      const { chain } = localChain(harness);
-      const info = value(await chain.call('getAccountInfo', [address, { encoding: 'base64' }])) as {
+    async run(signal) {
+      const source = sourceFor(argument, harness, connectors);
+      const info = value(await source.call('getAccountInfo', [address, { encoding: 'base64' }], signal)) as {
         lamports: number;
         owner: string;
         data: [string, string];
         executable: boolean;
       } | null;
-      if (!info) return { title: 'account', text: `${address}\nNo account at this address on the local chain` };
+      const link = `Explorer: ${source.explorer('address', address)}`;
+      if (!info) return { title: 'account', text: `${address}\nNo account at this address ${source.where}.\n${link}` };
       const data = Buffer.from(info.data?.[0] ?? '', 'base64');
       return {
         title: 'account',
@@ -240,6 +288,7 @@ export function prepareAccount(argument: string, harness: OmsSession): Prepared 
           `Executable: ${info.executable}`,
           ...(data.length ? [`Preview: ${hex(data.subarray(0, 32))}${data.length > 32 ? '…' : ''}`] : []),
           ...(TOKEN_PROGRAMS.has(info.owner) ? describeTokenData(data) : []),
+          link,
         ].join('\n'),
       };
     },
@@ -291,17 +340,22 @@ export function describeTransactionError(
   return `${raw}\n  instruction ${failure[0]}${program ? ` in ${named(program)}` : ''}, custom error ${custom} (0x${custom.toString(16)})${lines.length ? '\n  ' + lines.join('\n  ') : ''}`;
 }
 
-export function prepareTransaction(argument: string, harness: OmsSession): Prepared {
-  const signature = argument.trim();
-  if (!isBase58Bytes(signature, 64)) return refuse('Usage: /tx <signature> · base58, 64 bytes');
+export function prepareTransaction(argument: string, harness: OmsSession, connectors?: Connectors): Prepared {
+  const { rest } = splitCluster(argument);
+  const signature = rest;
+  if (!isBase58Bytes(signature, 64))
+    return refuse('Usage: /tx <signature> [--cluster devnet|mainnet] · base58, 64 bytes');
+  const refusal = clusterRefusal(argument, connectors, 'Usage: /tx <signature> [--cluster devnet|mainnet]');
+  if (refusal) return refusal;
   return {
     ok: true,
-    async run() {
-      const { chain } = localChain(harness);
-      const tx = (await chain.call('getTransaction', [
-        signature,
-        { encoding: 'json', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
-      ])) as {
+    async run(signal) {
+      const source = sourceFor(argument, harness, connectors);
+      const tx = (await source.call(
+        'getTransaction',
+        [signature, { encoding: 'json', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+        signal,
+      )) as {
         slot: number;
         meta: {
           err: unknown;
@@ -312,7 +366,9 @@ export function prepareTransaction(argument: string, harness: OmsSession): Prepa
         } | null;
         transaction: { message: { accountKeys: string[]; instructions: Array<{ programIdIndex: number }> } };
       } | null;
-      if (!tx) return { title: 'tx', text: `${signature}\nNo transaction with this signature on the local chain` };
+      const link = `Explorer: ${source.explorer('tx', signature)}`;
+      if (!tx)
+        return { title: 'tx', text: `${signature}\nNo transaction with this signature ${source.where}.\n${link}` };
       const meta = tx.meta;
       const keys = [
         ...tx.transaction.message.accountKeys,
@@ -333,6 +389,7 @@ export function prepareTransaction(argument: string, harness: OmsSession): Prepa
           ...(logs.length
             ? ['Logs:', ...logs.map((line) => '  ' + line), ...(more > 0 ? [`  [${more} more lines]`] : [])]
             : ['Logs: none']),
+          link,
         ].join('\n'),
       };
     },
@@ -372,7 +429,11 @@ export function prepareProgram(argument: string): Prepared {
   return {
     ok: true,
     async run() {
-      const text = programForPeople(lookupProgramReference(program, instruction || undefined), program);
+      const reference = programForPeople(lookupProgramReference(program, instruction || undefined), program);
+      // A program given by address also gets its explorer page.
+      const text = isBase58Bytes(program, 32)
+        ? `${reference}\nExplorer: ${explorerUrl('address', program, 'mainnet')}`
+        : reference;
       return {
         title: 'program',
         text,

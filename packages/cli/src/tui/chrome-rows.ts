@@ -130,8 +130,14 @@ export interface EmptyStateInput {
   rows: number;
 }
 
-/** The three-line empty state at the top of a new conversation. */
-export function emptyStateRows(theme: OmsTheme, glyphs: Glyphs, input: EmptyStateInput, suggestion: string): string[] {
+/** The three-line empty state at the top of a new conversation, and a fourth `tip` line when one is due. */
+export function emptyStateRows(
+  theme: OmsTheme,
+  glyphs: Glyphs,
+  input: EmptyStateInput,
+  suggestion: string,
+  tip?: string,
+): string[] {
   const title =
     colorText(theme, 'accent', `\x1b[1m${glyphs.mark} oms\x1b[22m`) +
     (input.version ? ' ' + colorText(theme, 'faint', input.version) : '');
@@ -143,5 +149,10 @@ export function emptyStateRows(theme: OmsTheme, glyphs: Glyphs, input: EmptyStat
       : `No model connected${glyphs.separator}${singleLine(input.folder, 80)}`,
   );
   if (input.rows < 8) return [title];
-  return [title, '  ' + where, '  ' + colorText(theme, 'faint', suggestion)];
+  return [
+    title,
+    '  ' + where,
+    '  ' + colorText(theme, 'faint', suggestion),
+    ...(tip ? ['  ' + colorText(theme, 'faint', singleLine(tip, 200))] : []),
+  ];
 }

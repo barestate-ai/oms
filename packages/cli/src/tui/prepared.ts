@@ -11,6 +11,8 @@ export interface CommandOutput {
   inPlace?: true;
   /** Clear the notice row once the note is shown. */
   clearNotice?: true;
+  /** Once the command's own work has ended, send this to the agent as the person's next message (/pr, /issue, /ci). */
+  ask?: string;
 }
 /**
  * A parsed command: either a refusal, whose message is the whole notice, or the work to run. The work returns nothing when

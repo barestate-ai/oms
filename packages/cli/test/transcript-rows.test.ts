@@ -829,3 +829,23 @@ test('thinking restored from history has no duration to give, and a sub-second t
   ]);
   assert.equal(plain(s.conversation.render(60))[0], '∴ Thought');
 });
+
+test('a connector call reads as what it does, in the connector’s name, not as a tool name and an argument', () => {
+  const s = session({ env: { OMS_REDUCED_MOTION: '1' } });
+  s.run('c1', 'github', { action: 'pr_view', number: '7' }, 'title: Add vault\nstate: open');
+  s.run('c2', 'docker', { action: 'logs', container: 'web', tail: 20 }, 'listening on 3000');
+  s.run('c3', 'mystery_tool', { query: 'x' }, 'ok');
+  const rows = plain(s.conversation.render(80));
+  assert.ok(
+    rows.some((row) => row.startsWith('● GitHub  view pull request #7')),
+    rows.join('\n'),
+  );
+  assert.ok(
+    rows.some((row) => row.startsWith('● Docker  last 20 log lines of web')),
+    rows.join('\n'),
+  );
+  assert.ok(
+    rows.some((row) => row.startsWith('● mystery_tool  "x"')),
+    'an unknown tool keeps its name and first argument',
+  );
+});

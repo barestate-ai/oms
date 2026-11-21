@@ -9,6 +9,8 @@ interface AccountOptions {
   bodyRows?(): number;
   render(): void;
   close(): void;
+  /** An optional line shown once after a successful sign-in. */
+  tip?(): string | undefined;
 }
 export class AccountPane {
   readonly body: Component;
@@ -27,6 +29,7 @@ export class AccountPane {
   private pending = true;
   private disposed = false;
   private scroll = 0;
+  private tip = '';
   constructor(controls: AccountPane['controls'], options: AccountOptions) {
     this.controls = controls;
     this.options = options;
@@ -66,6 +69,7 @@ export class AccountPane {
           },
           this.controller.signal,
         );
+        if (this.controls.snapshot().state === 'signed-in') this.tip = this.options.tip?.() ?? '';
       } else if (this.options.mode === 'logout') {
         const result = await this.controls.logout(this.controller.signal);
         this.message = result.serverRevoked
@@ -99,6 +103,7 @@ export class AccountPane {
       );
     if (this.message) lines.push(displayText(this.message, 2048));
     if (snapshot.message) lines.push(displayText(snapshot.message, 2048));
+    if (this.tip) lines.push(this.tip);
     lines.push('OMS sign-in enables hosted web search only · model keys stay in /connect');
     const rendered = lines.flatMap((line) =>
       wrapTextWithAnsi(colorText(this.options.theme(), 'foreground', line), Math.max(1, width)),

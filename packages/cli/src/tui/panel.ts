@@ -8,6 +8,7 @@ import {
 } from '@earendil-works/pi-tui';
 import { inGlyphs, type Glyphs } from './glyphs.ts';
 import { colorText, paintSurfaceRow, type OmsTheme, type ThemeRole } from './theme.ts';
+import { APPROVAL_TEXT_LIMIT } from '../connectors/approvals.ts';
 import { displayText, singleLine } from './transcript.ts';
 
 export interface BoxOptions {
@@ -102,13 +103,15 @@ export class Panel implements Component {
     this.options.body.invalidate();
     this.options.input?.invalidate();
   }
-  /** Mouse events inside the borders and padding go to the body, with coordinates counted from its first row. */
+  /** Mouse events inside the border go to the body in its own coordinates; the border and padding swallow them. */
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    const padX = 2;
-    const top = 1 + ((this.options.compact?.() ?? false) ? 0 : 1);
-    const y = event.y - top;
-    if (event.type !== 'wheel' && (y < 0 || y >= this.bodyRows() || event.x < 1 + padX)) return undefined;
-    return this.options.body.handleMouse?.({ ...event, x: event.x - 1 - padX, y });
+    const body = this.options.body;
+    if (!body.handleMouse) return undefined;
+    const x = event.x - 3;
+    const y = event.y - 1 - ((this.options.compact?.() ?? false) ? 0 : 1);
+    const width = event.width - 6;
+    if (x < 0 || y < 0 || x >= width || y >= this.bodyRows()) return { handled: true, focus: false };
+    return body.handleMouse({ ...event, x, y, width, height: this.bodyRows() });
   }
   render(width: number): string[] {
     const o = this.options;
@@ -130,6 +133,10 @@ export class Panel implements Component {
 }
 
 export interface ApprovalRequest {
+  /** The card's title; 'Allow host command?' when absent. */
+  title?: string;
+  /** `command` is a sentence about a connector action, not a shell command: no `$` prefix. */
+  plain?: boolean;
   requester?: string;
   reasons: readonly string[];
   command: string;
@@ -137,12 +144,12 @@ export interface ApprovalRequest {
   session: boolean;
 }
 
-/** Every wrapped row of the command, as the card draws it; nothing is cut except the 4096-character sanitizer cap. */
-export function approvalCommandRows(command: string, width: number): string[] {
+/** Every wrapped row of the command, as the card draws it: up to the limit callers are held to, so nothing is cut. */
+export function approvalCommandRows(command: string, width: number, plain = false): string[] {
   const content = Math.max(1, width - 6);
-  return displayText(command, 4096)
+  return displayText(command, APPROVAL_TEXT_LIMIT)
     .split('\n')
-    .flatMap((line, index) => wrapTextWithAnsi(index === 0 ? `$ ${line}` : `  ${line}`, content));
+    .flatMap((line, index) => wrapTextWithAnsi(plain ? line : index === 0 ? `$ ${line}` : `  ${line}`, content));
 }
 
 /** The window of the command the card shows; the rest is read by scrolling. */
@@ -173,7 +180,7 @@ export function approvalCard(
   const rows: string[] = [];
   if (request.requester) rows.push(colorText(theme, 'muted', `from ${singleLine(request.requester, 40)}`));
   if (reason) rows.push(...wrapTextWithAnsi(colorText(theme, 'warning', reason), content));
-  const command = approvalCommandRows(request.command, width);
+  const command = approvalCommandRows(request.command, width, request.plain);
   const shown = view ? Math.max(1, view.rows) : command.length;
   const offset = view ? Math.max(0, Math.min(view.offset, command.length - shown)) : 0;
   const locked = view ? !approvalFullyShown(command.length, { rows: shown, offset }) : false;
@@ -202,7 +209,15 @@ export function approvalCard(
       : []),
     keyOption(theme, 'n', `Deny${' '.repeat(2)}${colorText(theme, 'faint', 'esc')}`),
   );
-  return boxLines({ theme, glyphs, width, title: 'Allow host command?', border: 'warning', rows, padY: 0 });
+  return boxLines({
+    theme,
+    glyphs,
+    width,
+    title: request.title ?? 'Allow host command?',
+    border: 'warning',
+    rows,
+    padY: 0,
+  });
 }
 
 const keyOption = (theme: OmsTheme, key: string, label: string): string =>

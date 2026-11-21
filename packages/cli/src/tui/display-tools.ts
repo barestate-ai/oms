@@ -1,6 +1,7 @@
 import { basename, isAbsolute, relative } from 'node:path';
 import type { Component } from '@earendil-works/pi-tui';
 import { AGENT_TOOL, decodeProgramError, parseErrorCode } from '@oms/engine';
+import { connectorSummary } from '../connectors/extension.ts';
 
 /**
  * What the transcript says about each tool call: its verb, its target and what it came to, as text. Display only: the
@@ -256,6 +257,14 @@ export function describe(call: ToolCall, cwd?: string): Described {
       target,
       short: spec.short?.(call.args, cwd) ?? target,
     };
+  }
+  // A connector's tool reads as what it does: 'GitHub  view pull request #7'.
+  const connector = connectorSummary(call.name, call.args);
+  if (connector) {
+    const split = connector.indexOf(': ');
+    const label = split > 0 ? connector.slice(0, split) : call.name;
+    const what = split > 0 ? connector.slice(split + 2) : connector;
+    return { kind: 'other', doing: label, did: label, target: flat(what, 120), short: flat(what, 40) };
   }
   const first = Object.values(call.args).find((value) => typeof value === 'string');
   const target = first ? quoted(first) : '';

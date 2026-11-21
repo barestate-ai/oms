@@ -11,6 +11,7 @@ import {
   isKeyRelease,
   stripTerminalSequences,
   truncateToWidth,
+  wrapTextWithAnsi,
   getKeybindings,
   setKeybindings,
   KeybindingsManager,
@@ -39,6 +40,9 @@ import { SetupPane } from './setup.ts';
 import { copyToClipboard } from '@earendil-works/pi-coding-agent';
 import { HarnessSettingsPane } from './harness-settings.ts';
 import { AccountPane } from './account.ts';
+import { ConnectorsPane, sidebarSection } from './connectors.ts';
+import { APPROVAL_TEXT_LIMIT, createApprovalQueue, type Answer, type ApprovalEntry } from '../connectors/approvals.ts';
+import type { Connectors } from '../connectors/runtime.ts';
 import { ActionBar, PaneFrame } from './chrome.ts';
 import {
   emptyStateRows,
@@ -51,7 +55,14 @@ import {
   type RuleLabel,
 } from './chrome-rows.ts';
 import { glyphsFor, inGlyphs } from './glyphs.ts';
-import { approvalCard, approvalCommandRows, approvalFullyShown, confirmationCard, Panel } from './panel.ts';
+import {
+  approvalCard,
+  approvalCommandRows,
+  approvalFullyShown,
+  confirmationCard,
+  Panel,
+  type ApprovalRequest,
+} from './panel.ts';
 import { argumentUsage, popupStart, POPUP_ROWS, slashChoices, slashPopup } from './slash-popup.ts';
 import { SpinnerRow, toolVerb } from './spinner.ts';
 import {
@@ -270,6 +281,8 @@ export async function runOmsInterface(
     onFirstRunShown?: () => void;
     /** The version in the empty state; read from the release's package.json when omitted. */
     version?: string;
+    /** A folder chat's connectors (GitHub, Docker, AWS and more): the /connectors pane, their approvals and the sign-in tip. */
+    connectors?: Connectors;
   } = {},
 ): Promise<void> {
   const terminal = options.terminal ?? new ProcessTerminal();
@@ -316,18 +329,18 @@ export async function runOmsInterface(
   /** A confirmation shown in the status row for a few seconds. */
   let toastText: string | undefined;
   let toastTimer: NodeJS.Timeout | undefined;
-  let hostApproval:
-    | {
-        request: { requester?: string; reasons: readonly string[]; command: string; session: boolean };
-        /** The first command row the card shows; a command taller than the card scrolls. */
-        offset: number;
-        /** The last row of the command has been on screen, so Allow is open. */
-        read: boolean;
-        answer(allowed: boolean | 'session'): void;
-      }
-    | undefined;
+  /** Sandbox and connector approvals share one card above the composer, asked one at a time. */
+  const approvals = createApprovalQueue({
+    changed: () => syncApprovalUi(),
+    answered: () => {
+      approvalGuardUntil = Date.now() + 700;
+    },
+  });
   /** A card that appears right after an answer ignores Allow until this time, so a repeated key cannot approve it unseen. */
   let approvalGuardUntil = 0;
+  /** The card on screen: how far its command is scrolled, and whether its last row has been shown (Allow opens then). */
+  let approvalShown:
+    { shown: NonNullable<ReturnType<typeof approvals.current>>; offset: number; read: boolean } | undefined;
   /** The running turn, for the spinner row, the terminal title and the progress bar. */
   let busyStartedAt: number | undefined;
   let currentTool: { id: string; name: string; args: unknown } | undefined;
@@ -340,8 +353,9 @@ export async function runOmsInterface(
   /** Ctrl+C was pressed once on an idle prompt: a second press within QUIT_ARMED_MS quits. */
   let quitArmed: { timer: NodeJS.Timeout; notice: string } | undefined;
   let checkedItems: Requirement[] = [];
-  let setup: SetupPane | HarnessSettingsPane | AccountPane | undefined;
+  let setup: SetupPane | HarnessSettingsPane | AccountPane | ConnectorsPane | undefined;
   let overlayHandle: OverlayHandle | undefined;
+  let overlayWidth = 0;
   let commandIndex = 0;
   let commandDraft = '';
   let dismissedCommands: string | undefined;
@@ -443,8 +457,9 @@ export async function runOmsInterface(
     // Esc stops the work from the editor at rest; from the explorer or panel Ctrl+L goes to the composer first.
     interrupt: (): 'esc' | 'ctrl+l' | undefined =>
       canInterrupt() ? (focus === 'editor' && ide.atRest ? 'esc' : 'ctrl+l') : undefined,
-    awaiting: () => !!hostApproval,
+    awaiting: () => !!approvals.current(),
     startedAt: Date.now(),
+    connectors: () => sidebarSection(options.connectors, () => openConnectors()),
     copy: (text) => void copySelectionText(text, false),
     focusChanged: () => {
       if (view === 'workbench' && focus === 'editor') setFocus('editor');
@@ -497,11 +512,14 @@ export async function runOmsInterface(
   const sessionHash = hashOf(String(harness.session.sessionManager?.getSessionId?.() ?? ''));
   const suggestion = SUGGESTIONS[sessionHash % SUGGESTIONS.length]!;
   const composerPlaceholder = PLACEHOLDERS[sessionHash % PLACEHOLDERS.length]!;
-  /** The empty state: three lines at the top of a new conversation. */
+  /** The sign-in tip, once chosen, stays for this empty conversation; it is never part of the transcript. */
+  let emptyTip: string | undefined;
+  /** The empty state: three lines at the top of a new conversation, and the connectors tip when it is due. */
   function placeholder(width: number): string[] {
     const model = harness.session.model;
     const connected = models().some((candidate) => candidate.configured);
     const ready = !!model && hasModelConfiguration(model) && connected && selectedModelChoice()?.configured !== false;
+    emptyTip ??= connectorTip('empty');
     return emptyStateRows(
       theme!,
       glyphs,
@@ -516,6 +534,7 @@ export async function runOmsInterface(
         : !connected
           ? 'Run /connect to sign in, then /model to pick a model'
           : 'Run /model to pick a model',
+      emptyTip,
     ).map((line) => truncateToWidth(line, width, glyphs.ellipsis));
   }
   /** The art is the first block of the transcript, sized so it fits above the placeholder; it scrolls away with the conversation. */
@@ -627,7 +646,7 @@ export async function runOmsInterface(
 
   /** What the spinner row and the terminal title say the agent is doing. */
   function busyVerb(): string {
-    if (hostApproval) return 'Waiting for approval';
+    if (approvals.current()) return 'Waiting for approval';
     if (closing) return 'Closing';
     if (active?.cancellation || externalCancellation) return 'Cancelling';
     if (currentTool) return toolVerb(currentTool.name, currentTool.args);
@@ -714,17 +733,27 @@ export async function runOmsInterface(
     requestRender();
   }
   /** The panel floats over the conversation; the setup pane owns the keys while it is open. */
-  function showPanel(pane: SetupPane | HarnessSettingsPane | AccountPane): void {
+  function showPanel(pane: SetupPane | HarnessSettingsPane | AccountPane | ConnectorsPane): void {
     setup = pane;
+    // The connectors list has a name, an account and what the agent may do on every row: wider than the other screens.
+    const width = pane instanceof ConnectorsPane ? 92 : 72;
+    if (overlayHandle && overlayWidth !== width) {
+      overlayHandle.hide();
+      overlayHandle = undefined;
+    }
+    overlayWidth = width;
     overlayHandle ??= renderer.showOverlay(setupPanel, {
-      width: 72,
-      margin: 1,
+      width,
+      // pi-tui reads this on every render: the tall connectors list keeps the composer and status row clear from 20 rows.
+      get margin() {
+        return width === 92 && terminal.rows >= 20 ? { top: 1, right: 1, bottom: 4, left: 1 } : 1;
+      },
       anchor: 'center',
       maxHeight: '100%',
       nonCapturing: true,
     });
     // The approval card is never drawn under a panel: the panel waits behind it until the answer.
-    overlayHandle.setHidden(!!hostApproval);
+    overlayHandle.setHidden(!!approvals.current());
     renderer.setFocus(pane.input);
     requestRender();
   }
@@ -767,10 +796,36 @@ export async function runOmsInterface(
       render: requestRender,
       close: closeSetup,
       bodyRows: () => setupPanel.bodyRows(),
+      tip: () => connectorTip('login'),
     });
     clearDraft(draft);
     showPanel(pane);
   }
+  function openConnectors(draft?: string): void {
+    if (closing || !options.connectors) return;
+    setup?.dispose();
+    const pane = new ConnectorsPane(harness, options.connectors, {
+      theme: () => theme!,
+      render: requestRender,
+      close: closeSetup,
+      bodyRows: () => setupPanel.bodyRows(),
+    });
+    clearDraft(draft);
+    notice = '';
+    showPanel(pane);
+  }
+  /** The optional "connect your tools" line, when the schedule says so; counted as shown the moment it is handed out. */
+  function connectorTip(where: 'empty' | 'login'): string | undefined {
+    const connectors = options.connectors;
+    // Wait for the folder's remote to be known, so the line can name GitHub or GitLab.
+    if (!connectors || (where === 'empty' && connectors.remote() === undefined)) return undefined;
+    return connectors.tip(where, {
+      chat,
+      modelConfigured: hasModelConfiguration(harness.session.model) && !!selectedModelChoice()?.configured,
+      rows: terminal.rows,
+    });
+  }
+
   /** The command palette floats over the bottom of the screen: opening it moves no pane. */
   let paletteOverlay: OverlayHandle | undefined;
   function setPalette(next: Input | undefined): void {
@@ -1158,6 +1213,7 @@ export async function runOmsInterface(
       if (output) showOutput(command.name, output);
     };
     if (!canRunWhileBusy(command, argument)) {
+      let followUp: string | undefined;
       begin(
         command.activity ?? 'command',
         draft,
@@ -1169,10 +1225,15 @@ export async function runOmsInterface(
             if (output.failureShown && active) active.errorDisplayed = true;
             throw new Error(output.failure);
           }
+          followUp = output?.ask;
         },
         command.cancellable !== false,
         `/${command.name}`,
       );
+      // A command that gathered something for the agent (/pr, /issue, /ci) hands it over once its own work has ended.
+      void active?.completion.then(() => {
+        if (followUp && !closing) ask(followUp, undefined);
+      });
       return;
     }
     // Reads take no action slot and cannot be cancelled, but they are short and bounded.
@@ -1272,6 +1333,8 @@ export async function runOmsInterface(
     modelDetail: () => selectedModelChoice()?.detail,
     openSetup,
     openAccount,
+    openConnectors,
+    connectors: options.connectors,
     changeTheme,
     art: {
       setMode(mode) {
@@ -1446,7 +1509,7 @@ export async function runOmsInterface(
       yolo ? { text: 'yolo', role: 'error' } : { text: 'ask', role: 'muted' },
     ];
   };
-  const spinnerInRule = () => busy() && terminal.rows < 20 && !hostApproval && !confirmation;
+  const spinnerInRule = () => busy() && terminal.rows < 20 && !approvals.current() && !confirmation;
   // A draft taller than the composer scrolls: the top rule counts the rows above the view, so nothing is lost silently.
   const clipped = (): RuleLabel[] =>
     input.view.scrollTop > 0 && input.document.text
@@ -1531,41 +1594,51 @@ export async function runOmsInterface(
 
   // The warning that stays until dismissed, and the card for a host command that needs a yes or no.
   const noticeRow = component((width) => warningRows(theme!, notice, width));
+  /** The state of the card on screen; a new card starts at its first row, unread. */
+  function approvalView() {
+    const shown = approvals.current();
+    if (!shown) return (approvalShown = undefined);
+    if (approvalShown?.shown !== shown) approvalShown = { shown, offset: 0, read: false };
+    return approvalShown;
+  }
   /** How many command rows the card shows at this terminal height; a longer command scrolls inside it. */
   const approvalWindow = () => Math.max(2, Math.min(12, terminal.rows - 17));
+  const approvalTotal = (card: ApprovalRequest) =>
+    approvalCommandRows(card.command, terminal.columns, card.plain).length;
   /** The farthest the card's command can scroll. */
-  const approvalMaxOffset = () =>
-    hostApproval
-      ? Math.max(0, approvalCommandRows(hostApproval.request.command, terminal.columns).length - approvalWindow())
-      : 0;
+  const approvalMaxOffset = () => {
+    const card = approvalView()?.shown.card;
+    return card ? Math.max(0, approvalTotal(card) - approvalWindow()) : 0;
+  };
   /** Allow is open once the whole command has been on screen. */
   const approvalRead = () => {
-    if (!hostApproval) return true;
-    const total = approvalCommandRows(hostApproval.request.command, terminal.columns).length;
-    hostApproval.read ||= approvalFullyShown(total, { rows: approvalWindow(), offset: hostApproval.offset });
-    return hostApproval.read;
+    const view = approvalView();
+    if (!view?.shown.card) return true;
+    view.read ||= approvalFullyShown(approvalTotal(view.shown.card), { rows: approvalWindow(), offset: view.offset });
+    return view.read;
   };
   let approvalLines: string[] = [];
   const approvalRow: Component = {
     invalidate() {},
     render(width) {
-      approvalLines = hostApproval
-        ? approvalCard(theme!, glyphs, hostApproval.request, width, {
-            rows: approvalWindow(),
-            offset: hostApproval.read ? Math.min(hostApproval.offset, approvalMaxOffset()) : hostApproval.offset,
-          })
-        : confirmation
-          ? confirmationCard(theme!, glyphs, confirmation.question, width)
-          : [];
+      const view = approvalView();
+      if (view)
+        approvalLines = view.shown.card
+          ? approvalCard(theme!, glyphs, view.shown.card, width, {
+              rows: approvalWindow(),
+              offset: view.read ? Math.min(view.offset, approvalMaxOffset()) : view.offset,
+            })
+          : wrapTextWithAnsi(displayText(view.shown.text, 4096), width);
+      else approvalLines = confirmation ? confirmationCard(theme!, glyphs, confirmation.question, width) : [];
       return approvalLines;
     },
     // A click on an option answers like its key: Allow stays shut until the command has been read.
     handleMouse(event) {
-      if ((!hostApproval && !confirmation) || event.button !== 'left') return undefined;
+      if ((!approvals.current() && !confirmation) || event.button !== 'left') return undefined;
       if (event.type === 'press') return { handled: true, focus: false };
       if (event.type !== 'click') return undefined;
       const letter = /^│ {2}([ysn]) {2}/.exec(stripTerminalSequences(approvalLines[event.y] ?? ''))?.[1];
-      if (hostApproval) {
+      if (approvals.current()) {
         if (letter) answerApproval(letter as 'y' | 's' | 'n');
       } else if (confirmation && (letter === 'y' || letter === 'n')) {
         const pending = confirmation;
@@ -1578,12 +1651,18 @@ export async function runOmsInterface(
   };
   /** Answer the approval card as its key does: n always denies; y and s wait for a fully shown command and the guard. */
   function answerApproval(letter: 'y' | 's' | 'n'): void {
-    const asked = hostApproval;
+    const asked = approvals.current();
     if (!asked) return;
     if (letter === 'n') asked.answer(false);
     else if (!approvalRead() || Date.now() < approvalGuardUntil) return;
     else if (letter === 'y') asked.answer(true);
-    else if (harness.kind === 'chat') asked.answer('session');
+    else if (asked.session) asked.answer('session');
+  }
+  /** A card going up or coming down: panels step aside for it, the dashboard follows, the screen redraws. */
+  function syncApprovalUi(): void {
+    overlayHandle?.setHidden(!!approvals.current());
+    ide.touchDashboard();
+    requestRender();
   }
 
   /**
@@ -1605,7 +1684,8 @@ export async function runOmsInterface(
     const facts: StatusFact[] = [];
     if (!headerShown()) {
       facts.push({ key: 'folder', text: sessionLabel(harness), role: 'muted' });
-      const branch = branchName();
+      // The workbench's own status row names the branch.
+      const branch = view === 'workbench' ? undefined : branchName();
       if (branch) facts.push({ key: 'branch', text: branch, role: 'muted' });
     }
     if (harness.chain?.rpcUrl()) facts.push({ key: 'chip', text: 'surfpool', role: 'muted', dot: 'success' });
@@ -1648,10 +1728,12 @@ export async function runOmsInterface(
     const usageHint = popup || paletteInput ? undefined : argumentUsage(draft, harness.kind);
     // In the workbench the editor, explorer, panel and shell know their own keys and messages.
     const ideLine =
-      view === 'workbench' && !setup && !paletteInput && !hostApproval && !confirmation ? ide.statusLine() : undefined;
+      view === 'workbench' && !setup && !paletteInput && !approvals.current() && !confirmation
+        ? ide.statusLine()
+        : undefined;
     const ownsHints = !!ideLine && ['editor', 'explorer', 'panel', 'terminal'].includes(focus) && !popup && !usageHint;
     const shownToast =
-      toastText !== undefined && !hostApproval && !confirmation
+      toastText !== undefined && !approvals.current() && !confirmation
         ? { text: toastText, role: 'accent' as const }
         : ideLine?.toast;
     return [
@@ -1664,11 +1746,11 @@ export async function runOmsInterface(
         hints: ownsHints
           ? ideHints(ideLine.hints)
           : statusHints({
-              ...(hostApproval
+              ...(approvals.current()
                 ? {
                     approval: !approvalRead()
                       ? ('read' as const)
-                      : hostApproval.request.session
+                      : approvals.current()!.session
                         ? ('once-or-session' as const)
                         : ('once' as const),
                   }
@@ -1695,10 +1777,13 @@ export async function runOmsInterface(
   const setupInput = component((width) => setup?.input.render(width) ?? []);
   /** The floating panel for the model, connect, theme, settings and account screens: 60% of the rows, 72 columns. */
   const overlayRows = () =>
-    terminal.rows < 24
-      ? // From 20 rows the centered panel stays clear of the composer's rules and the status row; below that every row counts.
-        Math.max(5, terminal.rows - (terminal.rows >= 20 ? 8 : 2))
-      : Math.min(terminal.rows - 2, Math.max(14, Math.floor(terminal.rows * 0.6)));
+    // The connectors list wants every connector and its next step on screen: up to 34 rows above the composer.
+    setup instanceof ConnectorsPane
+      ? Math.min(34, terminal.rows - (terminal.rows >= 20 ? 5 : 2))
+      : terminal.rows < 24
+        ? // From 20 rows the centered panel stays clear of the composer's rules and the status row; below that every row counts.
+          Math.max(5, terminal.rows - (terminal.rows >= 20 ? 8 : 2))
+        : Math.min(terminal.rows - 2, Math.max(14, Math.floor(terminal.rows * 0.6)));
   const setupPanel = new Panel({
     theme: () => theme!,
     glyphs,
@@ -1731,7 +1816,7 @@ export async function runOmsInterface(
     { component: component(() => ['']), basis: 1, shrink: 0, visible: headerShown },
     { component: body, basis: 0, grow: 1, shrink: 1, minSize: 1, visible: () => view === 'harness' },
     { component: workbenchLayout, basis: 0, grow: 1, shrink: 1, minSize: 1, visible: () => view === 'workbench' },
-    { component: approvalRow, basis: 'auto', shrink: 0, visible: () => !!hostApproval || !!confirmation },
+    { component: approvalRow, basis: 'auto', shrink: 0, visible: () => !!approvals.current() || !!confirmation },
     { component: spinner, basis: 1, shrink: 0, visible: () => busy() && !spinnerInRule() },
     {
       component: commandMenu,
@@ -1762,49 +1847,67 @@ export async function runOmsInterface(
         : [...ide.areas(), 'input', ...(ide.agentDrawer ? ['conversation' as const] : [])];
     setFocus(order[(order.indexOf(focus) + (backward ? order.length - 1 : 1)) % order.length]!);
   }
-  harness.setHostApproval?.(
-    (request, signal) =>
-      new Promise<boolean | 'session'>((resolve) => {
-        if (closing || signal?.aborted || hostApproval) {
-          resolve(false);
-          return;
-        }
-        const abort = () => finish(false);
-        const finish = (allowed: boolean | 'session') => {
-          signal?.removeEventListener('abort', abort);
-          hostApproval = undefined;
-          const outcome = allowed === 'session' ? 'Allowed for this session' : allowed ? 'Allowed once' : 'Denied';
-          // The record keeps the whole command that was decided on, not the first 300 characters of it.
-          conversation.note('', `${outcome}: ${displayText(request.command, 4096)}`);
-          approvalGuardUntil = Date.now() + 700;
-          overlayHandle?.setHidden(false);
-          ide.touchDashboard();
-          requestRender();
-          resolve(allowed);
-        };
-        confirmation = undefined;
-        hostApproval = {
-          request: {
-            ...(request.requester ? { requester: request.requester } : {}),
-            reasons: request.reasons,
-            command: request.command,
-            session: harness.kind === 'chat',
-          },
-          offset: 0,
-          read: false,
-          answer: finish,
-        };
-        signal?.addEventListener('abort', abort, { once: true });
-        overlayHandle?.setHidden(true);
-        ide.touchDashboard();
-        requestRender();
-      }),
-  );
+  const hostApprovalCard = (request: {
+    requester?: string;
+    reasons: readonly string[];
+    command: string;
+  }): ApprovalRequest => ({
+    ...(request.requester ? { requester: request.requester } : {}),
+    reasons: request.reasons,
+    command: request.command,
+    session: harness.kind === 'chat',
+  });
+  /** Ask on the card, and leave one line in the conversation saying what was decided. */
+  const askApproval = (entry: ApprovalEntry & { subject: string }): Promise<Answer> => {
+    confirmation = undefined;
+    return approvals.request(entry).then((answer) => {
+      if (!closing) {
+        const outcome = answer === 'session' ? 'Allowed for this session' : answer ? 'Allowed once' : 'Denied';
+        // The record keeps the whole command that was decided on, not the first 300 characters of it.
+        conversation.note('', `${outcome}: ${displayText(entry.subject, 4096)}`);
+      }
+      return answer;
+    });
+  };
+  harness.setHostApproval?.((request, signal) => {
+    if (closing) return Promise.resolve(false);
+    // The card shows the whole command or none of it: one too long to show is refused, not approved unseen.
+    if (request.command.length > APPROVAL_TEXT_LIMIT) {
+      conversation.note('', 'Denied: that command is too long to show in full for approval.');
+      return Promise.resolve(false);
+    }
+    return askApproval({
+      text: `Allow host command? ${request.reasons.join(', ')}\n${request.command}`,
+      card: hostApprovalCard(request),
+      subject: request.command,
+      session: harness.kind === 'chat',
+      signal,
+    });
+  });
+  // The agent's connector actions (a pull request comment, a container run) ask on the same card, with everything that goes out.
+  options.connectors?.setApprover((request, signal) => {
+    if (closing) return Promise.resolve(false);
+    const command = [request.headline ?? request.summary, request.detail].filter(Boolean).join('\n');
+    return askApproval({
+      text: `Allow ${singleLine(request.label, 40)}: ${singleLine(request.summary, 600)}?`,
+      card: {
+        title: `Allow ${singleLine(request.label, 40)}?`,
+        reasons: [],
+        command,
+        plain: true,
+        session: request.sessionAllowable,
+      },
+      subject: `${singleLine(request.label, 40)}: ${command}`,
+      session: request.sessionAllowable,
+      signal,
+    });
+  });
   const removeInput = renderer.addInputListener((data) => {
     try {
       repairHiddenFocus();
       if (isKeyRelease(data)) return { consume: true };
-      if (hostApproval) {
+      const pending = approvals.current();
+      if (pending) {
         const scroll = matchesKey(data, 'up')
           ? -1
           : matchesKey(data, 'down')
@@ -1818,19 +1921,20 @@ export async function runOmsInterface(
                   : matchesKey(data, 'end')
                     ? Infinity
                     : 0;
-        if (scroll) {
-          hostApproval.offset = Math.max(0, Math.min(approvalMaxOffset(), hostApproval.offset + scroll));
+        const view = approvalView();
+        if (scroll && view) {
+          view.offset = Math.max(0, Math.min(approvalMaxOffset(), view.offset + scroll));
           approvalRead();
           requestRender();
-        } else if (data.toLowerCase() === 'y' || (data.toLowerCase() === 's' && harness.kind === 'chat'))
+        } else if (data.toLowerCase() === 'y' || (data.toLowerCase() === 's' && pending.session))
           answerApproval(data.toLowerCase() as 'y' | 's');
         else if (data.toLowerCase() === 'n' || matchesKey(data, 'escape')) answerApproval('n');
         else if (matchesKey(data, 'ctrl+q')) {
-          hostApproval.answer(false);
+          pending.answer(false);
           quit();
         } else if (matchesKey(data, 'ctrl+c')) {
           // Ctrl+C cancels the work that is waiting on the answer.
-          hostApproval.answer(false);
+          pending.answer(false);
           cancel();
         }
         return { consume: true };
@@ -2086,6 +2190,7 @@ export async function runOmsInterface(
     }
   });
   let unsubscribe: (() => void) | undefined;
+  let offConnectors: (() => void) | undefined;
   let clock: NodeJS.Timeout | undefined;
   const onSignal = () => quit(true);
   try {
@@ -2147,6 +2252,9 @@ export async function runOmsInterface(
         fail(error);
       }
     });
+    // The folder's remote becomes known a moment after the first frame; the tip's wording waits for it.
+    offConnectors = options.connectors?.onChange(requestRender);
+    void options.connectors?.prime();
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
     process.on('SIGHUP', onSignal);
@@ -2170,8 +2278,10 @@ export async function runOmsInterface(
     await finished;
   } finally {
     closing = true;
-    hostApproval?.answer(false);
+    approvals.denyAll();
     harness.setHostApproval?.(undefined);
+    options.connectors?.setApprover(undefined);
+    offConnectors?.();
     clearInterval(clock);
     clearTimeout(toastTimer);
     spinner.stop();
