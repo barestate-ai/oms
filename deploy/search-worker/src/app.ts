@@ -6,6 +6,25 @@ import { QUEUE_WAIT_MS, type UsageEvent } from './gate.ts';
 import { isIP, isPrivateAddress } from './net.ts';
 import type { Grant } from './semaphore.ts';
 
+/** The `oms` gateway SearchBilling charge result (contract shared with the gateway worker). */
+export type SearchChargeResult =
+  | {
+      ok: true;
+      source: 'allowance' | 'balance';
+      month: string;
+      plan: 'free' | 'pro' | 'team';
+      usedUnits: number;
+      allowanceUnits: number;
+      chargedWalletUnits: number;
+    }
+  | { ok: false; code: 'SEARCH_PAYMENT_REQUIRED' | 'UNFUNDED_USAGE' | 'INVALID_REQUEST'; message: string };
+
+/** The `oms` gateway's SearchBilling entrypoint, reached through the BILLING service binding. */
+export interface SearchBillingRpc {
+  charge(input: { userId: string; requestId: string; kind: 'search' | 'fetch' }): Promise<SearchChargeResult>;
+  refund(input: { userId: string; requestId: string }): Promise<{ ok: true }>;
+}
+
 export interface Env {
   CACHE: KVNamespace;
   GATE: DurableObjectNamespace;
@@ -19,6 +38,8 @@ export interface Env {
   RATE_PER_MIN?: string;
   /** The `oms` gateway Worker, used only to check OMS session tokens on /oms/search/v1/*. */
   GATEWAY?: Fetcher;
+  /** The `oms` gateway's SearchBilling entrypoint: signed-in /search and /fetch calls are charged through it. */
+  BILLING: SearchBillingRpc;
 }
 
 /** Who a call is charged to in /usage. */
@@ -317,6 +338,52 @@ async function sessionUser(request: Request, env: Env, deps: Deps): Promise<stri
   return userId;
 }
 
+const BILLING_PAGE = 'https://barestate.xyz/oms/billing';
+const billingUnavailable = () => gatewayError(503, 'SEARCH_BILLING_UNAVAILABLE', 'search billing is unavailable');
+
+/**
+ * Charges one hosted call for a signed-in user before it is served. Returns the refusal or unavailability
+ * response, or undefined when the charge went through; anything but a well-formed answer fails closed.
+ */
+async function chargeSearch(
+  env: Env,
+  user: string,
+  kind: 'search' | 'fetch',
+  requestId: string,
+): Promise<Response | undefined> {
+  let result: SearchChargeResult;
+  try {
+    result = await env.BILLING.charge({ userId: user, requestId, kind });
+  } catch {
+    return billingUnavailable();
+  }
+  if (result?.ok === true) return undefined;
+  if (result?.ok === false) {
+    if (result.code === 'SEARCH_PAYMENT_REQUIRED')
+      return gatewayError(
+        402,
+        'SEARCH_PAYMENT_REQUIRED',
+        `Your free searches for this month are used up. Add credits or upgrade to Pro at ${BILLING_PAGE}`,
+      );
+    if (result.code === 'UNFUNDED_USAGE')
+      return gatewayError(
+        402,
+        'UNFUNDED_USAGE',
+        `You have unpaid usage on your OMS account. Settle it at ${BILLING_PAGE}`,
+      );
+    if (result.code === 'INVALID_REQUEST')
+      return gatewayError(402, 'INVALID_REQUEST', 'invalid search billing request');
+  }
+  return billingUnavailable();
+}
+
+/** Gives a charge back when the call failed with nothing served; a failed refund must not mask the real error. */
+async function refundSearch(env: Env, user: string, requestId: string): Promise<void> {
+  try {
+    await env.BILLING.refund({ userId: user, requestId });
+  } catch {}
+}
+
 /** POST /oms/search/v1/search and /v1/fetch for signed-in OMS users. */
 async function userRoute(subpath: string, request: Request, env: Env, deps: Deps): Promise<Response> {
   const pathname = subpath === '/v1/search' ? '/search' : subpath === '/v1/fetch' ? '/fetch' : undefined;
@@ -326,7 +393,19 @@ async function userRoute(subpath: string, request: Request, env: Env, deps: Deps
   if (!user) return UNAUTHENTICATED();
   const wait = await gate(env).limit(`user:${user}`, USER_RATE_PER_MIN);
   if (wait) return gatewayError(429, 'RATE_LIMITED', 'Too many search calls; slow down.', retryAfter(wait));
-  return gatewayStyle(await serve(pathname, request, env, deps, { token: 'session', user }));
+  // Charged once per request, cache hits included; a call that fails with a 5xx is refunded below.
+  const requestId = crypto.randomUUID();
+  const refusal = await chargeSearch(env, user, pathname === '/search' ? 'search' : 'fetch', requestId);
+  if (refusal) return refusal;
+  let response: Response;
+  try {
+    response = await serve(pathname, request, env, deps, { token: 'session', user });
+  } catch {
+    await refundSearch(env, user, requestId);
+    return gatewayError(500, 'SEARCH_UNAVAILABLE', 'internal error');
+  }
+  if (response.status >= 500) await refundSearch(env, user, requestId);
+  return gatewayStyle(response);
 }
 
 export function createApp(deps: Deps) {

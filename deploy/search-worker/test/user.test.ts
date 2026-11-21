@@ -174,12 +174,12 @@ test('per-user daily credits are in /usage alongside the per-token totals', asyn
 });
 
 test('the raw session token never appears in KV, logs, usage or upstream calls', async () => {
-  const { userCall, call, kv, upstream, events } = setup(routes);
+  const { userCall, call, kv, upstream, events, billing } = setup(routes);
   await userCall('/v1/search', { query: 'q' });
   await userCall('/v1/fetch', { url: 'https://docs.example.com/p' });
   await userCall('/v1/search', { query: 'q' }, 'Bearer bogus_token_0123456789abcdef');
   const usage = await (await call('/usage', undefined, ADMIN)).text();
-  const everything = JSON.stringify([[...kv.data.entries()], logged, usage, events, upstream.calls]);
+  const everything = JSON.stringify([[...kv.data.entries()], logged, usage, events, upstream.calls, billing.calls]);
   for (const secret of [SESSION, 'bogus_token_0123456789abcdef']) assert.ok(!everything.includes(secret), secret);
   assert.ok(upstream.calls.every((c) => !c.headers.includes('oms_session')));
 });

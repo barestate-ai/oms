@@ -210,6 +210,45 @@ export function retryAfterMs(header: string | null, now: number): number {
   return Number.isNaN(date) ? DEFAULT_RETRY_AFTER_MS : Math.max(0, date - now);
 }
 
+const OMS_BILLING_PAGE = 'https://barestate.xyz/oms/billing';
+const PAYWALL_CODE = /^[A-Z_]{1,64}$/;
+
+/**
+ * `error.code` from an oms 402 body, read with a hard byte cap; undefined when the body is oversized, not JSON,
+ * or the code is not an UPPER_SNAKE token. The server's message is never surfaced.
+ */
+async function paywallCode(response: Response): Promise<string | undefined> {
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) return undefined;
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      size += value.byteLength;
+      if (size > 4_096) {
+        await reader.cancel().catch(() => {});
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    reader.releaseLock();
+    const code = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: { code?: unknown } })?.error?.code;
+    return typeof code === 'string' && PAYWALL_CODE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The failure line a 402 from oms records; only the validated code picks the text, never the server's message. */
+function paywallText(code: string | undefined): string {
+  if (code === 'UNFUNDED_USAGE') return `unpaid usage — settle it at ${OMS_BILLING_PAGE}`;
+  if (code === 'SEARCH_PAYMENT_REQUIRED')
+    return `monthly free searches used up — add credits or upgrade at ${OMS_BILLING_PAGE}`;
+  return `payment required — see ${OMS_BILLING_PAGE}`;
+}
+
 // Two lists: Node checks IPv4 addresses against IPv4-mapped IPv6 rules, so ::ffff:0:0/96 would block every IPv4 address.
 const BLOCKED_V4 = new BlockList();
 const BLOCKED_V6 = new BlockList();
@@ -608,6 +647,11 @@ export function createWeb(config: WebConfig): WebControls {
         blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
         void response.body?.cancel().catch(() => {});
         failures.push(`${backend.name}: HTTP ${response.status}`);
+        continue;
+      }
+      // A 402 is a paywall, not a rate limit: name where to pay and keep falling through to BYOK backends.
+      if (backend.name === 'oms' && response.status === 402) {
+        failures.push(`${backend.name}: ${paywallText(await paywallCode(response))}`);
         continue;
       }
       // Bodies of failures are never echoed: a provider error must not carry text past the untrusted frame.
