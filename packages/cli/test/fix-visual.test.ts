@@ -419,7 +419,7 @@ test('/settings at 80x24 shows several settings, one hint, and a search prompt w
     terminal.send('/settings');
     terminal.send('\r');
     const screen = await terminal.until((s) => s.includes('Settings') && s.includes('Search settings'));
-    const items = ['Thinking', 'Steering', 'Follow-up', 'HTTP'].filter((name) => screen.includes(name));
+    const items = [/Thinking/, /Steering|while busy/, /Follow-up/, /HTTP|timeout/].filter((name) => name.test(screen));
     assert.ok(items.length >= 3, `${items.length} settings visible\n${screen}`);
     assert.match(screen, /❯ +Search settings/);
     assert.doesNotMatch(screen, /Esc to cancel/, 'one hint, in the border');

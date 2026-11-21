@@ -16,7 +16,9 @@ export const acceptsArt = (argument: string): boolean =>
 export const acceptsWeb = (argument: string): boolean => ['', 'on', 'off'].includes(argument);
 export const acceptsLayout = (argument: string): boolean => ['editor', 'balanced', ''].includes(argument);
 
-export const YOLO_NOTICE = 'YOLO: commands run without asking and without the sandbox.';
+export const YOLO_NOTICE = 'YOLO on · commands run without approval or sandbox · /yolo to turn off';
+const YOLO_OFF_NOTICE = 'YOLO off · risky commands are sandboxed or ask first';
+const plural = (count: number, noun: string, many = `${noun}s`): string => `${count} ${count === 1 ? noun : many}`;
 
 type Draft = string | undefined;
 
@@ -96,22 +98,29 @@ export const uiCommands = {
     ctx.clearDraft(draft);
     const { web } = ctx.harness;
     if (!web) {
-      ctx.setNotice('Web access is not available in this session.');
+      ctx.setNotice("Web search isn't available here");
       return;
     }
     if (argument) web.set(argument === 'on');
     const used = web.usage();
     ctx.setNotice(
-      `Web ${web.enabled() ? 'on' : 'off'} · ${used.webSearch} searches, ${used.webFetch} fetches, ${used.solanaMcp} Solana MCP calls · /web ${web.enabled() ? 'off' : 'on'}`,
+      `Web ${web.enabled() ? 'on' : 'off'} · ${plural(used.webSearch, 'search', 'searches')} · ${plural(used.webFetch, 'fetch', 'fetches')} · ${plural(used.solanaMcp, 'docs lookup')} · /web ${web.enabled() ? 'off' : 'on'}`,
     );
   },
   yolo(ctx: CommandContext, _argument: string, draft: Draft): void {
     ctx.clearDraft(draft);
     const { harness } = ctx;
     if (harness.kind !== 'chat') return;
-    const on = !harness.yolo.enabled();
-    harness.yolo.set(on);
-    ctx.setNotice(on ? YOLO_NOTICE : 'YOLO off. Commands run in the sandbox again.');
+    if (harness.yolo.enabled()) {
+      harness.yolo.set(false);
+      ctx.setNotice(YOLO_OFF_NOTICE);
+      return;
+    }
+    // YOLO drops the safety net, so turning it on takes a deliberate key.
+    ctx.confirm('Turn on YOLO? Commands will run without approval or sandbox', () => {
+      harness.yolo.set(true);
+      ctx.setNotice(YOLO_NOTICE);
+    });
   },
   terminal(ctx: CommandContext, argument: string, draft: Draft): void {
     ctx.clearDraft(draft);

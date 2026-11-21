@@ -19,47 +19,63 @@ export function sessionLabel(harness: OmsSession): string {
     : basename(harness.workspace.root);
 }
 
+/** `30m0s` and `1h0m0s` read better as `30m` and `1h`. */
+const duration = (ms: number): string =>
+  formatDuration(ms)
+    .replace(/(?<=[hm])0s$/, '')
+    .replace(/(?<=h)0m$/, '');
+
+/** Aligned label and value rows; a value on several lines keeps its column. */
+export function labelRows(
+  rows: readonly (readonly [string, string])[],
+  width = Math.max(...rows.map(([label]) => label.length)) + 2,
+): string {
+  return rows
+    .map(([label, value]) =>
+      value
+        .split('\n')
+        .map((line, index) => `${(index === 0 ? label : '').padEnd(width)}${line}`)
+        .join('\n'),
+    )
+    .join('\n');
+}
+
 /** What is left of the token, spend and time allowance, on one line. */
 export function budgetLine(harness: OmsSession): string {
   const budget = harness.budget.snapshot();
-  const microUsd = budget.remaining.spendMicroUsd;
-  const dollars = formatMicroUsd(microUsd);
-  const scope = budget.executionMode === 'interactive' ? 'this turn' : 'run';
-  return `${scope}: ${budget.remaining.tokens}t · ${Math.ceil(budget.remaining.wallClockMs / 1000)}s · API ${dollars} left · ${singleLine(budget.accounting, 80)}${budget.exhausted ? ' EXHAUSTED' : ''}`;
+  const dollars = formatMicroUsd(budget.remaining.spendMicroUsd);
+  const allowance = `${formatInteger(budget.remaining.tokens)} tokens`;
+  const time = duration(budget.remaining.wallClockMs);
+  // In an interactive session tokens and time reset every turn; the spend cap is for the whole session.
+  const left =
+    budget.executionMode === 'interactive'
+      ? `${allowance} and ${time} per turn · ${dollars} left`
+      : `${allowance} · ${time} · ${dollars} left`;
+  return (
+    left + (budget.exhausted ? ' · exhausted' : '') + (budget.accounting === 'known' ? '' : ' · usage unconfirmed')
+  );
 }
 
-/** Calls, tokens and spend recorded against the worker role. */
-function roleLines(harness: OmsSession): string {
+/** Calls made and what the provider cached, from the budget ledger. Empty before the first call. */
+function callsLine(harness: OmsSession): string {
   const reservations = harness.budget.reservations();
   const receipts = new Map(harness.budget.receipts().map((receipt) => [receipt.dispatchId, receipt]));
-  return (['worker'] as const)
-    .map((role) => {
-      const admitted = reservations.filter((item) => (item.provenance?.role ?? 'worker') === role);
-      if (admitted.length === 0) return '';
-      let tokens = 0,
-        cost = 0,
-        cacheRead = 0,
-        cacheWrite = 0,
-        missing = false,
-        unknown = 0;
-      for (const item of admitted) {
-        const receipt = receipts.get(item.dispatchId);
-        if (!receipt || receipt.outcome === 'uncertain') {
-          unknown++;
-          continue;
-        }
-        if (receipt.outcome !== 'known') continue;
-        tokens += receipt.tokens ?? 0;
-        cost += receipt.spendMicroUsd ?? 0;
-        if (receipt.usage) {
-          cacheRead += receipt.usage.cacheReadTokens;
-          cacheWrite += receipt.usage.cacheWriteTokens;
-        } else missing = true;
-      }
-      return `${role}: ${admitted.length} calls · ${tokens} known tokens · $${(cost / 1e6).toFixed(6)} known spend · ${unknown} pending/unknown · ${missing ? 'historical cache counts unavailable' : `cache read ${cacheRead} / write ${cacheWrite}`}`;
-    })
-    .filter(Boolean)
-    .join('\n');
+  if (reservations.length === 0) return '';
+  let cacheRead = 0,
+    cacheWrite = 0,
+    unconfirmed = 0;
+  for (const item of reservations) {
+    const receipt = receipts.get(item.dispatchId);
+    if (!receipt || receipt.outcome === 'uncertain') unconfirmed++;
+    else if (receipt.outcome === 'known' && receipt.usage) {
+      cacheRead += receipt.usage.cacheReadTokens;
+      cacheWrite += receipt.usage.cacheWriteTokens;
+    }
+  }
+  return (
+    `${reservations.length} · cache ${formatInteger(cacheRead)} read / ${formatInteger(cacheWrite)} written` +
+    (unconfirmed ? ` · ${unconfirmed} unconfirmed` : '')
+  );
 }
 
 export function prepareDiff(argument: string, harness: OmsSession): Prepared {
@@ -68,7 +84,7 @@ export function prepareDiff(argument: string, harness: OmsSession): Prepared {
     ok: true,
     async run() {
       if (harness.kind === 'chat' && !harness.folder.git)
-        return { title: 'diff', text: 'This folder is not a git repository, so there is no diff to show.' };
+        return { title: 'diff', text: 'Not a git repository · nothing to compare' };
       const [codeRoot, baseOid, branch] =
         harness.kind === 'chat'
           ? [harness.root, 'HEAD', gitBranch(harness.root)]
@@ -78,7 +94,7 @@ export function prepareDiff(argument: string, harness: OmsSession): Prepared {
         diff = await taskDiff(codeRoot, baseOid, path);
       } catch (error) {
         if (harness.kind === 'chat' && /unknown revision|ambiguous argument/.test(String(error)))
-          return { title: 'diff', text: 'This repository has no commits yet, so there is no diff to show.' };
+          return { title: 'diff', text: 'No commits yet · nothing to compare' };
         throw error;
       }
       const head = `Against ${harness.kind === 'chat' ? 'HEAD' : `base ${baseOid.slice(0, 12)}`} · ${branch}${path ? ` · ${path}` : ''}`;
@@ -94,11 +110,11 @@ export function prepareDiff(argument: string, harness: OmsSession): Prepared {
         return { title: 'diff', text: `${summary}\n\n${diff.patch}` };
       return {
         title: 'diff',
-        text: `${summary}\n\n${diff.patch.slice(0, DIFF_SHOWN_CHARS)}\n[Full diff opened in the workbench as a read-only report.]`,
+        text: `${summary}\n\n${diff.patch.slice(0, DIFF_SHOWN_CHARS)}\n[Full diff opened in the workbench]`,
         report: {
           id: `diff-${Date.now()}`,
           text: previewBytes(
-            `${summary}\n\n${diff.patch}${diff.truncated ? '\n[Diff cut at 256 KiB.]' : ''}`,
+            `${summary}\n\n${diff.patch}${diff.truncated ? '\n[Diff truncated at 256 KiB]' : ''}`,
             REPORT_BYTES,
           ),
         },
@@ -107,7 +123,7 @@ export function prepareDiff(argument: string, harness: OmsSession): Prepared {
   };
 }
 
-/** Tokens, spend and time from the budget ledger, then what is left. */
+/** Tokens, spend and time against their caps, then the calls behind them. */
 export function prepareUsage(argument: string, harness: OmsSession): Prepared {
   if (argument) return refuse('Usage: /usage');
   return {
@@ -130,18 +146,28 @@ export function prepareUsage(argument: string, harness: OmsSession): Prepared {
           known++;
         } else unbroken++;
       }
-      const { used, caps } = snapshot;
+      const { used, caps, remaining } = snapshot;
+      const calls = callsLine(harness);
       return {
         title: 'usage',
-        text: [
-          `Tokens: input ${formatInteger(input)} · cached ${formatInteger(cacheRead)} read / ${formatInteger(cacheWrite)} written · output ${formatInteger(output)}` +
-            `${unbroken ? ` · ${unbroken} earlier calls have no breakdown` : ''}${known + unbroken === 0 ? ' · no model calls yet' : ''}`,
-          `Spend: ${formatMicroUsd(used.spendMicroUsd)} of ${formatMicroUsd(caps.spendMicroUsd)} API cap`,
-          `Time: ${formatDuration(used.wallClockMs)} of ${formatDuration(caps.wallClockMs)}`,
-          `Tokens against cap: ${formatInteger(used.tokens)} of ${formatInteger(caps.tokens)}`,
-          `Accounting: ${snapshot.accounting}${snapshot.exhausted ? ' · budget EXHAUSTED' : ''}`,
-          `Left: ${budgetLine(harness)}`,
-        ].join('\n'),
+        text:
+          labelRows([
+            ['Tokens', `${formatInteger(used.tokens)} of ${formatInteger(caps.tokens)}`],
+            [
+              'Detail',
+              `input ${formatInteger(input)} · cached ${formatInteger(cacheRead)} read / ${formatInteger(cacheWrite)} written · output ${formatInteger(output)}` +
+                `${unbroken ? ` · ${unbroken} earlier ${unbroken === 1 ? 'call has' : 'calls have'} no breakdown` : ''}${known + unbroken === 0 ? ' · no model calls yet' : ''}`,
+            ],
+            [
+              'Spend',
+              `${formatMicroUsd(used.spendMicroUsd)} of ${formatMicroUsd(caps.spendMicroUsd)} · ${formatMicroUsd(remaining.spendMicroUsd)} left`,
+            ],
+            ['Time', `${duration(used.wallClockMs)} of ${duration(caps.wallClockMs)}`],
+            ...(calls ? [['Calls', calls] as const] : []),
+          ]) +
+          (snapshot.accounting === 'known' && !snapshot.exhausted
+            ? ''
+            : `\n${snapshot.exhausted ? 'Budget used up' : 'Usage unconfirmed'}${snapshot.accounting === 'known' ? '' : ' · a failed request may not be counted'}`),
       };
     },
   };
@@ -157,29 +183,44 @@ function gitBranch(folder: string): string {
   }
 }
 
-/** Requirements, proof state, model and the full budget. The requirements are re-read when the command runs. */
+/** The model and what is left to spend; a task adds its requirements. The requirements are re-read when the command runs. */
 export function prepareStatus(ctx: CommandContext): Prepared {
   return {
     ok: true,
     async run() {
       const { harness } = ctx;
-      if (harness.kind === 'chat')
-        return {
-          title: 'status',
-          clearNotice: true,
-          text: `Model: ${ctx.modelDetail() ?? 'Use /model to review connected providers and selection.'}\nToken allowance / spend / time: ${budgetLine(harness)}\n${roleLines(harness)}`,
-        };
+      const model = harness.session.model;
+      const detail = ctx.modelDetail();
+      const context = harness.session.getContextUsage?.()?.percent;
+      const rows: (readonly [string, string])[] = [
+        [
+          'Model',
+          (model && model.provider.trim() && model.id.trim() && model.provider !== 'unknown' && model.id !== 'unknown'
+            ? `${singleLine(model.provider, 80)}/${singleLine(model.id, 120)}`
+            : 'none selected · /model') + (detail ? `\n${singleLine(detail, 200)}` : ''),
+        ],
+        ...(context == null ? [] : [['Context', `${Math.round(context)}% full`] as const]),
+        ['Budget', budgetLine(harness)],
+        ...(harness.web ? [['Web', harness.web.enabled() ? 'on' : 'off'] as const] : []),
+      ];
+      if (harness.kind === 'chat') return { title: 'status', clearNotice: true, text: labelRows(rows) };
       const requirements = ctx.checkRequirements();
+      const items = requirements.items
+        .slice(0, 12)
+        .map((item) => `  ${singleLine(item.id, 80)}  ${singleLine(item.status, 80)}  ${singleLine(item.title, 160)}`);
+      const task: (readonly [string, string])[] = [
+        ['Task', singleLine(harness.task.id, 120)],
+        [
+          'Checked',
+          requirements.proofAvailable ? `requirements at ${requirements.checkedAt}` : 'requirements unavailable',
+        ],
+      ];
+      // One label column for the task and for the model and budget below its requirements.
+      const width = Math.max(...[...task, ...rows].map(([label]) => label.length)) + 2;
       return {
-        title: 'task status',
+        title: 'status',
         clearNotice: true,
-        text:
-          `Task: ${singleLine(harness.task.id, 120)}\nProof: ${requirements.proofAvailable ? 'last checked ' + requirements.checkedAt : 'unavailable; prior context retained'}\n` +
-          requirements.items
-            .slice(0, 12)
-            .map((item) => `${singleLine(item.id, 80)}  ${singleLine(item.status, 80)}  ${singleLine(item.title, 160)}`)
-            .join('\n') +
-          `\nModel: ${ctx.modelDetail() ?? 'Use /model to review connected providers and selection.'}\nToken allowance / spend / time: ${budgetLine(harness)}\n${roleLines(harness)}`,
+        text: [labelRows(task, width), ...items, '', labelRows(rows, width)].join('\n'),
       };
     },
   };

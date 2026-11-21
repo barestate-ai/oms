@@ -5,7 +5,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChatSession, HarnessSession, OmsSession } from '@oms/engine';
-import { OMS_COMMANDS, chatHelp, commandHelp, commandMatches } from '../src/tui/commands.ts';
+import {
+  OMS_COMMANDS,
+  chatHelp,
+  closestCommand,
+  commandHelp,
+  commandMatches,
+  commandProblem,
+  keysHelp,
+} from '../src/tui/commands.ts';
 import {
   acceptsArgument,
   canRunWhileBusy,
@@ -88,12 +96,18 @@ function harnessFake(extra: Record<string, unknown> = {}): HarnessSession {
         remaining: { tokens: 880, spendMicroUsd: 4_997_500, wallClockMs: 539_000 },
         accounting: 'known',
         exhausted: false,
+        executionMode: 'interactive',
         reasons: [],
       }),
       receipts: () => [
-        { outcome: 'known', usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 50, cacheWriteTokens: 5 } },
-        { outcome: 'known' },
+        {
+          dispatchId: 'd1',
+          outcome: 'known',
+          usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 50, cacheWriteTokens: 5 },
+        },
+        { dispatchId: 'd2', outcome: 'known' },
       ],
+      reservations: () => [{ dispatchId: 'd1' }, { dispatchId: 'd2' }],
     },
     ...extra,
   } as unknown as HarnessSession;
@@ -117,17 +131,58 @@ const refusal = (prepared: Prepared | undefined): string => {
 
 // ------------------------------------------------------------------ the command list
 
-test('folder chat help explains every summary binding in complete sentences', () => {
+test('folder chat help lists its commands, then a few keys in aligned columns, in the terse house style', () => {
   const summary = chatHelp().split('\n\n').at(-1)!;
   assert.equal(
     summary,
-    'Press Enter to send. Use Shift+Enter to add a line. Press Esc to cancel.\n' +
-      'Press Ctrl+O to show full tool output. Press Ctrl+T to hide thinking.\n' +
-      'Press Ctrl+D to leave. Run /help keys to list every key.',
+    'Keys\n' +
+      '  esc         cancel\n' +
+      '  ctrl+c      cancel · twice to quit\n' +
+      '  ctrl+k      commands\n' +
+      '  /help keys  all keys',
   );
-  assert.doesNotMatch(summary, /[·—–]/);
+  assert.doesNotMatch(summary, /\b(Press|Use|Run) |\bleave\b/);
   assert.match(chatHelp(), /\/connect +Sign in or add an API key/);
   assert.match(chatHelp(), /\/model +Pick a model/);
+  assert.match(chatHelp(), /^\/connect {4}Sign in/, 'names pad to the longest command, not to a long list of them');
+  assert.match(chatHelp(), /Also: \/theme \/art \/settings \/login \/logout · \/exit to quit/);
+});
+
+test('/help keys lists the keys of the current mode from one table, and names quit and cancel the same way everywhere', () => {
+  const chat = keysHelp('chat');
+  const task = keysHelp('task');
+  for (const keys of [chat, task]) {
+    assert.match(keys, /ctrl\+c +cancel work · twice to quit/);
+    assert.match(keys, /ctrl\+q +quit \(ctrl\+d on an empty line\)/);
+    for (const key of ['f3', 'f4', 'f8', 'pgup pgdn']) assert.match(keys, new RegExp(`^ {2}${key} `, 'm'), key);
+    assert.doesNotMatch(keys, /\bleave\b|Press |Use /);
+  }
+  // A chat has neither a requirements panel nor a toolbar.
+  assert.doesNotMatch(chat, /^ {2}(f2|f6|f10) /m);
+  for (const key of ['f2', 'f6', 'f10']) assert.match(task, new RegExp(`^ {2}${key} `, 'm'), key);
+});
+
+test('a mistyped command names itself and the nearest command; a bad argument says what the command takes', () => {
+  assert.equal(commandProblem({ name: 'thme', argument: '' }, 'chat'), '/thme not found · did you mean /theme?');
+  assert.equal(commandProblem({ name: 'mdoel', argument: '' }, 'chat'), '/mdoel not found · did you mean /model?');
+  assert.equal(commandProblem({ name: 'xyzzy', argument: '' }, 'chat'), '/xyzzy not found · /help');
+  // A task-only command is not offered to a chat.
+  assert.equal(closestCommand('verfy', 'chat'), undefined);
+  assert.equal(closestCommand('verfy', 'task')?.name, 'verify');
+  assert.equal(commandProblem({ name: 'terminal', argument: 'x' }, 'chat'), 'Usage: /terminal [start|stop|hide]');
+  assert.equal(commandProblem({ name: 'clear', argument: 'x' }, 'chat'), '/clear takes no arguments');
+  assert.equal(commandProblem({ name: 'open', argument: '' }, 'chat'), 'Usage: /open <path>');
+});
+
+test('a chat lists the commands its /help shows first, and /quit stays out of the full list', () => {
+  const names = commandMatches('/', 'chat')!.map((command) => command.name);
+  assert.deepEqual(names.slice(0, 3), ['connect', 'model', 'yolo']);
+  assert.ok(!names.includes('quit'));
+  assert.ok(names.includes('exit'));
+  assert.deepEqual(
+    commandMatches('/qu', 'chat')!.map((command) => command.name),
+    ['quit'],
+  );
 });
 
 test('the menu and help list every new command, with Solana after Work, and no planned ones', () => {
@@ -542,6 +597,42 @@ test('/program prints the program reference text without a network or chain', as
   assert.match(refusal(prepareSlash('program', '  ', harnessFake())), /Usage/);
 });
 
+test('/web counts read as plain English at every number', () => {
+  const notices: string[] = [];
+  const say = (searches: number, fetches: number, lookups: number) => {
+    const ctx = {
+      harness: {
+        web: {
+          enabled: () => true,
+          set() {},
+          usage: () => ({ webSearch: searches, webFetch: fetches, solanaMcp: lookups }),
+        },
+      },
+      clearDraft() {},
+      setNotice: (text: string) => notices.push(text),
+    } as unknown as CommandContext;
+    findCommand('web')!.run(ctx, '', undefined);
+    return notices.at(-1);
+  };
+  assert.equal(say(0, 0, 0), 'Web on · 0 searches · 0 fetches · 0 docs lookups · /web off');
+  assert.equal(say(1, 1, 1), 'Web on · 1 search · 1 fetch · 1 docs lookup · /web off');
+  assert.equal(say(2, 12, 3), 'Web on · 2 searches · 12 fetches · 3 docs lookups · /web off');
+});
+
+test('/program reads for a person: no tool-call syntax, a table of instructions, correct plurals', async () => {
+  const list = (await run(prepareSlash('program', 'token', harnessFake()))).text;
+  assert.doesNotMatch(list, /source_fetch|ask for one instruction for accounts/);
+  assert.match(list, /^Instructions · \/program token <name> for accounts and arguments, \/program token \* for all$/m);
+  assert.match(list, /^ {2}Instruction +Tag +Accounts$/m);
+  assert.match(list, /^ {2}transfer +03 +3 accounts$/m);
+  assert.match(list, /^ {2}initializeMultisig2 +13 +1 account$/m);
+  assert.doesNotMatch(list, /\b1 accounts\b/);
+  // One instruction keeps its account listing and loses only the tool-call line.
+  const detail = (await run(prepareSlash('program', 'token transfer', harnessFake()))).text;
+  assert.match(detail, /Accounts in order:\n {2}0\. source \(writable\)/);
+  assert.doesNotMatch(detail, /source_fetch/);
+});
+
 test('/error decodes locally across Anchor, System and Token tables, local IDLs, and says when nothing answers', async () => {
   const harness = harnessFake();
   const text = async (argument: string, h: HarnessSession = harness) =>
@@ -554,7 +645,7 @@ test('/error decodes locally across Anchor, System and Token tables, local IDLs,
   assert.match(await text('1'), /InsufficientFunds/);
   assert.match(await text('6001'), /defined by the program itself/);
   const missing = await text('4242');
-  assert.match(missing, /not in the built-in tables or local IDLs/);
+  assert.match(missing, /not in built-in tables or local IDLs/);
   assert.match(missing, /IDL or source/);
   assert.doesNotMatch(missing, /knowledge|configured|enabled/i);
   assert.match(refusal(prepareSlash('error', 'abc', harness)), /Usage/);
@@ -585,7 +676,7 @@ test('/error decodes locally across Anchor, System and Token tables, local IDLs,
     },
   });
   const failed = await text('4242', broken);
-  assert.match(failed, /not in the built-in tables or local IDLs/);
+  assert.match(failed, /not in built-in tables or local IDLs/);
   assert.doesNotMatch(failed, /service down|knowledge/i, 'a failed lookup shows no service text');
 });
 
@@ -603,7 +694,7 @@ test('/error reads the task IDLs for program-defined codes', async () => {
     );
     const harness = harnessFake({ task: { id: 't', codeRoot: root, baseOid: 'a'.repeat(40), branch: 'b' } });
     const out = (await run(prepareSlash('error', '6001', harness))).text;
-    assert.match(out, /vault: Locked — Vault is locked \[local IDL\]/);
+    assert.match(out, /vault: Locked · Vault is locked \(local IDL\)/);
     assert.match((await run(prepareSlash('error', `6001 ${WALLET}`, harness))).text, /Locked/);
     assert.match(
       (await run(prepareSlash('error', '3012 vault', harness))).text,
@@ -680,7 +771,9 @@ test('/usage displays dollars consistently without changing micro-USD values', a
       remaining: { ...base.remaining, spendMicroUsd: left },
     };
     const original = structuredClone(snapshot);
-    const harness = harnessFake({ budget: { snapshot: () => snapshot, receipts: () => [] } });
+    const harness = harnessFake({
+      budget: { snapshot: () => snapshot, receipts: () => [], reservations: () => [] },
+    });
     const out = await run(prepareSlash('usage', '', harness));
     assert.deepEqual(out.text.match(/\$[\d,.]+/g), dollars);
     assert.match(out.text, /no model calls yet/);
@@ -688,15 +781,34 @@ test('/usage displays dollars consistently without changing micro-USD values', a
   }
 });
 
-test('/usage reports token breakdown, spend, time, caps and the remaining line', async () => {
+test('/usage reports tokens, spend, time and calls as aligned label and value rows', async () => {
   const usageHarness = harnessFake();
   const out = await run(prepareSlash('usage', '', usageHarness));
-  assert.match(out.text, /input 100 · cached 50 read \/ 5 written · output 20 · 1 earlier calls have no breakdown/);
-  assert.match(out.text, /Spend: \$0\.0025 of \$5 API cap/);
-  assert.match(out.text, /Time: 1m1s of 10m0s/);
-  assert.match(out.text, /Tokens against cap: 120 of 1,000/);
-  assert.ok(out.text.endsWith(`Left: ${budgetLine(usageHarness)}`));
+  assert.equal(
+    out.text,
+    [
+      'Tokens  120 of 1,000',
+      'Detail  input 100 · cached 50 read / 5 written · output 20 · 1 earlier call has no breakdown',
+      'Spend   $0.0025 of $5 · $4.9975 left',
+      'Time    1m1s of 10m',
+      'Calls   2 · cache 50 read / 5 written',
+    ].join('\n'),
+  );
   assert.match(refusal(prepareSlash('usage', 'x', harnessFake())), /Usage/);
+});
+
+test('/usage says so when usage is unconfirmed or the budget is used up, and only then', async () => {
+  const base = harnessFake().budget.snapshot();
+  for (const [change, line] of [
+    [{ accounting: 'unknown' }, 'Usage unconfirmed · a failed request may not be counted'],
+    [{ exhausted: true }, 'Budget used up'],
+  ] as const) {
+    const harness = harnessFake({
+      budget: { snapshot: () => ({ ...base, ...change }), receipts: () => [], reservations: () => [] },
+    });
+    assert.ok((await run(prepareSlash('usage', '', harness))).text.endsWith(`\n${line}`), line);
+  }
+  assert.doesNotMatch((await run(prepareSlash('usage', '', harnessFake()))).text, /unconfirmed|used up/);
 });
 
 test('/test picks Anchor, then an npm test script, then Cargo, and refuses when none exists', async () => {
@@ -733,7 +845,7 @@ test('/test picks Anchor, then an npm test script, then Cargo, and refuses when 
     assert.match(out.text, /^\$ anchor test/);
     assert.match(out.text, /Exit: 3/);
     assert.match(out.text, /END\nboom/);
-    assert.match(out.text, /backend output truncated/);
+    assert.match(out.text, /\[output truncated\]/);
     assert.ok(out.text.length < 8_400);
     assert.equal(ran.length, 1);
     assert.match(refusal(prepareSlash('test', 'extra', harness)), /Usage/);
@@ -823,7 +935,7 @@ test('typing a task-only command in a chat says what to use instead', () => {
   const chat = chatFake('/nonexistent', false);
   assert.equal(
     refusal(prepareSlash('verify', '', chat)),
-    'Nothing to verify here. Use /test, or /goal <text> --check "<command>".',
+    'Nothing to verify here · /test, or /goal <text> --check "<command>"',
   );
   assert.equal(
     refusal(prepareSlash('requirements', '', chat)),
@@ -831,20 +943,56 @@ test('typing a task-only command in a chat says what to use instead', () => {
   );
 });
 
-test('/status in a chat shows the model and budget without a task or proof line', async () => {
+test('/status in a chat shows the model and budget as label and value rows, without a task or proof line', async () => {
   const chat = chatFake('/nonexistent', false);
+  (chat.session as unknown as { model: unknown }).model = { provider: 'local', id: 'test-model' };
   const text = (
     await run(
       findCommand('status')?.run(
-        { harness: chat, modelDetail: () => 'local/test-model' } as unknown as CommandContext,
+        { harness: chat, modelDetail: () => 'Ready · spending limit applies' } as unknown as CommandContext,
         '',
         undefined,
       ) as Prepared,
     )
   ).text;
-  assert.match(text, /Model: local\/test-model/);
-  assert.match(text, /Token allowance \/ spend \/ time:/);
-  assert.doesNotMatch(text, /Task:|Proof:/);
+  assert.equal(
+    text,
+    [
+      'Model   local/test-model',
+      '        Ready · spending limit applies',
+      'Budget  880 tokens and 8m59s per turn · $4.9975 left',
+    ].join('\n'),
+  );
+  assert.doesNotMatch(text, /Task:|Proof:|Token allowance|known/);
+});
+
+test('/status says when no model is selected, and flags unconfirmed or used-up budgets', async () => {
+  const chat = chatFake('/nonexistent', false);
+  const snapshot = { ...chat.budget.snapshot(), accounting: 'unknown' as const, exhausted: true };
+  const noModel = { ...chat, budget: { ...chat.budget, snapshot: () => snapshot } } as ChatSession;
+  const text = (
+    await run(
+      findCommand('status')?.run(
+        { harness: noModel, modelDetail: () => undefined } as unknown as CommandContext,
+        '',
+        undefined,
+      ) as Prepared,
+    )
+  ).text;
+  assert.match(text, /^Model {3}none selected · \/model\n/);
+  // The session's placeholder model is not a pick the user made.
+  (noModel.session as unknown as { model: unknown }).model = { provider: 'unknown', id: 'unknown' };
+  const placeholder = (
+    await run(
+      findCommand('status')?.run(
+        { harness: noModel, modelDetail: () => undefined } as unknown as CommandContext,
+        '',
+        undefined,
+      ) as Prepared,
+    )
+  ).text;
+  assert.match(placeholder, /^Model {3}none selected · \/model\n/);
+  assert.match(text, /\$4\.9975 left · exhausted · usage unconfirmed$/);
 });
 
 test('/session in a chat shows the folder and its git state, never a task or worktree', async () => {
@@ -907,12 +1055,12 @@ test('/diff in a chat compares the folder with HEAD, or says why there is nothin
     try {
       assert.equal(
         (await run(prepareSlash('diff', '', chatFake(plain, false)))).text,
-        'This folder is not a git repository, so there is no diff to show.',
+        'Not a git repository · nothing to compare',
       );
       execFileSync('git', ['-C', plain, 'init', '-q']);
       assert.equal(
         (await run(prepareSlash('diff', '', chatFake(plain, true)))).text,
-        'This repository has no commits yet, so there is no diff to show.',
+        'No commits yet · nothing to compare',
       );
     } finally {
       rmSync(plain, { recursive: true, force: true });
@@ -933,4 +1081,15 @@ test('/clear and /goal in a chat never mention a task or its verifier', async ()
   findCommand('goal')?.run(ctx, '', undefined);
   assert.match(shown[0]!, /^No goal set\. Start one with \/goal <text> --check "<command>"\.\nBudget:/);
   assert.doesNotMatch(shown[0]!, /verifier/);
+});
+
+test('/help never runs a long command into its description', () => {
+  for (const kind of ['task', 'chat'] as const) {
+    const help = commandHelp(kind);
+    for (const command of OMS_COMMANDS) {
+      const usage = `/${command.name}${command.argument ? ' ' + command.argument : ''}`;
+      if (usage.length > 26 && help.includes(usage)) assert.ok(help.includes(`${usage}\n`), `${kind}: ${usage}`);
+    }
+    for (const line of help.split('\n')) assert.doesNotMatch(line, /[\]>]\p{Lu}/u, `${kind}: ${line}`);
+  }
 });

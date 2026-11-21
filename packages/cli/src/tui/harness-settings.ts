@@ -5,7 +5,8 @@ import {
   type Focusable,
   type SettingItem,
 } from '@earendil-works/pi-tui';
-import type { HarnessSession, HarnessSettingsSnapshot } from '@oms/engine';
+import type { HarnessSettingsSnapshot, OmsSession } from '@oms/engine';
+import { hostSandbox } from '@oms/sandbox';
 import { glyphsFor } from './glyphs.ts';
 import { colorText, type OmsTheme } from './theme.ts';
 import { displayText } from './transcript.ts';
@@ -21,11 +22,30 @@ interface HarnessSettingsOptions {
   notice: (message: string) => void;
 }
 
-/** The upstream settings list, with only live harness controls and explicit noninteractive policy rows. */
+/** What the pane reads of a session: its settings, and for the sandbox row which kind it is and whether YOLO is on. */
+export type HarnessSettingsHost = Pick<OmsSession, 'settings'> & {
+  kind?: OmsSession['kind'];
+  yolo?: { enabled(): boolean };
+};
+
+const QUEUE_LABELS = { 'one-at-a-time': 'one at a time', all: 'all at once' } as const;
+const queueMode = (label: string): 'one-at-a-time' | 'all' | undefined =>
+  label === QUEUE_LABELS.all ? 'all' : label === QUEUE_LABELS['one-at-a-time'] ? 'one-at-a-time' : undefined;
+
+/** 30000 reads `30s`, 300000 `5m`, and 0 (no timeout) `off`. */
+const timeoutLabel = (ms: number): string =>
+  ms === 0 ? 'off' : ms % 60_000 === 0 ? `${ms / 60_000}m` : `${Math.round(ms / 1000)}s`;
+function timeoutMs(label: string): number | undefined {
+  if (label === 'off') return 0;
+  const match = /^(\d+)([sm])$/.exec(label);
+  return match ? Number(match[1]) * (match[2] === 'm' ? 60_000 : 1000) : undefined;
+}
+
+/** The upstream settings list, with only live controls and two fixed rows that say what stays off. */
 export class HarnessSettingsPane {
   readonly body: Component;
   readonly input: Component & Focusable;
-  private readonly harness: Pick<HarnessSession, 'settings'>;
+  private readonly harness: HarnessSettingsHost;
   private readonly options: HarnessSettingsOptions;
   private list: SettingsList | undefined;
   private listRows = 0;
@@ -35,7 +55,7 @@ export class HarnessSettingsPane {
   private disposed = false;
   private message = '';
 
-  constructor(harness: Pick<HarnessSession, 'settings'>, options: HarnessSettingsOptions) {
+  constructor(harness: HarnessSettingsHost, options: HarnessSettingsOptions) {
     this.harness = harness;
     this.options = options;
     this.body = {
@@ -53,11 +73,7 @@ export class HarnessSettingsPane {
       invalidate() {},
       handleInput: (data) => this.handleInput(data),
       render: (width) => [
-        truncateToWidth(
-          colorText(options.theme(), 'muted', this.pending ? 'Saving preference…' : 'Type to filter'),
-          width,
-          '',
-        ),
+        truncateToWidth(colorText(options.theme(), 'muted', this.pending ? 'Saving…' : ''), width, ''),
       ],
     };
   }
@@ -66,7 +82,30 @@ export class HarnessSettingsPane {
     return 'Settings';
   }
   get hint(): string {
-    return '↑↓ choose · enter change · type to filter · esc close';
+    return '↑↓ choose · enter change · esc close';
+  }
+
+  /** The Sandbox row: what actually confines commands here, never a guess. */
+  private sandboxRow(state: HarnessSettingsSnapshot): SettingItem {
+    const chat = this.harness.kind !== 'task';
+    const backend = state.executionBackend ?? (chat ? 'host' : undefined);
+    const sandboxed = backend === 'host' && hostSandbox() === 'seatbelt' && !this.harness.yolo?.enabled();
+    const [value, description] =
+      backend === 'docker'
+        ? ['Docker', 'Fixed for this task']
+        : sandboxed
+          ? [
+              'macOS sandbox',
+              chat
+                ? 'Commands are confined to this folder · /yolo turns this off'
+                : 'Commands are confined to this task',
+            ]
+          : chat
+            ? this.harness.yolo?.enabled()
+              ? ['none (YOLO)', 'Commands run without approval · /yolo turns this off']
+              : ['none', 'Risky commands ask first · /yolo skips asking']
+            : ['none', 'Commands ask first · use --sandbox docker for a new task'];
+    return { id: 'sandbox', label: 'Sandbox', currentValue: value, description };
   }
 
   private items(state: HarnessSettingsSnapshot): SettingItem[] {
@@ -76,87 +115,49 @@ export class HarnessSettingsPane {
         label: 'Thinking',
         currentValue: state.supportsThinking ? state.thinkingLevel : 'unavailable',
         description: state.supportsThinking
-          ? 'Applies now and saves the default plus this model’s thinking preference.'
-          : 'The current model does not support thinking. Choose a reasoning model with /model.',
+          ? 'How much the model reasons before answering'
+          : "This model doesn't support thinking · /model to pick another",
         ...(state.supportsThinking ? { values: state.availableThinkingLevels } : {}),
       },
       {
         id: 'steering',
-        label: 'Steering queue',
-        currentValue: state.steeringMode,
-        values: ['one-at-a-time', 'all'],
-        description: 'How queued steering messages reach the live agent. Existing messages are retained.',
+        label: 'Messages while busy',
+        currentValue: QUEUE_LABELS[state.steeringMode],
+        values: Object.values(QUEUE_LABELS),
+        description: 'Send what you type while the agent works one at a time, or all at once',
       },
       {
         id: 'followup',
-        label: 'Follow-up queue',
-        currentValue: state.followUpMode,
-        values: ['one-at-a-time', 'all'],
-        description:
-          'How queued follow-ups reach the live agent after its current work. Existing messages are retained.',
+        label: 'Follow-ups',
+        currentValue: QUEUE_LABELS[state.followUpMode],
+        values: Object.values(QUEUE_LABELS),
+        description: 'Send queued follow-ups one at a time, or all at once',
       },
       {
         id: 'http',
-        label: 'HTTP idle (ms)',
-        currentValue: String(state.httpIdleTimeoutMs),
-        values: [...new Set(['30000', '60000', '120000', '300000', '0', String(state.httpIdleTimeoutMs)])],
-        description:
-          'Applies to the next provider request. 0 disables the idle timeout; the task wall-clock budget still applies.',
+        label: 'Request timeout',
+        currentValue: timeoutLabel(state.httpIdleTimeoutMs),
+        values: [...new Set([30_000, 60_000, 120_000, 300_000, 0, state.httpIdleTimeoutMs].map(timeoutLabel))],
+        description: 'How long to wait on a model that goes quiet · off waits as long as it takes',
       },
       {
         id: 'model',
         label: 'Default model',
         currentValue: displayText(state.defaultModel, 200),
-        description: 'Use /model to choose and save a model from the configured provider catalog.',
+        description: 'Change with /model',
       },
+      ...(state.executionBackend || this.harness.kind !== 'task' ? [this.sandboxRow(state)] : []),
       {
-        id: 'compaction',
-        label: 'Compaction',
-        currentValue: 'off · policy',
-        description:
-          'Budget guard: automatic summaries and branch summaries would create additional unmetered model calls.',
-      },
-      {
-        id: 'warming',
-        label: 'Cache warming',
-        currentValue: 'off · policy',
-        description: 'Budget guard: no background or speculative model requests.',
-      },
-      {
-        id: 'retry',
-        label: 'Retries',
-        currentValue: 'off · policy',
-        description: 'Budget guard: provider and agent retries cannot create hidden extra requests.',
-      },
-      {
-        id: 'transport',
-        label: 'Transport',
-        currentValue: 'SSE · policy',
-        description:
-          'Only the priced, metered streaming path is enabled; websocket and cached transports are constrained.',
-      },
-      {
-        id: 'resources',
-        label: 'Host resources',
-        currentValue: 'off · policy',
-        description:
-          'No repository/global executable discovery, packages, extensions, skills or prompts. Project settings are never trusted.',
-      },
-      {
-        id: 'tools',
-        label: 'Execution backend',
-        currentValue: state.executionBackend ?? 'docker',
-        description:
-          state.executionBackend === 'host'
-            ? 'No sandbox. Commands need approval; network is unrestricted. Set OMS_SANDBOX=docker or launch with --sandbox docker for a new task.'
-            : 'Strict Docker sandbox. Set OMS_SANDBOX=host or launch with --sandbox host for a new task. Backend identity is pinned per task.',
+        id: 'guards',
+        label: 'Spend guards',
+        currentValue: 'on',
+        description: 'No auto-compaction, retries, cache warming or background requests',
       },
       {
         id: 'telemetry',
         label: 'Telemetry',
-        currentValue: 'off · policy',
-        description:
-          'Analytics and install telemetry are disabled. Credentials and device identity are never shown in settings.',
+        currentValue: 'off',
+        description: 'No analytics or install telemetry',
       },
     ];
   }
@@ -217,7 +218,6 @@ export class HarnessSettingsPane {
     const palette = this.options.theme();
     this.listTop = this.message ? 2 : 1;
     const lines = [
-      colorText(palette, 'muted', 'Harness settings are private and saved on this device.'),
       ...(this.message ? [colorText(palette, 'warning', this.message)] : []),
       ...this.tidy(this.ensureList().render(Math.max(48, width)), palette),
     ];
@@ -238,14 +238,18 @@ export class HarnessSettingsPane {
         if (level === undefined) throw new Error('Unsupported thinking level');
         await controls.setThinkingLevel(level);
       } else if (id === 'steering' || id === 'followup') {
-        if (value !== 'all' && value !== 'one-at-a-time') throw new Error('Unsupported queue mode');
-        if (id === 'steering') await controls.setSteeringMode(value);
-        else await controls.setFollowUpMode(value);
-      } else if (id === 'http') await controls.setHttpIdleTimeoutMs(Number(value));
-      if (!this.disposed) this.options.notice('Harness preference saved. No model request was sent.');
+        const mode = queueMode(value);
+        if (mode === undefined) throw new Error('Unsupported queue mode');
+        if (id === 'steering') await controls.setSteeringMode(mode);
+        else await controls.setFollowUpMode(mode);
+      } else if (id === 'http') {
+        const ms = timeoutMs(value);
+        if (ms === undefined) throw new Error('Unsupported timeout');
+        await controls.setHttpIdleTimeoutMs(ms);
+      }
+      if (!this.disposed) this.options.notice('Saved');
     } catch {
-      if (!this.disposed)
-        this.message = 'Preference could not be saved. Check private settings; the current session may have changed.';
+      if (!this.disposed) this.message = "Couldn't save setting";
     } finally {
       this.pending = false;
       if (!this.disposed) {

@@ -508,7 +508,7 @@ export class Conversation {
     const entry = this.tools.get(id);
     if (entry)
       this.finish(entry, {
-        content: [{ type: 'text', text: displayText(errorMessage ?? 'Operation aborted', 400) }],
+        content: [{ type: 'text', text: displayText(errorMessage ?? 'Cancelled', 400) }],
         isError: true,
       });
   }
@@ -733,7 +733,7 @@ export class Conversation {
     // Only the latest entry that is cut short names the key that expands it.
     const latest = this.toolsExpanded ? -1 : plain.findLastIndex((drawn) => drawn.collapsed);
     if (latest >= 0) plain[latest] = this.draw(blocks[latest]!, width, true, now, lit);
-    const lines: string[] = this.trimmed ? [this.style.faint(`${this.style.g.more} earlier entries hidden`)] : [];
+    const lines: string[] = this.trimmed ? [this.style.faint(`${this.style.g.more} earlier messages hidden`)] : [];
     const layout: Conversation['layout'] = [];
     for (const [index, drawn] of plain.entries()) {
       if (!drawn.lines.length) continue;

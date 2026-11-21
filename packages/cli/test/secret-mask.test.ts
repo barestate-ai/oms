@@ -34,6 +34,30 @@ test('provider keys and keypair arrays are hidden wherever they appear', () => {
   assert.equal(maskSecrets(text), Array(6).fill(MASK).join('\n'));
 });
 
+test('GitLab, Slack, Linear and GitHub tokens are hidden wherever they appear', () => {
+  const tokens = [
+    `glpat-${'a1B2'.repeat(5)}`,
+    'xo' + 'xb-123456789012-123456789012-abcdefghijklmnopqrstuvwx',
+    'xo' + 'xa-2-123456789012-abcdefghij',
+    'xo' + 'xp-123456789012-123456789012-abcdef123456',
+    'xo' + 'xr-123456789012-abcdefghijkl',
+    `lin_api_${'Z9y8'.repeat(10)}`,
+    `github_pat_${'11AB'.repeat(5)}_${'c'.repeat(40)}`,
+    ...['o', 'u', 's', 'r', 'p'].map((kind) => `gh${kind}_${'d'.repeat(36)}`),
+  ];
+  assert.equal(maskSecrets(tokens.join('\n')), Array(tokens.length).fill(MASK).join('\n'));
+  assert.equal(
+    maskSecrets(`remote: https://oauth2:glpat-${'x'.repeat(20)}@gitlab.com/a/b.git`),
+    `remote: https://oauth2:${MASK}@gitlab.com/a/b.git`,
+  );
+  assert.equal(maskSecrets(`Authorization: Bearer lin_api_${'k'.repeat(40)}`), `Authorization: Bearer ${MASK}`);
+});
+
+test('short lookalikes of the new token prefixes stay visible', () => {
+  const text = 'glpat-short xoxb-1 lin_api_x github_pat_ ghx_abc xox-abcdefghijklmnop ghp_';
+  assert.equal(maskSecrets(text), text);
+});
+
 test('transaction signatures and program ids stay visible: they have the length of a secret key but are public', () => {
   const signature = ('5' + 'xY9kTqLmN3pR7sVbW2cZ8hJdFgE6aU1oK4'.repeat(3)).slice(0, 88);
   const text = `Signature: ${signature}\nProgram Id: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`;

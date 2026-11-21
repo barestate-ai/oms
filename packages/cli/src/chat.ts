@@ -44,8 +44,8 @@ export async function chooseChatSession(
   if (!saved) return {};
   if (savedBudgetUsable(saved.journal, launch.caps, launch.executionMode)) return { sessionId: saved.sessionId };
   const selected = await choose(
-    `The saved session cannot admit work: its limits are exhausted or its accounting needs reconciliation. Conversation and accounting are retained, including unknown charges. Cancel to inspect/reconcile the saved journal, or explicitly start a separate ${launch.executionMode} session with the selected caps. This does not resolve previous unknown usage.`,
-    [{ value: 'new', label: 'Start a new session; retain all previous history and accounting' }],
+    'The last session in this folder hit its usage limit or has unconfirmed charges.\nStart a new session? Your history is kept.',
+    [{ value: 'new', label: 'Start a new session' }],
   );
   return selected === 'new' ? {} : undefined;
 }
@@ -69,16 +69,17 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
     ...selected,
   });
   try {
+    // Opening a saved conversation says so once, so earlier messages do not look like part of a new chat.
+    const earlier = selected.sessionId ? (chat.session?.messages?.length ?? 0) : 0;
+    const notes = [
+      folder.scratch ? scratchNotice(folder.path) : '',
+      o.yolo ? YOLO_NOTICE : '',
+      earlier ? `resumed · ${earlier} message${earlier === 1 ? '' : 's'} · /clear for new` : '',
+    ].filter(Boolean);
     await (o.run ?? runOmsInterface)(chat, {
       ...interfacePreferences(o.stateRoot),
       view: 'harness',
-      ...(folder.scratch || o.yolo
-        ? {
-            startNote: [folder.scratch ? scratchNotice(folder.path) : '', o.yolo ? YOLO_NOTICE : '']
-              .filter(Boolean)
-              .join('\n'),
-          }
-        : {}),
+      ...(notes.length ? { startNote: notes.join('\n') } : {}),
     });
   } finally {
     await chat.close();

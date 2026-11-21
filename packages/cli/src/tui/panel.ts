@@ -193,16 +193,28 @@ export function approvalCard(
     );
   }
   const option = (key: string, label: string) =>
-    locked
-      ? `${colorText(theme, 'faint', key)}  ${colorText(theme, 'faint', label)}`
-      : `${colorText(theme, 'accent', `\x1b[1m${key}\x1b[22m`)}  ${label}`;
+    locked ? `${colorText(theme, 'faint', key)}  ${colorText(theme, 'faint', label)}` : keyOption(theme, key, label);
   rows.push(
     '',
     option('y', locked ? 'Allow once · read the whole command first' : 'Allow once'),
     ...(request.session
       ? [option('s', locked ? 'Allow for this session · read it first' : 'Allow for this session')]
       : []),
-    `${colorText(theme, 'accent', '\x1b[1mn\x1b[22m')}  Deny${' '.repeat(2)}${colorText(theme, 'faint', 'esc')}`,
+    keyOption(theme, 'n', `Deny${' '.repeat(2)}${colorText(theme, 'faint', 'esc')}`),
   );
   return boxLines({ theme, glyphs, width, title: 'Allow host command?', border: 'warning', rows, padY: 0 });
+}
+
+const keyOption = (theme: OmsTheme, key: string, label: string): string =>
+  `${colorText(theme, 'accent', `\x1b[1m${key}\x1b[22m`)}  ${label}`;
+
+/** A yes/no question a command asked (/yolo), drawn like the approval card and answered on one key. */
+export function confirmationCard(theme: OmsTheme, glyphs: Glyphs, question: string, width: number): string[] {
+  const rows = [
+    ...wrapTextWithAnsi(displayText(question, 400), Math.max(1, width - 6)),
+    '',
+    keyOption(theme, 'y', 'Yes'),
+    keyOption(theme, 'n', `No${' '.repeat(2)}${colorText(theme, 'faint', 'esc')}`),
+  ];
+  return boxLines({ theme, glyphs, width, title: 'Confirm', border: 'warning', rows, padY: 0 });
 }

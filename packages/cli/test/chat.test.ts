@@ -8,6 +8,7 @@ import { DEFAULT_BUDGET_CAPS } from '@oms/core';
 import { defaultHarnessEnvironment, openBudgetJournal, resolveChatFolder, type ChatSession } from '@oms/engine';
 import { chooseChatSession, runInteractiveChat } from '../src/chat.ts';
 import { parseLaunchOptions } from '../src/harness.ts';
+import { YOLO_NOTICE } from '../src/tui/ui-commands.ts';
 
 function setup(t: TestContext) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'oms-chat-cli-')));
@@ -78,8 +79,9 @@ test('an unusable saved budget needs explicit consent for a new session and is n
     return 'new';
   });
   assert.deepEqual(renewed, {});
-  assert.match(asked[0]!, /cannot admit work/);
-  assert.match(asked[0]!, /retained/);
+  assert.match(asked[0]!, /hit its usage limit or has unconfirmed charges/);
+  assert.match(asked[0]!, /Your history is kept/);
+  assert.doesNotMatch(asked[0]!, /admit|reconcil|journal|accounting/i);
   assert.equal(readFileSync(saved.journal, 'utf8'), '{"type":"budget_open"');
 });
 
@@ -136,6 +138,32 @@ test('the chat opens the given folder, names it in the header, and tells the use
   assert.equal(out, 'Run oms in this folder to continue.\n');
 });
 
+test('opening a saved conversation says so once, with its message count; a new one does not', async (t) => {
+  const f = setup(t);
+  const notes: Array<string | undefined> = [];
+  const open = () =>
+    capture(() =>
+      runInteractiveChat({
+        folder: f.project,
+        stateRoot: f.stateRoot,
+        environment: defaultHarnessEnvironment(),
+        launch,
+        start: async (options) =>
+          ({
+            ...fakeChat(options.folder, []),
+            session: { messages: options.sessionId ? [{}, {}, {}] : [] },
+          }) as unknown as ChatSession,
+        run: async (_chat, interfaceOptions) => {
+          notes.push(interfaceOptions?.startNote);
+        },
+      }),
+    );
+  await open();
+  saveConversation(f);
+  await open();
+  assert.deepEqual(notes, [undefined, 'resumed · 3 messages · /clear for new']);
+});
+
 test('an npx chat prints an npx continuation command after closing', async (t) => {
   const previous = process.env.npm_command;
   process.env.npm_command = 'exec';
@@ -185,7 +213,8 @@ test('--yolo reaches the session, and without it YOLO is off', async (t) => {
   }
   assert.equal(opened[0]!.yolo, true);
   assert.equal(opened[1]!.yolo, undefined);
-  assert.deepEqual(notes, ['YOLO: commands run without asking and without the sandbox.', undefined]);
+  assert.deepEqual(notes, [YOLO_NOTICE, undefined]);
+  assert.equal(YOLO_NOTICE, 'YOLO on · commands run without approval or sandbox · /yolo to turn off');
 });
 
 test('a folder that holds personal files opens a scratch folder and says so in the interface', async (t) => {

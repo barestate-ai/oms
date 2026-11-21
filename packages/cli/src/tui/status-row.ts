@@ -166,6 +166,8 @@ export function statusRow(theme: OmsTheme, glyphs: Glyphs, input: StatusRowInput
 export interface HintState {
   /** `read`: the command is taller than the card and has not been scrolled to its end, so Allow is locked. */
   approval?: 'once-or-session' | 'once' | 'read';
+  /** A yes/no question from a command (/yolo) is waiting for a key. */
+  confirm?: boolean;
   overlay: boolean;
   busy: boolean;
   /** Esc stops the running work from here (default true); false for a verification or review, or the shell's focus. */
@@ -187,6 +189,11 @@ export function statusHints(state: HintState): readonly Hint[] {
       ['y', 'allow once'],
       ...(state.approval === 'once-or-session' ? ([['s', 'allow for this session']] as const) : []),
       ['n / esc', 'deny'],
+    ];
+  if (state.confirm)
+    return [
+      ['y', 'yes'],
+      ['n / esc', 'no'],
     ];
   if (state.overlay) return [];
   if (state.popup)

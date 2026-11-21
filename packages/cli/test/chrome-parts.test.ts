@@ -66,7 +66,7 @@ test('slash choices rank names that start with the text, then contain it, then f
   );
   const fuzzy = names('/wbn')!;
   assert.ok(fuzzy.includes('workbench'), 'in-order letters match');
-  const description = names('/sandbox')!;
+  const description = names('/shell')!;
   assert.ok(description.includes('terminal'), 'the description is searched too');
   assert.deepEqual(names('/zzzz'), []);
   // A chat hides task commands, a task hides chat commands.
@@ -92,11 +92,7 @@ test('the slash popup is two columns, at most eight rows, with the selection on 
   assert.match(plain(rows[1]!), /^ {2}\/harness +Back to the conversation/);
   assert.ok(rows[0]!.includes('48;2;'), 'the selected row has a background');
   assert.ok(!rows[1]!.includes('48;2;'));
-  assert.match(
-    plain(rows[3]!),
-    /\/terminal \[start\|stop\|hide\] +Sandbox shell/,
-    'the argument hint follows the name',
-  );
+  assert.match(plain(rows[3]!), /\/terminal \[start\|stop\|hide\] +Open a shell/, 'the argument hint follows the name');
   // Moving past the last visible row scrolls the window.
   const scrolled = slashPopup(theme, glyphs, choices, 11, 90).map(plain);
   assert.equal(scrolled.length, POPUP_ROWS);

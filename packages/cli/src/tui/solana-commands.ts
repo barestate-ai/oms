@@ -100,7 +100,7 @@ export function prepareChain(argument: string, harness: OmsSession): Prepared {
           ])
         : [undefined, undefined];
       return {
-        title: 'local chain',
+        title: 'chain',
         text: [
           `RPC: ${url}`,
           `Health: ${health.ok ? 'ok' : `down${health.detail ? ' · ' + clip(health.detail, 200) : ''}`}`,
@@ -137,12 +137,12 @@ const AIRDROP_CAP_SOL = 100;
 export function prepareAirdrop(argument: string, harness: OmsSession): Prepared {
   const [address, amount = '1', ...extra] = argument.split(/\s+/).filter(Boolean);
   if (!address || extra.length) return refuse('Usage: /airdrop <address> [sol]');
-  if (!isBase58Bytes(address, 32)) return refuse('That is not a valid Solana address (base58, 32 bytes).');
+  if (!isBase58Bytes(address, 32)) return refuse('Not a valid Solana address · base58, 32 bytes');
   const match = /^(\d+)(?:\.(\d{1,9}))?$/.exec(amount);
   const lamports = match ? BigInt(match[1]!) * 1_000_000_000n + BigInt((match[2] ?? '').padEnd(9, '0')) : 0n;
-  if (lamports <= 0n) return refuse('The amount must be a positive number of SOL, for example 2.5.');
+  if (lamports <= 0n) return refuse('Amount must be a positive number of SOL, for example 2.5');
   if (lamports > BigInt(AIRDROP_CAP_SOL) * 1_000_000_000n)
-    return refuse(`An airdrop is capped at ${AIRDROP_CAP_SOL} SOL.`);
+    return refuse(`Airdrops are capped at ${AIRDROP_CAP_SOL} SOL`);
   return {
     ok: true,
     async run() {
@@ -216,8 +216,7 @@ const TOKEN_PROGRAMS = new Set([
 ]);
 
 export function prepareAccount(argument: string, harness: OmsSession): Prepared {
-  if (!isBase58Bytes(argument.trim(), 32))
-    return refuse('Usage: /account <address> — a valid Solana address (base58, 32 bytes).');
+  if (!isBase58Bytes(argument.trim(), 32)) return refuse('Usage: /account <address> · base58, 32 bytes');
   const address = argument.trim();
   return {
     ok: true,
@@ -229,7 +228,7 @@ export function prepareAccount(argument: string, harness: OmsSession): Prepared 
         data: [string, string];
         executable: boolean;
       } | null;
-      if (!info) return { title: 'account', text: `${address}\nNo account at this address on the local chain.` };
+      if (!info) return { title: 'account', text: `${address}\nNo account at this address on the local chain` };
       const data = Buffer.from(info.data?.[0] ?? '', 'base64');
       return {
         title: 'account',
@@ -263,7 +262,7 @@ function localIdls(harness: OmsSession): Idl[] {
 function describeDecoding(decoding: ErrorDecoding): string[] {
   return [
     ...decoding.matches.map(
-      (match) => `${match.program}: ${match.name}${match.message ? ' — ' + match.message : ''} [${match.source}]`,
+      (match) => `${match.program}: ${match.name}${match.message ? ' · ' + match.message : ''} (${match.source})`,
     ),
     ...decoding.notes,
   ];
@@ -294,8 +293,7 @@ export function describeTransactionError(
 
 export function prepareTransaction(argument: string, harness: OmsSession): Prepared {
   const signature = argument.trim();
-  if (!isBase58Bytes(signature, 64))
-    return refuse('Usage: /tx <signature> — a valid transaction signature (base58, 64 bytes).');
+  if (!isBase58Bytes(signature, 64)) return refuse('Usage: /tx <signature> · base58, 64 bytes');
   return {
     ok: true,
     async run() {
@@ -314,8 +312,7 @@ export function prepareTransaction(argument: string, harness: OmsSession): Prepa
         } | null;
         transaction: { message: { accountKeys: string[]; instructions: Array<{ programIdIndex: number }> } };
       } | null;
-      if (!tx)
-        return { title: 'transaction', text: `${signature}\nNo transaction with this signature on the local chain.` };
+      if (!tx) return { title: 'tx', text: `${signature}\nNo transaction with this signature on the local chain` };
       const meta = tx.meta;
       const keys = [
         ...tx.transaction.message.accountKeys,
@@ -326,10 +323,10 @@ export function prepareTransaction(argument: string, harness: OmsSession): Prepa
       const logs = (meta?.logMessages ?? []).slice(0, LOG_LINES).map((line) => clip(line, LOG_LINE_CHARS));
       const more = (meta?.logMessages?.length ?? 0) - logs.length;
       return {
-        title: 'transaction',
+        title: 'tx',
         text: [
           signature,
-          `Status: ${meta?.err == null ? 'success' : 'failed — ' + describeTransactionError(meta.err, keys, indexes, localIdls(harness))}`,
+          `Status: ${meta?.err == null ? 'success' : 'failed · ' + describeTransactionError(meta.err, keys, indexes, localIdls(harness))}`,
           `Slot: ${tx.slot}`,
           `Fee: ${meta?.fee ?? 'unknown'} lamports${meta ? ` (${sol(meta.fee)})` : ''}`,
           `Compute units: ${meta?.computeUnitsConsumed ?? 'not reported'}`,
@@ -342,6 +339,32 @@ export function prepareTransaction(argument: string, harness: OmsSession): Prepa
   };
 }
 
+/**
+ * The program reference is written for the model: it names tool calls and counts "1 accounts". Shown to a person, the source
+ * link and tool syntax go, the instruction list becomes a table and the lookup hint names this command.
+ */
+export function programForPeople(text: string, program: string): string {
+  const rows = text.split('\n').map((line) => /^ {2}(.+?) (no tag|\S+), (\d+) accounts$/.exec(line));
+  const found = rows.filter((row): row is RegExpExecArray => row !== null);
+  const widths = [
+    Math.max('Instruction'.length, ...found.map((row) => row[1]!.length)),
+    Math.max('Tag'.length, ...found.map((row) => row[2]!.length)),
+  ] as const;
+  const table = (name: string, tag: string, accounts: string) =>
+    `  ${name.padEnd(widths[0])}  ${tag.padEnd(widths[1])}  ${accounts}`;
+  return text
+    .split('\n')
+    .map((line, index) => {
+      const row = rows[index];
+      if (row) return table(row[1]!, row[2]!, `${row[3]} account${row[3] === '1' ? '' : 's'}`);
+      if (/^Instructions \(name, discriminator hex/.test(line))
+        return `Instructions · /program ${program} <name> for accounts and arguments, /program ${program} * for all\n${table('Instruction', 'Tag', 'Accounts')}`;
+      return line;
+    })
+    .filter((line) => !/^source: source_fetch\(|^Full layouts: /.test(line))
+    .join('\n');
+}
+
 export function prepareProgram(argument: string): Prepared {
   const [program, ...rest] = argument.trim().split(/\s+/).filter(Boolean);
   if (!program) return refuse('Usage: /program <name|id> [instruction]');
@@ -349,9 +372,9 @@ export function prepareProgram(argument: string): Prepared {
   return {
     ok: true,
     async run() {
-      const text = lookupProgramReference(program, instruction || undefined);
+      const text = programForPeople(lookupProgramReference(program, instruction || undefined), program);
       return {
-        title: 'program reference',
+        title: 'program',
         text,
         ...(text.length > 10_000 ? { report: { id: `program-${Date.now()}`, text } } : {}),
       };
@@ -366,8 +389,7 @@ export function prepareError(argument: string, harness: OmsSession): Prepared {
     .split(/\s+/)
     .filter(Boolean);
   const parsed = code === undefined ? undefined : parseErrorCode(code);
-  if (parsed === undefined || extra.length)
-    return refuse('Usage: /error <code> [program] — a decimal or 0x hex custom error code.');
+  if (parsed === undefined || extra.length) return refuse('Usage: /error <code> [program] · decimal or 0x hex');
   return {
     ok: true,
     async run(signal) {
@@ -378,20 +400,16 @@ export function prepareError(argument: string, harness: OmsSession): Prepared {
         const answer = await harness.knowledge.decodeError(String(parsed), program, signal);
         return {
           title: 'error',
-          text: [
-            head,
-            'Not in the offline tables; reference answer (untrusted reference text):',
-            clip(answer, 3_000),
-          ].join('\n'),
+          text: [head, 'Not in offline tables · Solana docs answer (unverified):', clip(answer, 3_000)].join('\n'),
         };
       } catch {
         return {
           title: 'error',
           text: [
             head,
-            'This code is not in the built-in tables or local IDLs.',
+            'Unknown code (not in built-in tables or local IDLs)',
             ...decoding.notes,
-            "Check the program's IDL or source for its error definitions.",
+            "Check the program's IDL or source for its error definitions",
           ].join('\n'),
         };
       }

@@ -60,7 +60,8 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 test('settings list changes the actual controls and reflects persisted values without closing the pane', async () => {
   const f = fixture();
-  assert.match(f.screen(), /Harness settings/);
+  assert.equal(f.pane.label, 'Settings');
+  assert.doesNotMatch(f.screen(), /Harness settings|SETTINGS|policy/);
   f.pane.handleInput('Thinking');
   f.pane.handleInput('\r');
   await flush();
@@ -80,8 +81,8 @@ test('unsupported thinking and policy-fixed rows cannot manufacture setting chan
   await flush();
   assert.deepEqual(f.changes, []);
   f.pane.handleInput('\x15');
-  f.pane.handleInput('Compaction');
-  assert.match(f.screen(), /budget|metered/i);
+  f.pane.handleInput('Spend guards');
+  assert.match(f.screen(), /compaction|retries/i);
   f.pane.handleInput('\r');
   await flush();
   assert.deepEqual(f.changes, []);
@@ -89,12 +90,12 @@ test('unsupported thinking and policy-fixed rows cannot manufacture setting chan
 
 test('HTTP and queue preferences use canonical controls, while disposal prevents further mutation', async () => {
   const f = fixture();
-  f.pane.handleInput('Steering');
+  f.pane.handleInput('Messages while');
   f.pane.handleInput('\r');
   await flush();
   assert.deepEqual(f.changes, ['steering:all']);
   f.pane.handleInput('\x15');
-  f.pane.handleInput('HTTP');
+  f.pane.handleInput('timeout');
   f.pane.handleInput('\r');
   await flush();
   assert.equal(f.changes[1], 'http:0');

@@ -11,7 +11,12 @@ const ASSIGNMENT = /(?<![A-Za-z0-9_])((?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)=(?
 const PROVIDER_KEYS: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{16,}/g,
   /\bxai-[A-Za-z0-9]{16,}/g,
-  /\bghp_[A-Za-z0-9]{20,}/g,
+  // GitHub: ghp_ (personal), gho_, ghu_, ghs_, ghr_, then github_pat_ (fine-grained).
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\bglpat-[A-Za-z0-9_-]{20,}/g,
+  /\bxox[abpr]-[A-Za-z0-9-]{10,}/g,
+  /\blin_api_[A-Za-z0-9]{20,}/g,
   /\bgsk_[A-Za-z0-9]{20,}/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   // A keypair file: 64 bytes as a JSON array.

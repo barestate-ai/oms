@@ -189,7 +189,7 @@ test('confirmations are three-second toasts in the status row; warnings stay unt
     assert.doesNotMatch(lines(screen).at(-1)!, /commands/, 'the toast replaces the hints');
     terminal.send('hello');
     terminal.send('\r');
-    screen = await terminal.until((s) => /^! Run \/connect to sign in or \/model/m.test(s));
+    screen = await terminal.until((s) => /^! No model selected · \/connect/m.test(s));
     assert.equal(
       cell(
         terminal,
@@ -199,9 +199,9 @@ test('confirmations are three-second toasts in the status row; warnings stay unt
       rgb(getTheme('nord')!.colors.warning),
     );
     screen = await terminal.until((s) => !s.includes('Theme set to Nord') && s.includes('/ commands'), 4500);
-    assert.match(screen, /^! Run \/connect/m, 'the warning outlives the toast');
+    assert.match(screen, /^! No model selected/m, 'the warning outlives the toast');
     terminal.send('\x1b');
-    await terminal.until((s) => !s.includes('! Run /connect'));
+    await terminal.until((s) => !s.includes('! No model selected'));
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();
@@ -593,7 +593,7 @@ test('? on an empty composer opens the keyboard help; in a draft it is a letter'
   const { terminal, run } = await open(f.harness, 120, 40);
   try {
     terminal.send('?');
-    await terminal.until((s) => s.includes('Tab'));
+    await terminal.until((s) => s.includes('move focus'));
     assert.match(await terminal.screen(), /^❯ Ask OMS/m, 'the composer stays empty');
     terminal.send('why');
     terminal.send('?');

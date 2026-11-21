@@ -67,6 +67,8 @@ export interface CommandContext {
   submit(text: string): void;
   cancel(): void;
   quit(): void;
+  /** Ask a yes/no question on one key: y runs `onYes`; n, Esc or any other key drops it. */
+  confirm(question: string, onYes: () => void): void;
 }
 
 /** A handler answers directly (nothing returned) or hands back work for the shared pipeline: a refusal, or something to run. */
@@ -86,7 +88,7 @@ export interface CommandSpec {
   argument?: string;
   /** Completion leaves the cursor after the name instead of running it. */
   needsArgument?: true;
-  /** Which arguments the command takes; anything else is "unknown or invalid". Default: none. */
+  /** Which arguments the command takes; for anything else the user is told its usage. Default: none. */
   accepts?: (argument: string) => boolean;
   whileBusy: WhileBusy;
   /** False for work that must finish within its backend timeout: the Cancel control stays off and /cancel refuses. */
@@ -103,18 +105,70 @@ const present = (argument: string): boolean => argument !== '';
 const singleWord = (argument: string): boolean => !/\s/.test(argument);
 const nonBlank = (argument: string): boolean => argument.trim() !== '';
 
-const KEYBOARD_HELP =
-  '\nKeyboard\n' +
-  'Commands: type / in the agent composer, empty editor, file browser or stopped terminal. Ctrl+K opens commands anywhere (Alt+/ also works). Plain / in a document, text field or running shell stays text.\n' +
-  'Back: Escape closes a menu to its previous pane. From conversation, Escape returns to the agent composer. From the workbench composer, Escape returns to the editor.\n' +
-  'Panes: /harness returns to the agent; /workbench focuses the editor; /files opens the browser; /terminal opens the shell. Ctrl+L focuses the composer, Ctrl+P opens files. F6 optionally cycles panes.\n' +
-  'Tab/Shift+Tab navigate conversation panes. Editor Tab inserts a tab; terminal Tab goes to the shell.\n' +
-  'Toolbar: F10 focuses the toolbar; arrows choose, Enter activates, Esc returns to the pane.\n' +
-  'Editor: Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+W close tab, Ctrl+Tab next tab. Ctrl+\\ changes split side.\n' +
-  'Terminal: Ctrl+C interrupts its process; /terminal stop releases it for independent verification.\n' +
-  'Agent: Enter sends, Shift/Alt+Enter adds a newline. /cancel requests cancellation. Ctrl+Q quits after cleanup; dirty files need confirmation.\n' +
-  'Transcript: Ctrl+O shows or collapses full tool output. Ctrl+T hides or shows thinking. Ctrl+D on an empty input leaves.\n' +
-  'Setup: ↑↓ chooses an authentication method; PgUp/PgDn scrolls disclosures without moving that choice. Ctrl+U clears masked entry. Ctrl+X copies the setup link. Keys and sign-in codes belong only in /connect.';
+type KeyRow = readonly [keys: string, action: string];
+
+/** Two aligned columns: the keys, then what they do. */
+const keyTable = (rows: readonly KeyRow[]): string => {
+  const width = Math.max(...rows.map(([keys]) => keys.length)) + 2;
+  return rows.map(([keys, action]) => `  ${keys.padEnd(width)}${action}`).join('\n');
+};
+
+/** Every key of the current mode, from one table: /help keys. A chat has no requirements panel and no toolbar. */
+export function keysHelp(kind: 'task' | 'chat' = 'task'): string {
+  const chat = kind === 'chat';
+  const keys: KeyRow[] = [
+    ['enter', 'send'],
+    ['shift+enter', 'new line (alt+enter too)'],
+    ['esc', 'cancel work · close a menu'],
+    ['ctrl+c', 'cancel work · twice to quit'],
+    ['ctrl+q', 'quit (ctrl+d on an empty line)'],
+    ['/ or ctrl+k', 'commands'],
+    ['ctrl+o', 'expand tool output'],
+    ['ctrl+t', 'show or hide thinking'],
+    ['tab', 'move focus (shift+tab back)'],
+    ['pgup pgdn', 'scroll the conversation'],
+    ['f3', 'workbench or conversation'],
+    ['f4', 'pick a model'],
+    ['f8', 'next theme'],
+    ...(chat
+      ? []
+      : ([
+          ['f2', 'requirements panel'],
+          ['f6', 'cycle panes'],
+          ['f10', 'toolbar'],
+        ] as KeyRow[])),
+  ];
+  const workbench: KeyRow[] = [
+    ['ctrl+p', 'open file'],
+    ['ctrl+n', 'new file'],
+    ['ctrl+s', 'save'],
+    ['ctrl+f', 'find'],
+    ['ctrl+h', 'replace'],
+    ['ctrl+w', 'close tab'],
+    ['ctrl+tab', 'next tab'],
+    ['ctrl+\\', 'other split side'],
+    ['ctrl+l', 'back to the agent'],
+  ];
+  return [
+    'Keys',
+    keyTable(keys),
+    '',
+    'Workbench',
+    keyTable(workbench),
+    '',
+    'Terminal',
+    keyTable([
+      ['ctrl+c', 'interrupt'],
+      ['/terminal stop', 'end the shell'],
+    ]),
+    '',
+    'Sign-in',
+    keyTable([
+      ['ctrl+x', 'copy the link or code'],
+      ['ctrl+u', 'clear the field'],
+    ]),
+  ].join('\n');
+}
 
 /** The commands a chat lists in /help, in this order; the rest are still typed or found with /. */
 const CHAT_HELP = [
@@ -145,24 +199,33 @@ const CHAT_HELP = [
   'program',
   'error',
 ];
-const CHAT_KEYS =
-  'Press Enter to send. Use Shift+Enter to add a line. Press Esc to cancel.\n' +
-  'Press Ctrl+O to show full tool output. Press Ctrl+T to hide thinking.\n' +
-  'Press Ctrl+D to leave. Run /help keys to list every key.';
+/** The few keys /help shows under the commands; /help keys has the rest. */
+const SHORT_KEYS =
+  'Keys\n' +
+  keyTable([
+    ['esc', 'cancel'],
+    ['ctrl+c', 'cancel · twice to quit'],
+    ['ctrl+k', 'commands'],
+    ['/help keys', 'all keys'],
+  ]);
 
 export function chatHelp(): string {
   const rows = CHAT_HELP.map((name) => findCommand(name)!).map((command) => [`/${command.name}`, command.description]);
-  rows.push(['/theme /art /settings /login /logout', 'Look and account'], ['/exit (or /quit)', 'Leave']);
   const width = Math.max(...rows.map(([name]) => name!.length)) + 2;
-  return rows.map(([name, text]) => `${name!.padEnd(width)}${text}`).join('\n') + '\n\n' + CHAT_KEYS;
+  const list = rows.map(([name, text]) => `${name!.padEnd(width)}${text}`).join('\n');
+  return `${list}\n\nAlso: /theme /art /settings /login /logout · /exit to quit\n\n${SHORT_KEYS}`;
 }
 
 /** /help lists the commands and a few keys; /help keys lists every key. It lives here because it renders the table. */
 const help: CommandHandler = (ctx, argument, draft) => {
   const chat = ctx.harness.kind === 'chat';
   ctx.conversation.note(
-    'commands',
-    argument === 'keys' ? KEYBOARD_HELP.trimStart() : chat ? chatHelp() : commandHelp(ctx.harness.kind) + KEYBOARD_HELP,
+    'help',
+    argument === 'keys'
+      ? keysHelp(ctx.harness.kind)
+      : chat
+        ? chatHelp()
+        : `${commandHelp(ctx.harness.kind)}\n\n${SHORT_KEYS}`,
   );
   ctx.clearDraft(draft);
   ctx.switchView('harness');
@@ -196,9 +259,9 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'terminal',
     group: 'Navigate',
-    description: 'Sandbox shell',
+    description: 'Open a shell',
     argument: '[start|stop|hide]',
-    accepts: any,
+    accepts: (argument) => ['', 'start', 'stop', 'hide'].includes(argument),
     whileBusy: 'accepted',
     run: uiCommands.terminal,
   },
@@ -232,7 +295,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'theme',
     group: 'Setup',
-    description: 'Colors',
+    description: 'Color theme',
     argument: '[name]',
     accepts: any,
     whileBusy: 'accepted',
@@ -250,7 +313,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'web',
     group: 'Setup',
-    description: 'Web search on or off',
+    description: 'Show or switch web search',
     argument: '[on|off]',
     accepts: acceptsWeb,
     whileBusy: 'accepted',
@@ -259,7 +322,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'yolo',
     group: 'Setup',
-    description: 'Run commands without asking or the sandbox',
+    description: 'YOLO mode: no approvals, no sandbox',
     availability: 'chat',
     whileBusy: 'accepted',
     run: uiCommands.yolo,
@@ -267,7 +330,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'settings',
     group: 'Setup',
-    description: 'Preferences and limits',
+    description: 'Thinking level and preferences',
     accepts: any,
     whileBusy: 'accepted',
     run: uiCommands.settings,
@@ -322,7 +385,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'diff',
     group: 'Inspect',
-    description: 'What changed',
+    description: 'Show changes',
     argument: '[path]',
     accepts: any,
     whileBusy: 'always',
@@ -339,7 +402,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'requirements',
     group: 'Inspect',
-    description: 'Show requirements beside the conversation',
+    description: 'Toggle requirements panel',
     availability: 'task',
     whileBusy: 'accepted',
     run: (ctx, argument, draft) =>
@@ -360,7 +423,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'newfile',
     group: 'Edit',
-    description: 'New unsaved file · Ctrl+N',
+    description: 'New file · ctrl+n',
     argument: '[path]',
     accepts: any,
     whileBusy: 'accepted',
@@ -369,43 +432,43 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'save',
     group: 'Edit',
-    description: 'Save active file · Ctrl+S',
+    description: 'Save file · ctrl+s',
     whileBusy: 'accepted',
     run: uiCommands.save,
   },
   {
     name: 'close',
     group: 'Edit',
-    description: 'Close tab; protects unsaved changes · Ctrl+W',
+    description: 'Close tab · ctrl+w',
     whileBusy: 'accepted',
     run: uiCommands.close,
   },
-  { name: 'find', group: 'Edit', description: 'Find text · Ctrl+F', whileBusy: 'accepted', run: uiCommands.find },
+  { name: 'find', group: 'Edit', description: 'Find · ctrl+f', whileBusy: 'accepted', run: uiCommands.find },
   {
     name: 'replace',
     group: 'Edit',
-    description: 'Replace text · Ctrl+H',
+    description: 'Replace · ctrl+h',
     whileBusy: 'accepted',
     run: uiCommands.replace,
   },
   {
     name: 'next',
     group: 'Edit',
-    description: 'Next editor tab · Ctrl+Tab',
+    description: 'Next tab · ctrl+tab',
     whileBusy: 'accepted',
     run: uiCommands.next,
   },
   {
     name: 'split',
     group: 'Edit',
-    description: 'Toggle second file view · Ctrl+\\ changes side',
+    description: 'Split editor · ctrl+\\ switch side',
     whileBusy: 'accepted',
     run: uiCommands.split,
   },
   {
     name: 'layout',
     group: 'Navigate',
-    description: 'Workbench conversation panel',
+    description: 'Show the agent beside the editor',
     argument: '[editor|balanced]',
     accepts: acceptsLayout,
     whileBusy: 'accepted',
@@ -426,7 +489,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'run',
     group: 'Work',
-    description: 'Run a command in the sandbox',
+    description: 'Run a shell command',
     argument: '<command>',
     needsArgument: true,
     accepts: nonBlank,
@@ -474,7 +537,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'clear',
     group: 'Work',
-    description: 'New conversation; files stay',
+    description: 'Start a new conversation',
     accepts: any,
     whileBusy: 'never',
     run: clearConversation,
@@ -489,21 +552,21 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'exit',
     group: 'Work',
-    description: 'Leave, after checking unsaved files',
+    description: 'Quit',
     whileBusy: 'accepted',
     run: (ctx) => ctx.quit(),
   },
   {
     name: 'quit',
     group: 'Work',
-    description: 'Same as /exit',
+    description: 'Quit',
     whileBusy: 'accepted',
     run: (ctx) => ctx.quit(),
   },
   {
     name: 'chain',
     group: 'Solana',
-    description: 'Local Solana network',
+    description: 'Local chain status',
     accepts: any,
     whileBusy: 'always',
     run: (ctx, argument) => prepareChain(argument, ctx.harness),
@@ -530,7 +593,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'tx',
     group: 'Solana',
-    description: 'Local-chain transaction',
+    description: 'Inspect a local transaction',
     argument: '<signature>',
     needsArgument: true,
     accepts: any,
@@ -540,7 +603,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'program',
     group: 'Solana',
-    description: 'Program reference, offline',
+    description: 'Look up a program (offline)',
     argument: '<name|id> [instruction]',
     needsArgument: true,
     accepts: any,
@@ -582,34 +645,89 @@ export function canRunWhileBusy(command: CommandSpec, argument: string): boolean
     : rule === 'always' || (rule === 'accepted' && acceptsArgument(command, argument));
 }
 
-/** Only an unfinished command name opens completion; arguments remain normal input. */
+/**
+ * Only an unfinished command name opens completion; arguments remain normal input. A chat lists the commands its /help shows
+ * first, then the rest; /quit is typed, never listed beside /exit.
+ */
 export function commandMatches(draft: string, kind: 'task' | 'chat' = 'task'): readonly CommandSpec[] | undefined {
   const match = /^\/([a-z]*)$/i.exec(draft.trimStart());
   if (!match) return undefined;
   const query = match[1]!.toLowerCase();
-  return available(kind).filter((command) => command.name.startsWith(query));
+  // /quit stays typeable but is not listed beside /exit.
+  const matches = available(kind).filter(
+    (command) => command.name.startsWith(query) && (query !== '' || command.name !== 'quit'),
+  );
+  if (kind !== 'chat') return matches;
+  const rank = (command: CommandSpec) => {
+    const index = CHAT_HELP.indexOf(command.name);
+    return index < 0 ? CHAT_HELP.length : index;
+  };
+  return matches
+    .map((command, order) => ({ command, order }))
+    .sort((a, b) => rank(a.command) - rank(b.command) || a.order - b.order)
+    .map(({ command }) => command);
 }
 
 const available = (kind: 'task' | 'chat'): readonly CommandSpec[] =>
   OMS_COMMANDS.filter((command) => command.availability !== (kind === 'chat' ? 'task' : 'chat'));
 
+/** Edit distance between two short words. */
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++)
+      next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length]!;
+}
+
+/** The command a mistyped name most likely meant: one it starts, or one within a couple of typos. */
+export function closestCommand(name: string, kind: 'task' | 'chat' = 'task'): CommandSpec | undefined {
+  const typed = name.toLowerCase();
+  const choices = available(kind).filter((command) => command.name !== 'quit');
+  const started = typed.length >= 2 ? choices.find((command) => command.name.startsWith(typed)) : undefined;
+  if (started) return started;
+  const tolerance = typed.length <= 4 ? 1 : 2;
+  let best: { command: CommandSpec; away: number } | undefined;
+  for (const command of choices) {
+    const away = distance(typed, command.name);
+    if (away <= tolerance && (!best || away < best.away)) best = { command, away };
+  }
+  return best?.command;
+}
+
+/** What to tell someone whose command text did not parse: the unknown name and the nearest command, or what the command takes. */
+export function commandProblem(parsed: { name: string; argument: string } | undefined, kind: 'task' | 'chat'): string {
+  const name = parsed ? parsed.name.slice(0, 40) : '';
+  const command = findCommand(parsed?.name);
+  if (!command) {
+    const near = closestCommand(name, kind);
+    return `/${name} not found · ${near ? `did you mean /${near.name}?` : '/help'}`;
+  }
+  return command.argument ? `Usage: /${command.name} ${command.argument}` : `/${command.name} takes no arguments`;
+}
+
 export function commandHelp(kind: 'task' | 'chat' = 'task'): string {
   return ['Navigate', 'Setup', 'Edit', 'Inspect', 'Work', 'Solana']
-    .map(
-      (group) =>
-        `${group}\n` +
-        available(kind)
-          .filter((command) => command.group === group && command.name !== 'quit')
-          .map((command) =>
-            command.name === 'exit'
-              ? `/exit (or /quit) — ${command.description}`
-              : `/${command.name}${command.argument ? ' ' + command.argument : ''} — ${command.description}`,
-          )
-          // /account is one name for two jobs (OMS account, or with an address a chain account), listed once in the menu under Setup.
-          .concat(
-            group === 'Solana' ? ['/account <address> — Local-chain account: owner, lamports, data, token fields'] : [],
-          )
-          .join('\n'),
-    )
+    .map((group) => {
+      const rows = available(kind)
+        .filter((command) => command.group === group && command.name !== 'quit')
+        .map((command) => [
+          command.name === 'exit'
+            ? '/exit (or /quit)'
+            : `/${command.name}${command.argument ? ' ' + command.argument : ''}`,
+          command.description,
+        ])
+        // /account is one name for two jobs (OMS account, or with an address a chain account), listed once in the menu under Setup.
+        .concat(group === 'Solana' ? [['/account <address>', 'Chain account: owner, lamports, data, tokens']] : []);
+      // One long argument list must not push every description to the right.
+      const width = Math.min(26, Math.max(...rows.map(([name]) => name!.length))) + 2;
+      // A name longer than the column puts its description on the next line, under the others.
+      const row = ([name, text]: string[]) =>
+        name!.length <= width - 2 ? `${name!.padEnd(width)}${text}` : `${name}\n${' '.repeat(width)}${text}`;
+      return `${group}\n${rows.map(row).join('\n')}`;
+    })
     .join('\n\n');
 }

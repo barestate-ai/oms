@@ -33,7 +33,7 @@ Run `oms` in any folder: it opens a chat that edits that folder in place, keeps 
 
 In a source checkout, run `npm ci --ignore-scripts`, then `node packages/cli/src/bin.ts doctor --install` and `npm start`.
 
-Docker is not part of the install. `npm start` uses host mode: on macOS commands run under a Seatbelt profile without asking (writes only in the folder, no access to keys or other repos, network only to Surfnet); on Linux v0.1 there is no sandbox, OMS tells you once at startup, and each command asks first: allow it once, allow it for the session, or deny. `/yolo` (or `oms --yolo`) turns the asking and the sandbox off, and the footer shows YOLO while it is on. Optional: `--sandbox docker` selects Docker for untrusted repositories with `oms task create` and `oms run`; plain `oms` does not run in Docker.
+Docker is not part of the install. `npm start` uses host mode: on macOS commands run under a Seatbelt profile without asking (writes only in the folder, no access to keys or other repos, network only to Surfnet); on Linux v0.1 there is no sandbox, OMS tells you once at startup, and each command asks first: allow it once, allow it for the session, or deny. `/yolo` (or `oms --yolo`) turns the asking and the sandbox off after you confirm with `y`, and the footer shows YOLO while it is on. Optional: `--sandbox docker` selects Docker for untrusted repositories with `oms task create` and `oms run`; plain `oms` does not run in Docker.
 
 Enter the slash commands below inside OMS, not in your shell. Arrow keys select a row; Enter confirms; Esc returns. `/connect` configures access and `/model` selects a model. A row marked **Connected** means credentials are configured locally. Never paste credentials into chat, source files or bug reports.
 
@@ -152,7 +152,7 @@ OMS uses `~/.oms/tools/surfpool-1.7.0/surfpool` (or `.tmp/tools/surfpool` in a s
 
 Doctor checks local tools without starting an agent. It does not validate provider login or make a model request. Open `/connect` and `/model` to inspect saved access. Install the pinned Surfpool release using the matching archive and checksum in [runtime-manifest.json](../packages/engine/runtime-manifest.json). `--programs` also requires the host Anchor toolchain.
 
-Inside OMS, `/status` shows task state, `/verify` requests independent checking, `/help` lists implemented commands, and `/quit` exits after cleanup.
+Inside OMS, `/status` shows task state, `/verify` requests independent checking, `/help` lists implemented commands, and `/quit` exits after cleanup. Ctrl+Q does the same, as does Ctrl+D on an empty prompt or Ctrl+C twice at an idle prompt; one Ctrl+C cancels running work.
 
 More commands, none of which call a model unless noted:
 

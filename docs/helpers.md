@@ -49,7 +49,7 @@ The first block lists the agents you can start, with whether each is read-only o
 
 ## Stop helpers
 
-Press Esc or enter `/cancel`. Helpers started by that turn stop too.
+Press Esc or Ctrl+C, or enter `/cancel`. Helpers started by that turn stop too.
 
 ## Add your own agent
 
