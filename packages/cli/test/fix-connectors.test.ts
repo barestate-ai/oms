@@ -252,6 +252,116 @@ test('a compose file inside the project is listed, with variable names but never
   }
 });
 
+test('a compose file that reaches host files through secrets, configs, volumes, builds or host privileges is refused', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'oms-compose-'));
+  try {
+    mkdirSync(join(folder, 'sub'));
+    for (const [what, config] of [
+      [
+        'a secret file outside this folder',
+        {
+          secrets: { deploy: { file: '/etc/hostname' } },
+          services: { web: { image: 'x', secrets: [{ source: 'deploy' }] } },
+        },
+      ],
+      [
+        'a config file outside this folder',
+        {
+          configs: { app: { file: '/etc/hosts' } },
+          services: { web: { image: 'x', configs: [{ source: 'app' }] } },
+        },
+      ],
+      [
+        'a named volume bound to a host path',
+        {
+          volumes: { data: { driver_opts: { type: 'none', o: 'bind', device: '/Users' } } },
+          services: { web: { image: 'x', volumes: [{ type: 'volume', source: 'data', target: '/data' }] } },
+        },
+      ],
+      [
+        'a named volume with a non-default driver',
+        {
+          volumes: { data: { driver: 'nfs', driver_opts: { type: 'nfs', device: ':/export' } } },
+          services: { web: { image: 'x', volumes: [{ type: 'volume', source: 'data', target: '/data' }] } },
+        },
+      ],
+      [
+        'a build context outside this folder',
+        { services: { web: { build: { context: '/etc', dockerfile: 'Dockerfile' } } } },
+      ],
+      [
+        'a dockerfile that resolves outside this folder',
+        { services: { web: { build: { context: join(folder, 'sub'), dockerfile: '../../escape.Dockerfile' } } } },
+      ],
+      [
+        'a build secret file outside this folder',
+        { services: { web: { build: { context: join(folder, 'sub'), secrets: [{ source: '/etc/passwd' }] } } } },
+      ],
+      [
+        'a build ssh key outside this folder',
+        { services: { web: { build: { context: join(folder, 'sub'), ssh: ['/etc/ssh/ssh_host_rsa_key'] } } } },
+      ],
+      [
+        'a build additional context outside this folder',
+        {
+          services: {
+            web: { build: { context: join(folder, 'sub'), additional_contexts: { tools: '/opt' } } },
+          },
+        },
+      ],
+      ['cap_add SYS_MODULE', { services: { web: { image: 'x', cap_add: ['SYS_MODULE'] } } }],
+      ['cap_add NET_ADMIN', { services: { web: { image: 'x', cap_add: ['NET_ADMIN'] } } }],
+      ['cap_add DAC_READ_SEARCH', { services: { web: { image: 'x', cap_add: ['DAC_READ_SEARCH'] } } }],
+      ['cgroup host', { services: { web: { image: 'x', cgroup: 'host' } } }],
+      ['volumes_from', { services: { web: { image: 'x', volumes_from: ['db'] } } }],
+    ] as const) {
+      const plan = await planCompose(composeRun(config).run, folder, {});
+      assert.equal(plan.ok, false, what);
+      assert.match((plan as { reason: string }).reason, /will not start/);
+    }
+  } finally {
+    rmSync(folder, { recursive: true });
+  }
+});
+
+test('secrets, configs, volumes and a build inside the folder are still allowed', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'oms-compose-'));
+  try {
+    mkdirSync(join(folder, 'secrets'));
+    mkdirSync(join(folder, 'configs'));
+    mkdirSync(join(folder, 'vol'));
+    mkdirSync(join(folder, 'ctx'));
+    writeFileSync(join(folder, 'secrets', 'app.txt'), 'x');
+    writeFileSync(join(folder, 'configs', 'app.conf'), 'x');
+    writeFileSync(join(folder, 'ctx', 'Dockerfile'), 'FROM scratch\n');
+    const plan = await planCompose(
+      composeRun({
+        secrets: { app: { file: join(folder, 'secrets', 'app.txt') } },
+        configs: { app: { file: join(folder, 'configs', 'app.conf') } },
+        volumes: { data: { driver_opts: { type: 'none', o: 'bind', device: join(folder, 'vol') } } },
+        services: {
+          web: {
+            build: {
+              context: join(folder, 'ctx'),
+              dockerfile: 'Dockerfile',
+              additional_contexts: { local: join(folder, 'ctx') },
+            },
+            secrets: [{ source: 'app' }],
+            configs: [{ source: 'app' }],
+            volumes: [{ type: 'volume', source: 'data', target: '/data' }],
+          },
+        },
+      }).run,
+      folder,
+      {},
+    );
+    assert.equal(plan.ok, true);
+    assert.match((plan as { text: string }).text, /built from \.\/ctx/);
+  } finally {
+    rmSync(folder, { recursive: true });
+  }
+});
+
 test('compose up asks with the plan, runs without API keys, and does not start a file that changed after the answer', async () => {
   const good = { services: { web: { image: 'nginx:1.27' } } };
   const changed = { services: { web: { image: 'evil:latest' } } };

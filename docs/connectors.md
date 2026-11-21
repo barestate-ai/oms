@@ -21,7 +21,7 @@ Connectors let the agent use the tools your team already uses: GitHub, GitLab, L
 
 Every change is approved once, never for the whole session: a comment or a new issue goes to other people, a container starts a program as you, and approving one is not approving the next with other text. The approval row shows everything that goes out (the whole comment, the whole container command, every flag), and a call too long to show is refused. Docker and AWS never offer `allow`, whatever `connectors.json` says. AWS is read-only in this version.
 
-Before `compose up` asks, OMS reads the compose file in your folder with `docker compose config` and shows the services, images, ports and mounts. A file that mounts folders outside your project, the Docker socket or host devices, or asks for privileged containers or the host's network, is refused. Docker runs with a short environment (no API keys), and a compose file that changes after you approve it is not started.
+Before `compose up` asks, OMS reads the compose file in your folder with `docker compose config` and shows the services, images, ports and mounts. A file that mounts folders outside your project — through service mounts, secrets, configs, named volumes or a build context — the Docker socket or host devices, or asks for privileged containers, the host's network or cgroup, powerful capabilities or another container's volumes, is refused. Docker runs with a short environment (no API keys), and a compose file that changes after you approve it is not started.
 
 ## Commands that use a connected service
 
