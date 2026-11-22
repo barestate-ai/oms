@@ -197,10 +197,16 @@ function payloadWithinMeasuredBound(payload: unknown, bound: number): boolean {
  * receive, or undefined when that input cannot be byte-bounded: Claude Code's native prompt
  * is invisible to OMS, and media/remote-file content has no byte-proportional token count.
  * The catalog window is only a worst case — reserving `window + output` for a 30 KB
- * transcript leaves a failed request holding a bound it could never reach. A provider
- * tokenizer emits at most one token per serialized byte, so `bytes + slack` is a provable
- * upper bound where a chars-per-token estimate could undercount token-dense text. The
- * payload hook below holds the serialized body inside this bound, so it stays provable.
+ * transcript leaves a failed request holding a bound it could never reach.
+ *
+ * Worst case: every serialized byte becomes one provider token. No tokenizer emits more
+ * than one token per input byte, and non-Latin scripts sit comfortably inside that
+ * (multi-byte UTF-8 chars tokenize at roughly one token per 2-4 bytes). The `slack` term
+ * covers what bytes alone cannot prove: the provider's own envelope — role headers,
+ * tool-call wrappers, control tokens — bounded by a fixed 32 KB plus 25% of the payload.
+ * That slack is the only heuristic part; the per-byte rate itself is the hard upper bound.
+ * The payload hook below holds the serialized body inside this bound, so the reservation
+ * stays provable rather than a chars-per-token estimate that could undercount dense text.
  */
 export function measuredInputBound(model: Model<Api>, context: { messages: readonly unknown[] }): number | undefined {
   if (isClaudeCodeModel(model)) return undefined;
@@ -593,10 +599,12 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
                   config.ledger,
                   config.maxOutputTokens,
                   config.executionMode,
-                  undefined,
+                  config.maxInputTokens,
                   config.subscriptionExempt,
                   subscribed,
                   config.concurrent,
+                  undefined,
+                  inputBound,
                 ).detail
               : admission.code === 'E_UNKNOWN'
                 ? 'A previous request has unconfirmed usage. Open /status; its usage record has been retained.'

@@ -20,7 +20,7 @@ import { sessionToolNames } from '../session-model.ts';
 import { harnessPolicySettings } from '../settings-controls.ts';
 import { KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
 import { withToolExecutionModes } from '../tool-execution.ts';
-import { createMeteredStream, modelReadiness, requestBound } from '../usage.ts';
+import { createMeteredStream, measuredInputBound, modelReadiness, requestBound } from '../usage.ts';
 import { hostSandbox } from '@oms/sandbox';
 import type { AgentDefinition } from './agents.ts';
 import { fileToolPath, type Claim, type ClaimTable } from './claims.ts';
@@ -73,6 +73,10 @@ export const helperInputCap = (configured: number | undefined, model: Model<Api>
 
 function chatHeadroom(parts: SessionApiParts) {
   const model = parts.model.session.model!;
+  // The chat's next request is predicted from its current transcript rather than held at
+  // the whole catalog window; metered dispatch re-checks the exact body anyway. When no
+  // transcript is readable, omitting the bound keeps the conservative catalog reserve.
+  const messages = parts.model.session.agent?.state.messages;
   return (
     requestBound(
       model,
@@ -81,11 +85,12 @@ function chatHeadroom(parts: SessionApiParts) {
       parts.options.maxInputTokens,
       parts.options.subscriptionSpendExempt,
       parts.model.modelRuntime.isUsingSubscription(model.provider),
+      messages ? measuredInputBound(model, { messages: messages as readonly unknown[] }) : undefined,
     ) ?? { tokens: Infinity, spendMicroUsd: Infinity }
   );
 }
 
-export function helperReadiness(parts: SessionApiParts, model: Model<Api>) {
+export function helperReadiness(parts: SessionApiParts, model: Model<Api>, inputBound?: number) {
   return modelReadiness(
     model,
     parts.env.budget,
@@ -96,6 +101,7 @@ export function helperReadiness(parts: SessionApiParts, model: Model<Api>) {
     parts.model.modelRuntime.isUsingSubscription(model.provider),
     true,
     chatHeadroom(parts),
+    inputBound,
   );
 }
 
@@ -296,7 +302,8 @@ export async function runHelper(parts: SessionApiParts, run: HelperRun): Promise
         ...(life.executionController ? [life.executionController.signal] : []),
         ...(streamOptions?.signal ? [streamOptions.signal] : []),
       ]);
-      const ready = () => helperReadiness(parts, model).ready;
+      // The gate measures the same normalized body metered dispatch will send.
+      const ready = () => helperReadiness(parts, model, measuredInputBound(model, context)).ready;
       return run.gate.admit(ready, () => metered(model, context, { ...streamOptions, signal }), signal);
     };
     await session.bindExtensions({});
