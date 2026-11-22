@@ -862,7 +862,10 @@ export class ClaudeCodeSession implements NativeChatControls {
    * retaining its reservation bound. */
   private publishObservedUsage(current: Completion, eventUsage: unknown): boolean {
     try {
-      if (this.unprovableAttempts.has(current.message)) return false;
+      // One publish per attempt: the stdout drain keeps feeding lines after a receipt already
+      // failed or finished the completion, and an identical receipt must not bank its delta twice.
+      if (current.failed || current.finishing || current.settled || this.unprovableAttempts.has(current.message))
+        return false;
       const aggregate = nativeUsage(eventUsage);
       const streamed = current.rawUsage === undefined ? undefined : nativeUsage(current.rawUsage);
       // A session-cumulative receipt must cover both earlier calls (`emitted`) and the usage the
@@ -1304,7 +1307,14 @@ export class ClaudeCodeSession implements NativeChatControls {
         // at observed usage — an all-zero receipt settles at 0 — not at the reservation bound. A
         // receipt that cannot prove its attempt's usage poisons the dispatch: later receipts only
         // account for their own session, so the bound stays.
-        if (current && !this.publishObservedUsage(current, event.usage)) this.unprovableAttempts.add(current.message);
+        if (
+          current &&
+          !current.failed &&
+          !current.finishing &&
+          !current.settled &&
+          !this.publishObservedUsage(current, event.usage)
+        )
+          this.unprovableAttempts.add(current.message);
         throw new NativeContextOverflowError('Native prompt is too long');
       }
       if (current && event.is_error === true && event.subtype === 'error_during_execution' && this.emptyResponse()) {

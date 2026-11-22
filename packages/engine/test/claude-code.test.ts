@@ -86,8 +86,9 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(mode==='prompt-too-long-always'||mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'||mode==='prompt-too-long-silent-then-usage'||mode.split(' ').includes('prompt-too-long')&&!compacted){
   const launches=readFileSync(root+'/launch','utf8').trim().split('\\n').length,u={input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0};
   if(mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'&&launches===1||mode==='prompt-too-long-silent-then-usage'&&launches>1){u.input_tokens=20*launches;u.output_tokens=10*launches;u.cache_read_input_tokens=30*launches;u.cache_creation_input_tokens=40*launches;}
+  if(mode==='prompt-too-long dup'){u.input_tokens=20;u.output_tokens=10;u.cache_read_input_tokens=30;u.cache_creation_input_tokens=40;}
   if(mode==='prompt-too-long-usage-then-silent'&&launches>1||mode==='prompt-too-long-silent-then-usage'&&launches===1)emit({type:'stream_event',event:{type:'message_start',message:{id:'msg_'+ ++n,model:'claude-haiku-5-5',usage}}});
-  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:u,modelUsage:{},errors:['Prompt is too long']});return;
+  const r={type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:u,modelUsage:{},errors:['Prompt is too long']};emit(r);if(mode==='prompt-too-long dup')emit(r);return;
  }
  const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':throttled?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
  if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'||mode==='usage-limit-reset-multiline'){
@@ -262,6 +263,22 @@ test('a resend after an unprovable attempt keeps the bound even when later recei
       assert.equal(ledger.snapshot().accounting, 'known');
       assert.equal(ledger.snapshot().used.tokens, 1_128_000);
       assert.match(response.errorMessage!, /charged at its reserved maximum/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a duplicated overflow receipt banks its usage once before the resend', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long dup', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'stop', response.errorMessage);
+      assert.equal(rows(join(directory, 'launch')).length, 2, 'one overflow plus a successful compacted resend');
+      // The first attempt emitted two identical usage-carrying receipts in one batch; its 100 is
+      // banked once, and the resend's own 100 settles the dispatch at 200, not 300.
+      assert.equal(ledger.snapshot().used.tokens, 200);
     } finally {
       await native.close();
     }
