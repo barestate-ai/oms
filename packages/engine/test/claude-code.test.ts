@@ -67,14 +67,14 @@ function receipt(mult){const u={input_tokens:20*mult,output_tokens:10*mult,cache
  const x={type:'result',subtype:'success',is_error:false,usage:u,modelUsage:{'claude-haiku-5-5':{provider:'firstParty',contextWindow:1000000,maxOutputTokens:128000},...(mode==='fallback'?{'other':{}}:{})}};emit(x);if(mode==='duplicate-receipt')emit(x);
 }
 const input=createInterface({input:process.stdin});input.on('line',async line=>{
- const x=JSON.parse(line);if(x.type==='control_request'){emit({type:'control_response',response:{subtype:'success',request_id:x.request_id,response:{}}});return;}history.push(x.message.content);writeFileSync(file,JSON.stringify(history));appendFileSync(root+'/input',JSON.stringify(x)+'\\n');
+ const x=JSON.parse(line);if(x.type==='control_request'){emit({type:'control_response',response:{subtype:'success',request_id:x.request_id,response:{}}});return;}const throttled=mode==='rate-limit-then-good'&&!existsSync(root+'/throttled');if(throttled)writeFileSync(root+'/throttled','');else history.push(x.message.content);writeFileSync(file,JSON.stringify(history));writeFileSync(root+'/history',JSON.stringify(history));appendFileSync(root+'/input',JSON.stringify(x)+'\\n');
  emit({type:'system',subtype:'init',tools:mode==='builtin'?['Bash']:tools,mcp_servers:[{name:'oms',status:'connected'}]});if(mode==='hang'||mode==='stubborn')return;
  if(mode==='exit-empty'){process.stdout.write('',()=>process.exit(1));return;}
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
- const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':history.length===1?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
+ const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':throttled?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
  if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'||mode==='usage-limit-reset-multiline'){
-  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:refusalError?[refusalError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:mode==='usage-limit-reset-multiline'?["You've hit your usage limit. Your limit resets at 3pm PT.\\nDo not keep sending."]:[]});return;
+  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:refusalError?[refusalError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:mode==='usage-limit-reset-multiline'?["You've hit your usage limit. Your limit resets at 3pm PT\\nDo not keep sending."]:[]});return;
  }
  if(mode==='empty-after-tool'||mode==='auth-after-tool'){
   if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:mode==='auth-after-tool'?['API Error: 401']:[]});}
@@ -274,6 +274,12 @@ test('a throttled turn resends into the same native session once the limit clear
       const input = rows(join(directory, 'input'));
       assert.equal(input.length, 2);
       assert.deepEqual(input.at(-1).message, input.at(-2).message, 'the throttled input is retried unchanged');
+      const history = JSON.parse(readFileSync(join(directory, 'history'), 'utf8'));
+      assert.deepEqual(
+        history,
+        [input.at(-1).message.content],
+        'the refused send is not retained; the prompt is in history once',
+      );
       const launches = rows(join(directory, 'launch'));
       assert.equal(launches.length, 2);
       assert.equal(launches[1].args[launches[1].args.indexOf('--resume') + 1], native.status().sessionId);

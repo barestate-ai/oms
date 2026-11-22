@@ -327,9 +327,8 @@ function classifyNativeReceipt(event: Record<string, unknown>): Error {
 }
 /** The reset hint a native limit message gives, e.g. "at 3:00 PM (UTC)": short, single-line and provider-owned. */
 function nativeResetHint(reason: string): string | undefined {
-  // The reason arrives JSON-escaped: \n inside a string is a literal backslash-n, not a line break.
-  const text = reason.replace(/\\[nrt]/g, ' ');
-  const hint = /\bresets?\s+((?:at|in|on|by|after)\s+[^.,;|\n"'\]}\[{\\]{1,48})/i.exec(text)?.[1];
+  // A JSON-escaped line break is a literal backslash-n here; the backslash ends the capture like a real break.
+  const hint = /\bresets?\s+((?:at|in|on|by|after)\s+[^.,;|\n"'\]}\[{\\]{1,48})/i.exec(reason)?.[1];
   return hint?.replace(/\s+/g, ' ').trim() || undefined;
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
