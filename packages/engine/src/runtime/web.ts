@@ -138,8 +138,8 @@ export const SEARCH_BACKENDS: Backend[] = [
     parse: (body) =>
       (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: r.snippet ?? '' })),
     label: (body) => omsLabel(body?.answered),
-    // A 402 is a paywall, not a rate limit: name where to pay and keep falling through to BYOK backends.
-    refusal: async (response) => (response.status === 402 ? paywallText(await paywallCode(response)) : undefined),
+    // A 402 is a refusal, not a rate limit: say hosted search is out and keep falling through to BYOK backends.
+    refusal: async (response) => (response.status === 402 ? paywallText(await paywallDetails(response)) : undefined),
   },
   {
     name: 'exa',
@@ -214,17 +214,28 @@ export function retryAfterMs(header: string | null, now: number): number {
   return Number.isNaN(date) ? DEFAULT_RETRY_AFTER_MS : Math.max(0, date - now);
 }
 
-const OMS_BILLING_PAGE = 'https://barestate.xyz/oms/billing';
 const PAYWALL_CODE = /^[A-Z_]{1,64}$/;
+const BYOK_SEARCH_KEYS = 'EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY';
+const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** `Dec 1` in UTC from an ms epoch. */
+const utcMonthDay = (ms: number) => {
+  const date = new Date(ms);
+  return `${UTC_MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+};
+
+interface PaywallDetails {
+  code?: string;
+  resetsAt?: number;
+}
 
 /**
- * `error.code` from an oms 402 body, read with a hard byte cap; undefined when the body is oversized, not JSON,
- * or the code is not an UPPER_SNAKE token. The server's message is never surfaced.
+ * `error.code` and `error.resetsAt` from an oms 402 body, read with a hard byte cap; each is undefined when the
+ * body is oversized, not JSON, or the value fails its shape check. The server's message is never surfaced.
  */
-async function paywallCode(response: Response): Promise<string | undefined> {
+async function paywallDetails(response: Response): Promise<PaywallDetails> {
   try {
     const reader = response.body?.getReader();
-    if (!reader) return undefined;
+    if (!reader) return {};
     const chunks: Uint8Array[] = [];
     let size = 0;
     for (;;) {
@@ -233,24 +244,31 @@ async function paywallCode(response: Response): Promise<string | undefined> {
       size += value.byteLength;
       if (size > 4_096) {
         await reader.cancel().catch(() => {});
-        return undefined;
+        return {};
       }
       chunks.push(value);
     }
     reader.releaseLock();
-    const code = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: { code?: unknown } })?.error?.code;
-    return typeof code === 'string' && PAYWALL_CODE.test(code) ? code : undefined;
+    const error = (
+      JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: { code?: unknown; resetsAt?: unknown } }
+    )?.error;
+    const resetsAt = error?.resetsAt;
+    return {
+      ...(typeof error?.code === 'string' && PAYWALL_CODE.test(error.code) ? { code: error.code } : {}),
+      ...(typeof resetsAt === 'number' && Number.isFinite(resetsAt) && resetsAt > 0 && resetsAt <= 8_640_000_000_000_000
+        ? { resetsAt }
+        : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
-/** The failure line a 402 from oms records; only the validated code picks the text, never the server's message. */
-function paywallText(code: string | undefined): string {
-  if (code === 'UNFUNDED_USAGE') return `unpaid usage — settle it at ${OMS_BILLING_PAGE}`;
-  if (code === 'SEARCH_PAYMENT_REQUIRED')
-    return `monthly free searches used up — add credits or upgrade at ${OMS_BILLING_PAGE}`;
-  return `payment required — see ${OMS_BILLING_PAGE}`;
+/** The failure line a 402 from oms records; only the validated code and resetsAt pick the text, never the server's message. */
+function paywallText({ code, resetsAt }: PaywallDetails): string {
+  if (code === 'SEARCH_LIMIT_REACHED' && resetsAt !== undefined)
+    return `this month's free hosted searches are used up (reset ${utcMonthDay(resetsAt)}) — set one of ${BYOK_SEARCH_KEYS} to keep searching`;
+  return `hosted search is unavailable for this account — set one of ${BYOK_SEARCH_KEYS}`;
 }
 
 // Two lists: Node checks IPv4 addresses against IPv4-mapped IPv6 rules, so ::ffff:0:0/96 would block every IPv4 address.

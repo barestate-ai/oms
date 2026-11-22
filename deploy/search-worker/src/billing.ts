@@ -11,7 +11,8 @@ export type SearchChargeResult =
       allowanceUnits: number;
       chargedWalletUnits: number;
     }
-  | { ok: false; code: 'SEARCH_PAYMENT_REQUIRED' | 'UNFUNDED_USAGE' | 'INVALID_REQUEST'; message: string };
+  | { ok: false; code: 'SEARCH_PAYMENT_REQUIRED' | 'UNFUNDED_USAGE' | 'INVALID_REQUEST'; message: string }
+  | { ok: false; code: 'SEARCH_LIMIT_REACHED'; message: string; resetsAt: number };
 
 /** The `oms` gateway's SearchBilling entrypoint, reached through the BILLING service binding. */
 export interface SearchBillingRpc {
@@ -27,11 +28,18 @@ export interface BillingEnv {
 
 export const BILLING_PAGE = 'https://barestate.xyz/oms/billing';
 
-const billingError = (status: number, code: string, message: string) =>
-  new Response(JSON.stringify({ error: { code, message } }), {
+const billingError = (status: number, code: string, message: string, extra?: Record<string, unknown>) =>
+  new Response(JSON.stringify({ error: { code, message, ...extra } }), {
     status,
     headers: { 'content-type': 'application/json' },
   });
+
+const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** `Dec 1` in UTC from an ms epoch. */
+const utcMonthDay = (ms: number) => {
+  const date = new Date(ms);
+  return `${UTC_MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+};
 const billingUnavailable = () => billingError(503, 'SEARCH_BILLING_UNAVAILABLE', 'search billing is unavailable');
 
 /**
@@ -58,6 +66,13 @@ export async function chargeSearch(
         402,
         'SEARCH_PAYMENT_REQUIRED',
         `Your free searches for this month are used up. Add credits or upgrade to Pro at ${BILLING_PAGE}`,
+      );
+    if (result.code === 'SEARCH_LIMIT_REACHED' && Number.isFinite(result.resetsAt) && result.resetsAt > 0)
+      return billingError(
+        402,
+        'SEARCH_LIMIT_REACHED',
+        `This month's free hosted searches are used up. They reset on ${utcMonthDay(result.resetsAt)}. Add your own search key to keep searching.`,
+        { resetsAt: result.resetsAt },
       );
     if (result.code === 'UNFUNDED_USAGE')
       return billingError(

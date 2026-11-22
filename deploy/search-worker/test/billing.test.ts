@@ -55,6 +55,53 @@ test('a refused charge is a 402 in the gateway error style and serves nothing up
   assert.equal(upstream.calls.length, 0);
 });
 
+test('a monthly limit refusal is a 402 naming the UTC reset date; nothing served, nothing refunded', async () => {
+  const { userCall, billing, upstream } = setup(routes);
+  billing.state.result = {
+    ok: false,
+    code: 'SEARCH_LIMIT_REACHED',
+    message: 'allowance exhausted',
+    resetsAt: Date.UTC(2026, 11, 1),
+  };
+  const response = await userCall('/v1/search', { query: 'q' });
+  assert.equal(response.status, 402);
+  assert.deepEqual(await response.json<any>(), {
+    error: {
+      code: 'SEARCH_LIMIT_REACHED',
+      message:
+        "This month's free hosted searches are used up. They reset on Dec 1. Add your own search key to keep searching.",
+      resetsAt: Date.UTC(2026, 11, 1),
+    },
+  });
+  assert.equal(upstream.calls.length, 0);
+  assert.equal(billing.calls.filter((c) => c.method === 'refund').length, 0, 'a refusal is not refunded');
+
+  billing.state.result = {
+    ok: false,
+    code: 'SEARCH_LIMIT_REACHED',
+    message: 'allowance exhausted',
+    resetsAt: Date.UTC(2027, 0, 1),
+  };
+  const jan = await userCall('/v1/fetch', { url: 'https://docs.example.com/p' });
+  assert.equal(jan.status, 402);
+  assert.equal(
+    (await jan.json<any>()).error.message,
+    "This month's free hosted searches are used up. They reset on Jan 1. Add your own search key to keep searching.",
+  );
+  assert.equal(upstream.calls.length, 0);
+});
+
+test('a limit refusal without a usable resetsAt fails closed: 503, nothing served', async () => {
+  const { userCall, billing, upstream } = setup(routes);
+  for (const resetsAt of [undefined, 'Dec 1', -5, 0, Number.NaN]) {
+    billing.state.result = { ok: false, code: 'SEARCH_LIMIT_REACHED', message: 'x', resetsAt };
+    const response = await userCall('/v1/search', { query: 'q' });
+    assert.equal(response.status, 503, JSON.stringify(resetsAt));
+    assert.equal((await response.json<any>()).error.code, 'SEARCH_BILLING_UNAVAILABLE');
+  }
+  assert.equal(upstream.calls.length, 0);
+});
+
 test('a failed upstream call refunds the charge with the same requestId', async () => {
   const { userCall, billing } = setup({
     [SEARCH]: () => new Response('', { status: 503, headers: { 'retry-after': '9' } }),
@@ -103,8 +150,7 @@ test('a refund that keeps failing still serves the real error, and is retried on
   const charge = billing.calls.find((c) => c.method === 'charge')!;
   const refunds = billing.calls.filter((c) => c.method === 'refund');
   assert.equal(refunds.length, 2, 'the refund was retried once');
-  for (const refund of refunds)
-    assert.deepEqual(refund.input, { userId: 'user-1', requestId: charge.input.requestId });
+  for (const refund of refunds) assert.deepEqual(refund.input, { userId: 'user-1', requestId: charge.input.requestId });
   const marker = events.find((e) => (e as { blobs?: string[] }).blobs?.[0] === 'refund_failed');
   assert.deepEqual(marker, {
     indexes: ['user-1'],
