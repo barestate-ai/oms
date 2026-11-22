@@ -40,6 +40,7 @@ test('a refused charge is a 402 in the gateway error style and serves nothing up
       code: 'SEARCH_PAYMENT_REQUIRED',
       message:
         'Your free searches for this month are used up. Add credits or upgrade to Pro at https://barestate.xyz/oms/billing',
+      billing: 'https://barestate.xyz/oms/billing',
     },
   });
   assert.equal(upstream.calls.length, 0);
@@ -52,6 +53,7 @@ test('a refused charge is a 402 in the gateway error style and serves nothing up
   assert.equal(body.error.code, 'UNFUNDED_USAGE');
   assert.match(body.error.message, /unpaid/i);
   assert.match(body.error.message, /https:\/\/barestate\.xyz\/oms\/billing/);
+  assert.equal(body.error.billing, 'https://barestate.xyz/oms/billing');
   assert.equal(upstream.calls.length, 0);
 });
 
@@ -71,6 +73,7 @@ test('a monthly limit refusal is a 402 naming the UTC reset date; nothing served
       message:
         "This month's free hosted searches are used up. They reset on Dec 1. Add your own search key to keep searching.",
       resetsAt: Date.UTC(2026, 11, 1),
+      billing: 'https://barestate.xyz/oms/billing',
     },
   });
   assert.equal(upstream.calls.length, 0);

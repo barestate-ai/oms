@@ -71,6 +71,7 @@ export async function chargeSearch(
         402,
         'SEARCH_PAYMENT_REQUIRED',
         `Your free searches for this month are used up. Add credits or upgrade to Pro at ${BILLING_PAGE}`,
+        { billing: BILLING_PAGE },
       );
     if (
       result.code === 'SEARCH_LIMIT_REACHED' &&
@@ -82,13 +83,14 @@ export async function chargeSearch(
         402,
         'SEARCH_LIMIT_REACHED',
         `This month's free hosted searches are used up. They reset on ${utcMonthDay(result.resetsAt)}. Add your own search key to keep searching.`,
-        { resetsAt: result.resetsAt },
+        { resetsAt: result.resetsAt, billing: BILLING_PAGE },
       );
     if (result.code === 'UNFUNDED_USAGE')
       return billingError(
         402,
         'UNFUNDED_USAGE',
         `You have unpaid usage on your OMS account. Settle it at ${BILLING_PAGE}`,
+        { billing: BILLING_PAGE },
       );
     // Any other well-formed refusal means the gateway declined the charge, so there is nothing to refund.
     return billingUnavailable();

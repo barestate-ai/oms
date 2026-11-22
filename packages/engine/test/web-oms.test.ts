@@ -259,17 +259,26 @@ test('an account origin that is neither https nor loopback never receives the ac
 const HOSTED_SEARCH_OUT =
   /oms: hosted search is unavailable for this account — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY/;
 
-test('oms answering 402 SEARCH_PAYMENT_REQUIRED says hosted search is out, never echoes the message, and is not rate-limited', async () => {
+const HOSTED_SEARCH_OUT_BILLING =
+  /oms: hosted search is unavailable for this account — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing/;
+
+test('oms answering 402 SEARCH_PAYMENT_REQUIRED offers the BYOK keys and the named billing page, never echoes the message, and is not rate-limited', async () => {
   const calls: string[] = [];
   const fetch = (async (url: string) => {
     calls.push(String(url));
-    return reply(402, { error: { code: 'SEARCH_PAYMENT_REQUIRED', message: 'PAYMENT DETAIL' } });
+    return reply(402, {
+      error: {
+        code: 'SEARCH_PAYMENT_REQUIRED',
+        message: 'PAYMENT DETAIL',
+        billing: 'https://barestate.xyz/oms/billing',
+      },
+    });
   }) as typeof globalThis.fetch;
   const { call } = tools({ enabled: true, env: { ...OMS }, fetch });
   for (let i = 0; i < 2; i++)
     await assert.rejects(call('web_search', { query: 'q' }), (error: Error) => {
-      assert.match(error.message, HOSTED_SEARCH_OUT);
-      assert.doesNotMatch(error.message, /PAYMENT DETAIL|billing|buy|upgrade/i);
+      assert.match(error.message, HOSTED_SEARCH_OUT_BILLING);
+      assert.doesNotMatch(error.message, /PAYMENT DETAIL|buy|upgrade/i);
       return true;
     });
   assert.deepEqual(
@@ -279,23 +288,61 @@ test('oms answering 402 SEARCH_PAYMENT_REQUIRED says hosted search is out, never
   );
 });
 
-test('oms answering 402 UNFUNDED_USAGE says hosted search is out and names the BYOK keys', async () => {
+test('oms answering 402 UNFUNDED_USAGE offers the BYOK keys and the named billing page', async () => {
   const fetch = (async () =>
-    reply(402, { error: { code: 'UNFUNDED_USAGE', message: 'you owe $9' } })) as typeof globalThis.fetch;
+    reply(402, {
+      error: { code: 'UNFUNDED_USAGE', message: 'you owe $9', billing: 'https://barestate.xyz/oms/billing' },
+    })) as typeof globalThis.fetch;
   const { call } = tools({ enabled: true, env: { ...OMS }, fetch });
   await assert.rejects(call('web_search', { query: 'q' }), (error: Error) => {
-    assert.match(error.message, HOSTED_SEARCH_OUT);
-    assert.doesNotMatch(error.message, /owe|billing|settle/i);
+    assert.match(error.message, HOSTED_SEARCH_OUT_BILLING);
+    assert.doesNotMatch(error.message, /owe|settle|unpaid/i);
     return true;
   });
 });
 
-test('oms answering 402 SEARCH_LIMIT_REACHED names the UTC reset date, never echoes the message, and is not rate-limited', async () => {
+test('a 402 billing link is used only when it is a barestate.xyz https URL', async () => {
+  for (const billing of [
+    'http://barestate.xyz/oms/billing',
+    'https://barestate.xyz.evil.example/oms/billing',
+    'https://evil.example/oms/billing',
+    'barestate.xyz/oms/billing',
+    7,
+    null,
+    { url: 'https://barestate.xyz/oms/billing' },
+  ]) {
+    const fetch = (async () =>
+      reply(402, { error: { code: 'UNFUNDED_USAGE', message: 'x', billing } })) as typeof globalThis.fetch;
+    const { call } = tools({ enabled: true, env: { ...OMS }, fetch });
+    await assert.rejects(call('web_search', { query: 'q' }), (error: Error) => {
+      assert.match(error.message, HOSTED_SEARCH_OUT);
+      assert.doesNotMatch(error.message, /go to|billing/i);
+      return true;
+    });
+  }
+  for (const billing of ['https://barestate.xyz/oms/billing', 'https://a.barestate.xyz/oms/billing?x=1']) {
+    const fetch = (async () =>
+      reply(402, { error: { code: 'UNFUNDED_USAGE', message: 'x', billing } })) as typeof globalThis.fetch;
+    const { call } = tools({ enabled: true, env: { ...OMS }, fetch });
+    await assert.rejects(
+      call('web_search', { query: 'q' }),
+      new RegExp(`or go to ${billing.replace(/[/.?]/g, '\\$&')}`),
+      billing,
+    );
+  }
+});
+
+test('oms answering 402 SEARCH_LIMIT_REACHED names the UTC reset date and the named billing page, never echoes the message, and is not rate-limited', async () => {
   const calls: string[] = [];
   const fetch = (async (url: string) => {
     calls.push(String(url));
     return reply(402, {
-      error: { code: 'SEARCH_LIMIT_REACHED', message: 'SERVER CHOSEN TEXT', resetsAt: Date.UTC(2026, 11, 1) },
+      error: {
+        code: 'SEARCH_LIMIT_REACHED',
+        message: 'SERVER CHOSEN TEXT',
+        resetsAt: Date.UTC(2026, 11, 1),
+        billing: 'https://barestate.xyz/oms/billing',
+      },
     });
   }) as typeof globalThis.fetch;
   const { call } = tools({ enabled: true, env: { ...OMS }, fetch });
@@ -303,7 +350,7 @@ test('oms answering 402 SEARCH_LIMIT_REACHED names the UTC reset date, never ech
     await assert.rejects(call('web_search', { query: 'q' }), (error: Error) => {
       assert.match(
         error.message,
-        /oms: this month's free hosted searches are used up \(reset Dec 1\) — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY to keep searching/,
+        /oms: this month's free hosted searches are used up \(reset Dec 1\) — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing to keep searching/,
       );
       assert.doesNotMatch(error.message, /SERVER CHOSEN TEXT/);
       return true;

@@ -226,11 +226,24 @@ const utcMonthDay = (ms: number) => {
 interface PaywallDetails {
   code?: string;
   resetsAt?: number;
+  billing?: string;
 }
 
+/** `error.billing` counts only as a barestate.xyz https link; any other value is dropped like a bad code. */
+const billingUrl = (raw: unknown): raw is string => {
+  if (typeof raw !== 'string') return false;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' && (url.hostname === 'barestate.xyz' || url.hostname.endsWith('.barestate.xyz'));
+  } catch {
+    return false;
+  }
+};
+
 /**
- * `error.code` and `error.resetsAt` from an oms 402 body, read with a hard byte cap; each is undefined when the
- * body is oversized, not JSON, or the value fails its shape check. The server's message is never surfaced.
+ * `error.code`, `error.resetsAt` and `error.billing` from an oms 402 body, read with a hard byte cap; each is
+ * undefined when the body is oversized, not JSON, or the value fails its shape check. The server's message is
+ * never surfaced.
  */
 async function paywallDetails(response: Response): Promise<PaywallDetails> {
   try {
@@ -250,7 +263,9 @@ async function paywallDetails(response: Response): Promise<PaywallDetails> {
     }
     reader.releaseLock();
     const error = (
-      JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: { code?: unknown; resetsAt?: unknown } }
+      JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+        error?: { code?: unknown; resetsAt?: unknown; billing?: unknown };
+      }
     )?.error;
     const resetsAt = error?.resetsAt;
     return {
@@ -258,17 +273,22 @@ async function paywallDetails(response: Response): Promise<PaywallDetails> {
       ...(typeof resetsAt === 'number' && Number.isFinite(resetsAt) && resetsAt > 0 && resetsAt <= 8_640_000_000_000_000
         ? { resetsAt }
         : {}),
+      ...(billingUrl(error?.billing) ? { billing: error.billing } : {}),
     };
   } catch {
     return {};
   }
 }
 
-/** The failure line a 402 from oms records; only the validated code and resetsAt pick the text, never the server's message. */
-function paywallText({ code, resetsAt }: PaywallDetails): string {
+/**
+ * The failure line a 402 from oms records; only the validated code, resetsAt and billing link pick the text, never
+ * the server's message. The advice is always the same two options: a BYOK key, or the billing page the refusal names.
+ */
+function paywallText({ code, resetsAt, billing }: PaywallDetails): string {
+  const advice = `set one of ${BYOK_SEARCH_KEYS}${billing ? ` or go to ${billing}` : ''}`;
   if (code === 'SEARCH_LIMIT_REACHED' && resetsAt !== undefined)
-    return `this month's free hosted searches are used up (reset ${utcMonthDay(resetsAt)}) — set one of ${BYOK_SEARCH_KEYS} to keep searching`;
-  return `hosted search is unavailable for this account — set one of ${BYOK_SEARCH_KEYS}`;
+    return `this month's free hosted searches are used up (reset ${utcMonthDay(resetsAt)}) — ${advice} to keep searching`;
+  return `hosted search is unavailable for this account — ${advice}`;
 }
 
 // Two lists: Node checks IPv4 addresses against IPv4-mapped IPv6 rules, so ::ffff:0:0/96 would block every IPv4 address.
