@@ -125,6 +125,8 @@ export const RunRecordSchema = Type.Object(
     knowledgeCalls: Type.Optional(Type.Record(Type.String(), count)),
     /** oms3 only: the knowledge corpus version, list_sources' "Built ..." line, read with the first-turn block. */
     knowledgeBuilt: Type.Optional(Type.String({ maxLength: 200 })),
+    /** Headless runs: turns started after a turn that changed no task item's state. Optional so earlier records still parse. */
+    noProgressContinuations: Type.Optional(count),
     /** Runs with the pre-done edge-case check: whether it ran, its model turns and wall time, and its last command's exit. */
     edgeCheck: Type.Optional(
       Type.Object(

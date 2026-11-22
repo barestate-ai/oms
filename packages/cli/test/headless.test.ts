@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import { acquireTaskLease } from '@oms/engine';
 import { runHarnessCommand, parseLaunchOptions } from '../src/harness.ts';
+import { MAX_NO_PROGRESS_TURNS } from '../src/headless.ts';
 import { createHarnessFixture } from '../../engine/test-support/runtime-fixture.ts';
 import { skipUnavailable } from '../../sandbox/test-support/infrastructure.ts';
 
@@ -78,7 +79,9 @@ for (const scenario of ['closed', 'blocked', 'usd', 'wall', 'unknown', 'owned'] 
             },
           });
         } else {
-          f.faux.setResponses([fauxAssistantMessage('Unable to complete.')]);
+          f.faux.setResponses(
+            Array.from({ length: MAX_NO_PROGRESS_TURNS }, () => fauxAssistantMessage('Unable to complete.')),
+          );
         }
         const args = [
           '--headless',
