@@ -11,6 +11,12 @@ const PROVIDER_NAMES: Record<string, string> = {
   deepseek: 'DeepSeek',
   'openai-codex': 'Codex',
   'github-copilot': 'GitHub Copilot',
+  'claude-code': 'Claude Code',
+  opencode: 'OpenCode Zen',
+  xiaomi: 'Xiaomi',
+  'xiaomi-token-plan-cn': 'Xiaomi Token Plan CN',
+  'xiaomi-token-plan-sgp': 'Xiaomi Token Plan SGP',
+  'xiaomi-token-plan-ams': 'Xiaomi Token Plan AMS',
 };
 
 export function providerName(provider: string): string {
@@ -51,7 +57,14 @@ function messageFrom(value: unknown): string | undefined {
 /** One plain sentence for a rejected request: the provider's own reason, never raw JSON and never a key. */
 export function describeRejection(provider: string, status: number, body: string): string {
   const name = providerName(provider);
-  if (status === 401 || status === 403) return `${name} says the API key is invalid. /connect to fix it.`;
+  if (status === 401 || status === 403) {
+    // Providers without an API-key path authenticate by sign-in; a 401/403 is about that login, not a key.
+    if (provider === 'openai-codex')
+      return `${name} says the sign-in is invalid or expired. Sign in again in /connect to fix it.`;
+    if (provider === 'claude-code')
+      return `${name} says the sign-in is invalid or expired. Run claude auth login, then check the connection in /connect.`;
+    return `${name} says the API key is invalid. /connect to fix it.`;
+  }
   let reason: string | undefined;
   try {
     reason = messageFrom(JSON.parse(body));
@@ -68,6 +81,36 @@ export function describeRejection(provider: string, status: number, body: string
  */
 export function describeFailure(provider: string): string {
   return `${providerName(provider)}'s answer broke off before it finished. It is counted at its maximum cost. Send your message again to continue.`;
+}
+
+/** Claude Code's local sign-in check ran before any native process started, so provably no provider request exists. */
+export function describeClaudeCodeSignIn(provider: string): string {
+  return `${providerName(provider)} needs its Claude subscription sign-in before it can answer. Run claude auth login in a terminal, then check the connection in /connect and send your message again. No provider request was sent.`;
+}
+
+/** Recovery for a native turn refused with a tool batch still in flight; replay cannot be proven safe. */
+const INTERRUPTED_NATIVE_BATCH =
+  'An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.';
+
+/** An in-flight Claude Code turn was refused because the Claude subscription sign-in lapsed. */
+export function describeClaudeCodeAuth(provider: string, interruptedBatch = false): string {
+  return `${providerName(provider)}'s Claude subscription sign-in is no longer valid. Run claude auth login in a terminal and check the connection in /connect before sending your message again. It is counted at its maximum cost.${interruptedBatch ? ` ${INTERRUPTED_NATIVE_BATCH}` : ''}`;
+}
+
+/** The provider refused a Claude Code turn when the Claude plan usage limit was reached; reset is its own hint, if given. */
+export function describeClaudeCodeLimit(provider: string, reset?: string, interruptedBatch = false): string {
+  const when = reset ? ` It resets ${reset}.` : '';
+  return `${providerName(provider)}'s usage limit was reached.${when} It is counted at its maximum cost. Send your message again after the limit resets.${interruptedBatch ? ` ${INTERRUPTED_NATIVE_BATCH}` : ''}`;
+}
+
+/** A bare throttle refused a Claude Code turn that kept a tool batch in flight; nothing proves plan exhaustion. */
+export function describeClaudeCodeRateLimit(provider: string, interruptedBatch = false): string {
+  return `${providerName(provider)} rate limited the request. Wait a short while and send your message again. It is counted at its maximum cost.${interruptedBatch ? ` ${INTERRUPTED_NATIVE_BATCH}` : ''}`;
+}
+
+/** Claude Code rejected the turn before any native model request existed; the rejection itself carries the recovery step. */
+export function describeClaudeCodeNotDispatched(provider: string, detail?: string): string {
+  return `${providerName(provider)} did not start a native request: ${detail ?? 'the session is not safe to resume'}. No provider request was sent.`;
 }
 
 function plain(text: string | undefined): string {
