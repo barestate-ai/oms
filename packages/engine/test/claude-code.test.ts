@@ -11,6 +11,8 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { InMemoryCredentialStore, normalizeContext, Type } from '@earendil-works/pi-ai';
 import { createBudgetLedger } from '@oms/core';
 import { createDispatchAllocator } from '@oms/core/dispatch';
+import { createChatFixture } from '../test-support/chat-fixture.ts';
+import { createChatSession } from '../src/runtime/chat-session.ts';
 import { createMeteredStream } from '../src/runtime/usage.ts';
 import {
   ClaudeCodeSession,
@@ -904,4 +906,46 @@ test('a first native use without a Claude Code login reports the sign-in step', 
     } finally {
       await native.close();
     }
+  }));
+test('a session launched on a native model verifies the ambient login on its first prompt', async () =>
+  fixture('ok', async (directory) => {
+    const f = await createChatFixture();
+    try {
+      const chat = await createChatSession({
+        ...f.options,
+        model: undefined,
+        modelSelection: { provider: 'claude-code', id: 'haiku' },
+        caps: { tokens: 10_000_000, spendMicroUsd: 1_000_000, wallClockMs: 120_000 },
+      });
+      try {
+        await chat.session.prompt('say hi');
+        assert.match(JSON.stringify(chat.session.messages), /"reply"/);
+        assert.equal(authChecks(directory), 2, 'the first-use gate and session start each ran one check');
+      } finally {
+        await chat.close();
+      }
+    } finally {
+      rmSync(f.base, { recursive: true, force: true });
+    }
+  }));
+test('a new session re-verifies a cached subscription before trusting it', async (t) =>
+  toolFreeFixture(t, 'ok', async () => {
+    assert.equal((await inspectClaudeCode()).configured, true, 'seed a verified subscription login');
+    await fixture('api-auth', async (directory) => {
+      const { model, native } = await modelAndSession();
+      try {
+        const response = await native.stream(model, toolFreeContext()).result();
+        assert.equal(response.stopReason, 'error');
+        assert.match(response.errorMessage!, /claude auth login/);
+        assert.equal(authChecks(directory), 1, 'the fresh session re-checked ambient auth once');
+      } finally {
+        await native.close();
+      }
+    });
+  }));
+test('a Claude Code login check that times out says so', async () =>
+  fixture('hang-auth', async () => {
+    const result = await inspectClaudeCode(undefined, 50);
+    assert.equal(result.configured, false);
+    assert.match(result.detail, /timed out/);
   }));

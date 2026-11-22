@@ -156,7 +156,8 @@ export function runClaudeCode(
       killTimer ??= setTimeout(() => kill('SIGKILL'), 500);
     };
     const cancel = () => abort();
-    const deadline = setTimeout(() => abort(new Error('Claude Code request timed out')), options.timeoutMs ?? 120_000);
+    const timedOut = () => Object.assign(new Error('Claude Code request timed out'), { code: 'ETIMEDOUT' });
+    const deadline = setTimeout(() => abort(timedOut()), options.timeoutMs ?? 120_000);
     options.signal?.addEventListener('abort', cancel, { once: true });
     if (options.signal?.aborted) cancel();
     child.stdout.setEncoding('utf8');
@@ -205,13 +206,13 @@ export function runClaudeCode(
 }
 
 /** Checks native auth without reading, importing or storing native credentials. */
-export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCodeStatus> {
+export async function inspectClaudeCode(signal?: AbortSignal, timeoutMs = 15_000): Promise<ClaudeCodeStatus> {
   try {
     const result = await runClaudeCode(['auth', 'status'], {
       cwd: tmpdir(),
       signal,
       maxBytes: 65_536,
-      timeoutMs: 15_000,
+      timeoutMs,
     });
     const auth = JSON.parse(result.stdout) as Record<string, unknown>;
     const configured =
@@ -229,13 +230,16 @@ export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCod
     };
   } catch (error) {
     const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT';
+    const timedOut = !!error && typeof error === 'object' && 'code' in error && error.code === 'ETIMEDOUT';
     status = {
       installed: !missing,
       configured: false,
       checked: true,
       detail: missing
         ? 'Install Claude Code, run claude auth login, then check the connection again.'
-        : 'Claude Code login could not be checked. Run claude auth status in a terminal, then check the connection again.',
+        : timedOut
+          ? 'The Claude Code login check timed out. Run claude auth status in a terminal, then check the connection again.'
+          : 'Claude Code login could not be checked. Run claude auth status in a terminal, then check the connection again.',
     };
   }
   return getClaudeCodeStatus();
@@ -368,6 +372,8 @@ export class ClaudeCodeSession implements NativeChatControls {
   private configurationKey?: string;
   private active?: Completion;
   private failure?: string;
+  /** The auth probe this session verified; a failed check is not kept, so the next start retries. */
+  private authCheck?: Promise<ClaudeCodeStatus>;
   private retryUser?: string;
   private toolResultDelivered = false;
   private waiting: { socket: Socket; name: string; args: unknown }[] = [];
@@ -544,8 +550,12 @@ export class ClaudeCodeSession implements NativeChatControls {
       );
     const startupSignal =
       signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
-    // A configured check is reused for the rest of the process; a failed check retries on the next start.
-    const auth = status.configured ? status : await inspectClaudeCode(startupSignal);
+    // A verified login is reused by this session's own starts only: each new session re-verifies so a
+    // billing change (subscription to Console) is detected before any call it would leave unmetered.
+    const auth = await (this.authCheck ??= inspectClaudeCode(startupSignal).then((result) => {
+      if (!result.configured) this.authCheck = undefined;
+      return result;
+    }));
     startupSignal?.throwIfAborted();
     if (!auth.configured) throw new Error(auth.detail);
     const { model, context, maxTokens, effort } = this.configuration;
