@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { KnowledgeConfig } from './knowledge-service.ts';
-import { createContextTrimmer } from './context-trim.ts';
+import { BYTES_PER_TOKEN, createContextTrimmer } from './context-trim.ts';
 import type { SessionLifecycle } from './session-lifecycle.ts';
 import type { RuntimeEnvironment } from './session-environment.ts';
 import type { SessionTools } from './session-tools.ts';
@@ -39,7 +39,13 @@ export function createSessionHooks(
 ): SessionHooks {
   const { taskRoot, web } = tools;
   const turn = { id: randomUUID() };
-  const trim = createContextTrimmer(() => options.maxInputTokens ?? life.liveSession?.model?.contextWindow);
+  // A local input cap is enforced on serialized bytes (one byte can be one token), so it is
+  // converted back to the trimmer's tokens-bytes estimate; the model window stays an estimate.
+  const trim = createContextTrimmer(() =>
+    options.maxInputTokens === undefined
+      ? life.liveSession?.model?.contextWindow
+      : Math.ceil(options.maxInputTokens / BYTES_PER_TOKEN),
+  );
   const promptFor = (config: KnowledgeConfig | undefined) =>
     (env.contract ? omsSystemPrompt : omsChatPrompt)(
       taskRoot,

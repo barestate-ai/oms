@@ -11,7 +11,6 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { createBudgetLedger, type BudgetLedgerEvent } from '@oms/core';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 import { modelReservationBound } from '@oms/core/usage';
-import { BYTES_PER_TOKEN } from '../src/runtime/context-trim.ts';
 import {
   createMeteredStream,
   modelReadiness,
@@ -347,16 +346,15 @@ test('a web_fetch tool call carries a url argument, which is model text, not a r
   assert.equal(subject.calls(), 1);
 });
 
-test('the input cap is in tokens: a payload of that many tokens at 3 bytes each is accepted, one clearly over is refused', () => {
+test('the input cap is enforced on serialized bytes: one byte can be one token, so a body over the cap is refused', () => {
   const cap = 20_000;
   const payload = (bytes: number) => ({ model: 'm', messages: [{ role: 'user', content: 'x'.repeat(bytes) }] });
-  assert.equal(BYTES_PER_TOKEN, 3);
-  assert.equal(payloadWithinInputCap(payload(cap * 2), cap), true, 'about 2 bytes per token is well inside the cap');
   assert.equal(
-    payloadWithinInputCap(payload(cap * BYTES_PER_TOKEN), cap),
-    false,
-    'the protocol allowance no longer fits',
+    payloadWithinInputCap(payload(cap - 13_000), cap),
+    true,
+    'a payload inside the byte bound and protocol allowance',
   );
+  assert.equal(payloadWithinInputCap(payload(cap), cap), false, 'no room left for the request envelope');
   assert.equal(payloadWithinInputCap(payload(cap * 4), cap), false);
 });
 

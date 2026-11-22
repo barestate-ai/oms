@@ -35,7 +35,6 @@ import {
   type ExecutionMode,
 } from '@oms/core';
 
-import { BYTES_PER_TOKEN } from './context-trim.ts';
 import {
   describeClaudeCodeAuth,
   describeClaudeCodeLimit,
@@ -164,7 +163,10 @@ function unboundedInput(value: unknown): boolean {
   return Object.values(record).some(unboundedInput);
 }
 
-/** Text-only serialized body. Media and remote files are not byte-bounded, so they fail closed. */
+/** Text-only serialized body. Media and remote files are not byte-bounded, so they fail closed.
+ * The cap is enforced on serialized bytes, not a bytes-per-token estimate: a tokenizer can emit
+ * one token per byte, so a denser allowance (e.g. 3 bytes per token) lets a payload carry more
+ * tokens than the cap reserves — dense non-Latin text tokenizes at roughly 1-3 bytes a token. */
 export function payloadWithinInputCap(payload: unknown, maxInputTokens: number): boolean {
   if (unboundedInput(payload)) return false;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
@@ -174,7 +176,7 @@ export function payloadWithinInputCap(payload: unknown, maxInputTokens: number):
   } catch {
     return false;
   }
-  return bytes + PROTOCOL_ALLOWANCE_BYTES <= maxInputTokens * BYTES_PER_TOKEN;
+  return bytes + PROTOCOL_ALLOWANCE_BYTES <= maxInputTokens;
 }
 
 /** Slack over serialized-transcript bytes a provider adapter may add re-encoding it (field
@@ -201,12 +203,17 @@ function payloadWithinMeasuredBound(payload: unknown, bound: number): boolean {
  *
  * Worst case: every serialized byte becomes one provider token. No tokenizer emits more
  * than one token per input byte, and non-Latin scripts sit comfortably inside that
- * (multi-byte UTF-8 chars tokenize at roughly one token per 2-4 bytes). The `slack` term
- * covers what bytes alone cannot prove: the provider's own envelope — role headers,
- * tool-call wrappers, control tokens — bounded by a fixed 32 KB plus 25% of the payload.
- * That slack is the only heuristic part; the per-byte rate itself is the hard upper bound.
- * The payload hook below holds the serialized body inside this bound, so the reservation
- * stays provable rather than a chars-per-token estimate that could undercount dense text.
+ * (multi-byte UTF-8 chars tokenize at roughly one token per 2-4 bytes). That per-byte
+ * rate is the hard upper bound — nothing looser (like 3 bytes per token) can be proven.
+ *
+ * The bound is still probabilistic in one place: tokens a provider bills that are not
+ * bytes in the request body — chat-template control tokens, role wrappers, tool-schema
+ * expansion, a backend's own injected instructions. The slack term estimates them at
+ * 32 KB + 25% of the transcript. The worst case is a transcript of very many small
+ * messages (or a provider wrapper heavier than the slack) accruing more structural
+ * tokens than the slack covers; the provider receipt then settles above the reservation.
+ * The payload hook below holds the serialized body inside this bound, so content bytes
+ * can never exceed it — only provider-side framing can.
  */
 export function measuredInputBound(model: Model<Api>, context: { messages: readonly unknown[] }): number | undefined {
   if (isClaudeCodeModel(model)) return undefined;

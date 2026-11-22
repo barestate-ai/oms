@@ -323,7 +323,16 @@ export function createHelpers(config: { dirs: AgentDirs; trust: HostTrust }): {
         parameters,
         executionMode: 'parallel',
         async execute(_callId, params, signal, onUpdate) {
-          return execute(params, signal, onUpdate as never) as never;
+          try {
+            return (await execute(params, signal, onUpdate as never)) as never;
+          } catch (error) {
+            // Pi echoes a thrown message into the chat transcript verbatim — a claim or agent
+            // name the model sent is unbounded — so keep it inside the helper-result bound
+            // this pending call charged to the parent's headroom.
+            if (error instanceof Error && error.message.length > HELPER_RESULT_TEXT_MAX)
+              throw new Error(error.message.slice(0, HELPER_RESULT_TEXT_MAX));
+            throw error;
+          }
         },
       });
     register();

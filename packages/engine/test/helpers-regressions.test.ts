@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { AgentSession, DefaultResourceLoader } from '@earendil-works/pi-coding-agent';
-import { fauxAssistantMessage } from '@earendil-works/pi-ai';
-import { measuredInputBound, modelReadiness } from '../src/runtime/usage.ts';
-import { HELPER_LIMITS, HELPER_RESULT_BOUND_BYTES } from '../src/runtime/helpers/runner.ts';
+import { createAssistantMessageEventStream, fauxAssistantMessage, normalizeContext } from '@earendil-works/pi-ai';
+import { createDispatchAllocator } from '@oms/core/dispatch';
+import { createMeteredStream, measuredInputBound, modelReadiness } from '../src/runtime/usage.ts';
+import { HELPER_LIMITS, HELPER_RESULT_BOUND_BYTES, HELPER_RESULT_TEXT_MAX } from '../src/runtime/helpers/runner.ts';
 import { helperRunnerFixture } from '../test-support/helper-runner-fixture.ts';
 import { call, say } from '../test-support/helper-fixture.ts';
 
@@ -135,6 +136,39 @@ test('S3: a pending result that cannot be bounded keeps the full parent reserve'
   await assert.rejects(f.execute(), /remaining.*limit/);
 });
 
+test('S3: an interrupted batch does not pin the parent allowance at the catalog window', async (t) => {
+  // The interrupted batch's shell call never produced a result, and a later reply
+  // supersedes it — only the newest assistant message's calls are still pending.
+  const transcript: unknown[] = [
+    { role: 'user', content: [{ type: 'text', text: 'x'.repeat(40_000) }], timestamp: 0 },
+    assistantCalls(['dead', 'bash']),
+    { role: 'user', content: [{ type: 'text', text: 'again' }], timestamp: 1 },
+    assistantCalls(['c1', 'agent']),
+  ];
+  // Fits with the measured bound plus the pending helper report; charging the stale
+  // call's unboundable result would reserve the whole catalog window and refuse.
+  const f = await helperRunnerFixture(t, 600_000);
+  f.model.contextWindow = 1_000_000;
+  f.chat(transcript);
+  f.faux.setResponses([say('Done.')]);
+  const result = await f.execute();
+  assert.equal(f.helpers.api.list().length, 1);
+  assert.match(JSON.stringify(result.content), /Helper report/);
+});
+
+test('S3: a thrown helper error stays inside the helper-result bound', async (t) => {
+  const f = await helperRunnerFixture(t);
+  // The claim path echoes the model's own text; left uncapped it would land oversized in
+  // the transcript and exceed the bound headroom reserved for this pending call.
+  await assert.rejects(
+    f.execute('build', 'Task.', [`../${'x'.repeat(HELPER_RESULT_TEXT_MAX * 2)}`]),
+    (error: Error) => {
+      assert.ok(error.message.length <= HELPER_RESULT_TEXT_MAX, `thrown text was ${error.message.length}`);
+      return true;
+    },
+  );
+});
+
 test('S3: an admitted helper leaves the parent room to answer its real result', async (t) => {
   const transcript: unknown[] = [
     { role: 'user', content: [{ type: 'text', text: 'x'.repeat(40_000) }], timestamp: 0 },
@@ -149,12 +183,50 @@ test('S3: an admitted helper leaves the parent room to answer its real result', 
   f.faux.setResponses([say('Done.')]);
   const result = await f.execute();
   transcript.push(toolResult('c1', 'agent', result.content));
-  const followUp = measuredInputBound(f.model, { messages: transcript })!;
+  // Dispatch through the real metered path — admission measures the transcript and the
+  // payload guard holds the serialized body inside that bound before the request is sent.
+  const metered = createMeteredStream({
+    streamFunction: async (selected, _context, options) => {
+      const body = { model: selected.id, messages: transcript, max_tokens: 1 };
+      await options?.onPayload?.(body, selected);
+      const out = createAssistantMessageEventStream();
+      out.push({
+        type: 'done',
+        reason: 'stop',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Follow-up.' }],
+          api: selected.api,
+          provider: selected.provider,
+          model: selected.id,
+          timestamp: 0,
+          stopReason: 'stop',
+          usage: {
+            input: 12,
+            output: 4,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 16,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        },
+      });
+      out.end();
+      return out;
+    },
+    ledger: f.parts.env.budget,
+    allocate: f.parts.env.allocate,
+    maxOutputTokens: 128,
+    logicalTurnId: () => 'follow-up',
+    executionMode: 'bounded',
+  });
+  const source = await metered(f.model, normalizeContext({ messages: transcript as never }), {});
+  const followUp = await source.result();
   assert.equal(
-    modelReadiness(f.model, f.parts.env.budget, 128, 'bounded', undefined, false, false, false, undefined, followUp)
-      .ready,
-    true,
-    JSON.stringify({ snapshot: f.parts.env.budget.snapshot(), receipts: f.parts.env.budget.receipts() }),
+    followUp.stopReason,
+    'stop',
+    followUp.errorMessage ??
+      JSON.stringify({ snapshot: f.parts.env.budget.snapshot(), receipts: f.parts.env.budget.receipts() }),
   );
 });
 

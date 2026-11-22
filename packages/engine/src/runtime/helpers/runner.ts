@@ -85,27 +85,31 @@ export class RequestGate {
 export const helperInputCap = (configured: number | undefined, model: Model<Api>): number =>
   Math.min(configured ?? HELPER_LIMITS.input, HELPER_LIMITS.input, model.contextWindow);
 
-/** Tool-call names in the transcript whose results have not landed yet. */
+/** Tool calls whose results have not landed. Only the newest assistant message can still be
+ * producing results: pi lands a batch's results before the next reply, so an older message's
+ * unanswered calls come from an interrupted batch and never produce results. Charging those
+ * stale calls to headroom would reserve the whole catalog window for results that never land. */
 function unansweredToolCalls(messages: readonly unknown[]): Map<string, string> {
+  const pending = new Map<string, string>();
+  let last = messages.length - 1;
+  while (last >= 0 && (messages[last] as { role?: string }).role !== 'assistant') last--;
+  if (last < 0) return pending;
   const answered = new Set<string>();
-  for (const message of messages) {
-    const record = message as { role?: string; toolCallId?: unknown };
+  for (let i = last + 1; i < messages.length; i++) {
+    const record = messages[i] as { role?: string; toolCallId?: unknown };
     if (record.role === 'toolResult' && typeof record.toolCallId === 'string') answered.add(record.toolCallId);
   }
-  const pending = new Map<string, string>();
-  for (const message of messages) {
-    const record = message as { role?: string; content?: unknown };
-    if (record.role !== 'assistant' || !Array.isArray(record.content)) continue;
-    for (const block of record.content) {
-      const call = block as { type?: string; id?: unknown; name?: unknown };
-      if (
-        call.type === 'toolCall' &&
-        typeof call.id === 'string' &&
-        typeof call.name === 'string' &&
-        !answered.has(call.id)
-      ) {
-        pending.set(call.id, call.name);
-      }
+  const content = (messages[last] as { content?: unknown }).content;
+  if (!Array.isArray(content)) return pending;
+  for (const block of content) {
+    const call = block as { type?: string; id?: unknown; name?: unknown };
+    if (
+      call.type === 'toolCall' &&
+      typeof call.id === 'string' &&
+      typeof call.name === 'string' &&
+      !answered.has(call.id)
+    ) {
+      pending.set(call.id, call.name);
     }
   }
   return pending;
