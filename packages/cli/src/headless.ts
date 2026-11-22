@@ -11,6 +11,7 @@ import {
   type HarnessSessionOptions,
   type RunRecord,
 } from '@oms/engine';
+import { isClaudeCodeModel } from '@oms/core/usage';
 import { openHarnessWithOwnership } from './ownership.ts';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -192,13 +193,17 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         );
         if (!ready.ready) {
           // Holds are bounded and cannot be admitted if the remaining allowance cannot cover one more call.
-          status = 'capped';
+          // Codex and Claude Code reserve their full catalog output capacity, matching admission.
+          const outputNeed =
+            model.api === 'openai-codex-responses' || isClaudeCodeModel(model)
+              ? model.maxTokens
+              : options.maxOutputTokens;
           cap =
             budget.remaining.tokens <
-            Math.min(bound ?? model.contextWindow, options.maxInputTokens ?? model.contextWindow) +
-              options.maxOutputTokens
+            Math.min(bound ?? model.contextWindow, options.maxInputTokens ?? model.contextWindow) + outputNeed
               ? 'tokens'
               : 'usd';
+          status = 'capped';
           reason = `capped:${cap}`;
           break;
         }

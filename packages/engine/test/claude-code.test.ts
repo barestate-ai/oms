@@ -281,7 +281,9 @@ test('a bare 429 is temporary throttling, not plan exhaustion or an empty respon
 test('a throttled turn resends into the same native session once the limit clears', async (t) =>
   toolFreeFixture(t, 'rate-limit-then-good', async (directory) => {
     const { native, model } = await modelAndSession();
-    const { ledger, stream } = meteredNative(native);
+    // ~1.6 bounds: the resend is only admitted because the 429 attempt settled at its
+    // reported usage; a full-bound charge would leave too little for a second hold.
+    const { ledger, stream } = meteredNative(native, 1_800_000);
     const transcript = toolFreeContext();
     try {
       const first = await (await stream(model, transcript)).result();
