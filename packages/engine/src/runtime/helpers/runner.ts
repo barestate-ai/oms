@@ -22,11 +22,25 @@ import { KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
 import { withToolExecutionModes } from '../tool-execution.ts';
 import { createMeteredStream, measuredInputBound, modelReadiness, requestBound } from '../usage.ts';
 import { hostSandbox } from '@oms/sandbox';
-import type { AgentDefinition } from './agents.ts';
+import { AGENT_TOOL, type AgentDefinition } from './agents.ts';
 import { fileToolPath, type Claim, type ClaimTable } from './claims.ts';
 import { usageOf } from './records.ts';
 
 export const HELPER_LIMITS = { turns: 40, tokens: 300_000, ms: 10 * 60_000, report: 4000, input: 200_000 } as const;
+
+/**
+ * The most text one helper result can put in the parent's transcript: the capped report
+ * plus its footer, outside-claim notes and failure prefix. The agent tool truncates what
+ * it emits to this, so a pending helper call's transcript growth is provable.
+ */
+export const HELPER_RESULT_TEXT_MAX = HELPER_LIMITS.report + 4096;
+
+/**
+ * Serialized bytes a pending helper result can add to the parent's measured transcript:
+ * its text cap at worst-case JSON escaping plus the toolResult envelope, padded for the
+ * measured bound's proportional slack. chatHeadroom charges this per pending helper call.
+ */
+export const HELPER_RESULT_BOUND_BYTES = Math.ceil((HELPER_RESULT_TEXT_MAX * 6 + 256) * 1.25);
 
 /**
  * A request is admitted against the budget at its largest possible size, so a few at once can claim more than the turn's
@@ -71,12 +85,52 @@ export class RequestGate {
 export const helperInputCap = (configured: number | undefined, model: Model<Api>): number =>
   Math.min(configured ?? HELPER_LIMITS.input, HELPER_LIMITS.input, model.contextWindow);
 
+/** Tool-call names in the transcript whose results have not landed yet. */
+function unansweredToolCalls(messages: readonly unknown[]): Map<string, string> {
+  const answered = new Set<string>();
+  for (const message of messages) {
+    const record = message as { role?: string; toolCallId?: unknown };
+    if (record.role === 'toolResult' && typeof record.toolCallId === 'string') answered.add(record.toolCallId);
+  }
+  const pending = new Map<string, string>();
+  for (const message of messages) {
+    const record = message as { role?: string; content?: unknown };
+    if (record.role !== 'assistant' || !Array.isArray(record.content)) continue;
+    for (const block of record.content) {
+      const call = block as { type?: string; id?: unknown; name?: unknown };
+      if (
+        call.type === 'toolCall' &&
+        typeof call.id === 'string' &&
+        typeof call.name === 'string' &&
+        !answered.has(call.id)
+      ) {
+        pending.set(call.id, call.name);
+      }
+    }
+  }
+  return pending;
+}
+
 function chatHeadroom(parts: SessionApiParts) {
   const model = parts.model.session.model!;
   // The chat's next request is predicted from its current transcript rather than held at
   // the whole catalog window; metered dispatch re-checks the exact body anyway. When no
   // transcript is readable, omitting the bound keeps the conservative catalog reserve.
   const messages = parts.model.session.agent?.state.messages;
+  // Results of the tool calls the chat is running land in its transcript before that
+  // request is sent. A helper's result text is capped, so each pending helper call is
+  // charged against the measured bound; any other pending result cannot be byte-proven,
+  // and its presence keeps the conservative catalog reserve instead.
+  let helpers = 0;
+  let inputBound: number | undefined;
+  if (messages) {
+    let provable = true;
+    for (const name of unansweredToolCalls(messages).values()) {
+      if (name === AGENT_TOOL) helpers++;
+      else provable = false;
+    }
+    if (provable) inputBound = measuredInputBound(model, { messages: messages as readonly unknown[] });
+  }
   return (
     requestBound(
       model,
@@ -85,7 +139,7 @@ function chatHeadroom(parts: SessionApiParts) {
       parts.options.maxInputTokens,
       parts.options.subscriptionSpendExempt,
       parts.model.modelRuntime.isUsingSubscription(model.provider),
-      messages ? measuredInputBound(model, { messages: messages as readonly unknown[] }) : undefined,
+      inputBound === undefined ? undefined : inputBound + helpers * HELPER_RESULT_BOUND_BYTES,
     ) ?? { tokens: Infinity, spendMicroUsd: Infinity }
   );
 }

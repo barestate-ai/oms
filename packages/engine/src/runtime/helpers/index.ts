@@ -14,7 +14,7 @@ import {
   type HelperRecord,
   type HelperStatus,
 } from './records.ts';
-import { helperReadiness, RequestGate, runHelper } from './runner.ts';
+import { HELPER_RESULT_TEXT_MAX, helperReadiness, RequestGate, runHelper } from './runner.ts';
 
 export { AGENT_TOOL } from './agents.ts';
 export { SUBAGENT_PROMPT } from './prompt.ts';
@@ -256,7 +256,10 @@ export function createHelpers(config: { dirs: AgentDirs; trust: HostTrust }): {
       const notes: string[] = [];
       if (outcome.outside.length)
         notes.push(
-          `${def.tools === 'edit' ? 'touched outside claim' : 'changed files (read-only agent)'}: ${outcome.outside.slice(0, 10).join(', ')}${outcome.outside.length > 10 ? ', ...' : ''}`,
+          `${def.tools === 'edit' ? 'touched outside claim' : 'changed files (read-only agent)'}: ${outcome.outside
+            .slice(0, 10)
+            .join(', ')
+            .slice(0, 2048)}${outcome.outside.length > 10 ? ', ...' : ''}`,
         );
       if (!noticed.has(def.tools) && (hostSandbox() !== 'seatbelt' || config.trust.yolo)) {
         noticed.add(def.tools);
@@ -264,10 +267,17 @@ export function createHelpers(config: { dirs: AgentDirs; trust: HostTrust }): {
           `${def.tools === 'read' ? 'read-only is' : 'claims are'} not enforced for commands here (${hostSandbox() !== 'seatbelt' ? 'no sandbox on this system' : 'YOLO is on'})`,
         );
       }
-      const text = [footer, ...notes, `Helper report:\n${outcome.report}`].filter(Boolean).join('\n');
+      // The result text is capped so the transcript growth a pending helper call can cause stays provable.
+      const text = [footer, ...notes, `Helper report:\n${outcome.report}`]
+        .filter(Boolean)
+        .join('\n')
+        .slice(0, HELPER_RESULT_TEXT_MAX);
       if (outcome.status === 'failed')
         throw new Error(
-          `${def.name} failed after ${formatElapsed(ended.endedAt! - startedAt)}: ${outcome.reason}\n${text}`,
+          `${def.name} failed after ${formatElapsed(ended.endedAt! - startedAt)}: ${outcome.reason}\n${text}`.slice(
+            0,
+            HELPER_RESULT_TEXT_MAX,
+          ),
         );
       if (outcome.status === 'cancelled')
         return {

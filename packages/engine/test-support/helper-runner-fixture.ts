@@ -101,6 +101,10 @@ export async function helperRunnerFixture(t: TestContext, tokens = 5_000_000) {
     folder,
     agentRoot,
     closed: () => closed,
+    // The chat's live agent state, as the parent's agent loop keeps it while tools run.
+    chat: (messages: unknown[]) => {
+      (parts.model.session as { agent?: unknown }).agent = { state: { messages } };
+    },
     text: (path: string) => readFileSync(join(folder, path), 'utf8'),
     description: () => tool.description,
     start: () => before({ messageType: 'user', systemPrompt: '' }, { model }),
