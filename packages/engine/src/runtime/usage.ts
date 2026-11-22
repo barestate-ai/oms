@@ -796,8 +796,9 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
                 failed(describeClaudeCodeAuth(model.provider, interruptedBatch));
                 return;
               }
-              // A bare 429 is back-pressure, not plan exhaustion: settle at the bound and let Pi retry after backoff.
-              if (base === CLAUDE_CODE_RATE_LIMIT && !interruptedBatch && settleAtBound()) {
+              // A bare 429 is back-pressure, not plan exhaustion: settle at the receipt's usage
+              // when provable, else the bound, and let Pi retry after backoff.
+              if (base === CLAUDE_CODE_RATE_LIMIT && !interruptedBatch && (observedSettled || settleAtBound())) {
                 failed(describeTransient(model.provider, 'rate limit'));
                 return;
               }
