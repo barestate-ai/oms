@@ -921,7 +921,27 @@ test('a session launched on a native model verifies the ambient login on its fir
       try {
         await chat.session.prompt('say hi');
         assert.match(JSON.stringify(chat.session.messages), /"reply"/);
-        assert.equal(authChecks(directory), 2, 'the first-use gate and session start each ran one check');
+        assert.equal(authChecks(directory), 1, 'the first-use gate and session start share one check');
+      } finally {
+        await chat.close();
+      }
+    } finally {
+      rmSync(f.base, { recursive: true, force: true });
+    }
+  }));
+test('a turn that expires during the login check never submits the prompt', async () =>
+  fixture('ok', async (directory) => {
+    const f = await createChatFixture();
+    try {
+      const chat = await createChatSession({
+        ...f.options,
+        model: undefined,
+        modelSelection: { provider: 'claude-code', id: 'haiku' },
+        caps: { tokens: 10_000_000, spendMicroUsd: 1_000_000, wallClockMs: 5 },
+      });
+      try {
+        await assert.rejects(chat.session.prompt('say hi'), /wall-clock/);
+        assert.equal(existsSync(join(directory, 'launch')), false, 'the prompt is never submitted');
       } finally {
         await chat.close();
       }

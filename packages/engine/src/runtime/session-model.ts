@@ -16,7 +16,6 @@ import {
   CLAUDE_CODE_PROVIDER,
   claudeCodeEffort,
   createClaudeCodeProvider,
-  inspectClaudeCode,
   type NativeChatControls,
 } from './claude-code.ts';
 import { AGENT_TOOL } from './helpers/agents.ts';
@@ -152,12 +151,16 @@ export async function createSessionModel(
   // `claude auth status` is lazy: the first real use of a native selection verifies the ambient login
   // on demand, so an unchecked status can never read as an unconfigured provider. Each session verifies
   // once for itself, so a billing change between sessions can never ride on a stale subscription check.
+  // The probe shares the session's authCheck with native startup, so a fresh session spawns the CLI once.
   let nativeVerified = false;
-  const verifyNativeAccess = async () => {
-    if (nativeVerified) return;
-    const auth = await inspectClaudeCode(controller.signal);
-    if (!auth.configured) throw new Error(auth.detail);
-    nativeVerified = true;
+  const verifyNativeAccess = async (signal: AbortSignal = controller.signal) => {
+    if (!nativeVerified) {
+      const auth = await native.verifyAccess(signal);
+      signal.throwIfAborted();
+      if (!auth.configured) throw new Error(auth.detail);
+      nativeVerified = true;
+    }
+    signal.throwIfAborted();
   };
   const originalSetModel = session.setModel.bind(session);
   session.setModel = async (...args: Parameters<AgentSession['setModel']>) => {
@@ -216,8 +219,10 @@ export async function createSessionModel(
   };
   const originalPrompt = session.prompt.bind(session);
   const gatedPrompt = (...args: Parameters<AgentSession['prompt']>) => {
-    const use = async () => {
-      if (session.model?.provider === CLAUDE_CODE_PROVIDER) await verifyNativeAccess();
+    const use = async (signal: AbortSignal) => {
+      // The turn signal, not the session lifetime, bounds verification and the SDK call it unlocks.
+      if (session.model?.provider === CLAUDE_CODE_PROVIDER) await verifyNativeAccess(signal);
+      else signal.throwIfAborted();
       return originalPrompt(...args);
     };
     if (env.executionMode === 'interactive') {
@@ -226,7 +231,7 @@ export async function createSessionModel(
         return env.withExecution(hooks.turn.id, use);
       });
     }
-    return use();
+    return use(controller.signal);
   };
   session.prompt = gatedPrompt;
   await session.bindExtensions({});

@@ -543,6 +543,18 @@ export class ClaudeCodeSession implements NativeChatControls {
       this.state.pending.every((call) => this.delivered.has(call.id))
     );
   }
+  /**
+   * Probes the ambient login once for this session and shares the result with the prompt gate and
+   * model selection. A failed or cancelled check is not kept, so the next start retries.
+   */
+  verifyAccess(signal?: AbortSignal): Promise<ClaudeCodeStatus> {
+    const probeSignal =
+      signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
+    return (this.authCheck ??= inspectClaudeCode(probeSignal).then((result) => {
+      if (!result.configured || probeSignal?.aborted) this.authCheck = undefined;
+      return result;
+    }));
+  }
   private async start(signal?: AbortSignal): Promise<void> {
     if (this.child) return;
     if (!this.configuration) throw new Error('No native session configuration');
@@ -555,10 +567,7 @@ export class ClaudeCodeSession implements NativeChatControls {
       signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
     // A verified login is reused by this session's own starts only: each new session re-verifies so a
     // billing change (subscription to Console) is detected before any call it would leave unmetered.
-    const auth = await (this.authCheck ??= inspectClaudeCode(startupSignal).then((result) => {
-      if (!result.configured) this.authCheck = undefined;
-      return result;
-    }));
+    const auth = await this.verifyAccess(startupSignal);
     startupSignal?.throwIfAborted();
     if (!auth.configured) throw new Error(auth.detail);
     const { model, context, maxTokens, effort } = this.configuration;
