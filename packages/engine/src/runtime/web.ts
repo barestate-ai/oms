@@ -103,6 +103,8 @@ interface Backend {
   parse(body: any): Hit[];
   /** Label for the usage record; defaults to the backend name. */
   label?(body: any): string;
+  /** Failure line for statuses this backend answers differently; consumes the body when it answers. */
+  refusal?(response: Response): Promise<string | undefined>;
 }
 const json = (headers: Record<string, string>, body: unknown): RequestInit => ({
   method: 'POST',
@@ -136,6 +138,8 @@ export const SEARCH_BACKENDS: Backend[] = [
     parse: (body) =>
       (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: r.snippet ?? '' })),
     label: (body) => omsLabel(body?.answered),
+    // A 402 is a refusal, not a rate limit: say hosted search is out and keep falling through to BYOK backends.
+    refusal: async (response) => (response.status === 402 ? paywallText(await paywallDetails(response)) : undefined),
   },
   {
     name: 'exa',
@@ -208,6 +212,83 @@ export function retryAfterMs(header: string | null, now: number): number {
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
   const date = Date.parse(header);
   return Number.isNaN(date) ? DEFAULT_RETRY_AFTER_MS : Math.max(0, date - now);
+}
+
+const PAYWALL_CODE = /^[A-Z_]{1,64}$/;
+const BYOK_SEARCH_KEYS = 'EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY';
+const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** `Dec 1` in UTC from an ms epoch. */
+const utcMonthDay = (ms: number) => {
+  const date = new Date(ms);
+  return `${UTC_MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+};
+
+interface PaywallDetails {
+  code?: string;
+  resetsAt?: number;
+  billing?: string;
+}
+
+/** `error.billing` counts only as a barestate.xyz https link; any other value is dropped like a bad code. */
+const billingUrl = (raw: unknown): raw is string => {
+  if (typeof raw !== 'string') return false;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' && (url.hostname === 'barestate.xyz' || url.hostname.endsWith('.barestate.xyz'));
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * `error.code`, `error.resetsAt` and `error.billing` from an oms 402 body, read with a hard byte cap; each is
+ * undefined when the body is oversized, not JSON, or the value fails its shape check. The server's message is
+ * never surfaced.
+ */
+async function paywallDetails(response: Response): Promise<PaywallDetails> {
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) return {};
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      size += value.byteLength;
+      if (size > 4_096) {
+        await reader.cancel().catch(() => {});
+        return {};
+      }
+      chunks.push(value);
+    }
+    reader.releaseLock();
+    const error = (
+      JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+        error?: { code?: unknown; resetsAt?: unknown; billing?: unknown };
+      }
+    )?.error;
+    const resetsAt = error?.resetsAt;
+    return {
+      ...(typeof error?.code === 'string' && PAYWALL_CODE.test(error.code) ? { code: error.code } : {}),
+      ...(typeof resetsAt === 'number' && Number.isFinite(resetsAt) && resetsAt > 0 && resetsAt <= 8_640_000_000_000_000
+        ? { resetsAt }
+        : {}),
+      ...(billingUrl(error?.billing) ? { billing: error.billing } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The failure line a 402 from oms records; only the validated code, resetsAt and billing link pick the text, never
+ * the server's message. The advice is always the same two options: a BYOK key, or the billing page the refusal names.
+ */
+function paywallText({ code, resetsAt, billing }: PaywallDetails): string {
+  const advice = `set one of ${BYOK_SEARCH_KEYS}${billing ? ` or go to ${billing}` : ''}`;
+  if (code === 'SEARCH_LIMIT_REACHED' && resetsAt !== undefined)
+    return `this month's free hosted searches are used up (reset ${utcMonthDay(resetsAt)}) — ${advice} to keep searching`;
+  return `hosted search is unavailable for this account — ${advice}`;
 }
 
 // Two lists: Node checks IPv4 addresses against IPv4-mapped IPv6 rules, so ::ffff:0:0/96 would block every IPv4 address.
@@ -604,16 +685,13 @@ export function createWeb(config: WebConfig): WebControls {
         failures.push(`${backend.name}: unreachable`);
         continue;
       }
-      if (response.status === 429 || response.status >= 500) {
-        blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
-        void response.body?.cancel().catch(() => {});
-        failures.push(`${backend.name}: HTTP ${response.status}`);
-        continue;
-      }
       // Bodies of failures are never echoed: a provider error must not carry text past the untrusted frame.
       if (!response.ok) {
-        void response.body?.cancel().catch(() => {});
-        failures.push(`${backend.name}: HTTP ${response.status}`);
+        const named = await backend.refusal?.(response);
+        if (named === undefined) void response.body?.cancel().catch(() => {});
+        if (response.status === 429 || response.status >= 500)
+          blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
+        failures.push(`${backend.name}: ${named ?? `HTTP ${response.status}`}`);
         continue;
       }
       let hits: Hit[];

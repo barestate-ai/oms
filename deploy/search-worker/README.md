@@ -37,8 +37,9 @@ route, so it takes priority, and the gateway Worker is not changed.
 - `POST /oms/search/v1/search` and `POST /oms/search/v1/fetch` take and return the same JSON as `/search` and `/fetch`.
 - `Authorization: Bearer <OMS session token>`: only `[A-Za-z0-9_-]{16,512}` tokens are checked, with one call to the
   gateway's `/oms/api/me` through the `GATEWAY` service binding. A 200 gives the user id; anything else is a 401.
-  The result is cached in KV under the token's SHA-256 (5 minutes valid, 30 seconds refused; gateway errors are not
-  cached). The token is not logged, stored or sent anywhere else.
+  Approvals are revalidated with the gateway on every billed call, so a revoked session stops serving at once; only
+  a refusal is cached in KV under the token's SHA-256, for 30 seconds (gateway errors are not cached). The token is
+  not logged, stored or sent anywhere else.
 - 30 calls per minute per user id (in the Durable Object); over it, `429` with `Retry-After`.
 - Failures use the gateway's style, `{"error":{"code","message"}}`, with codes `UNAUTHENTICATED`, `RATE_LIMITED`,
   `INVALID_REQUEST`, `SEARCH_UNAVAILABLE`, `NOT_FOUND` and `METHOD_NOT_ALLOWED`.

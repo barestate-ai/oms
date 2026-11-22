@@ -10,7 +10,10 @@
     { "pattern": "barestate.xyz/oms-search-api/*", "zone_name": "barestate.xyz" },
     { "pattern": "barestate.xyz/oms/search/*", "zone_name": "barestate.xyz" },
   ],
-  "services": [{ "binding": "GATEWAY", "service": "oms" }],
+  "services": [
+    { "binding": "GATEWAY", "service": "oms" },
+    { "binding": "BILLING", "service": "oms", "entrypoint": "SearchBilling" },
+  ],
   "kv_namespaces": [{ "binding": "CACHE", "id": "bf589116b2d54d8aaf83e0c0939e62b4" }],
   "durable_objects": { "bindings": [{ "name": "GATE", "class_name": "ContextDevGate" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ContextDevGate"] }],

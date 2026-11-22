@@ -38,14 +38,20 @@ const creditsOf = (response: Response) => Number(response.headers.get('x-credits
 const fail = (error: string, credits: number, unavailable = false, pauseMs?: number) =>
   ({ ok: false, error, unavailable, credits, ...(pauseMs === undefined ? {} : { pauseMs }) }) as const;
 
-async function call(config: ContextDevConfig, path: string, body: object, timeoutMs: number): Promise<Outcome<any>> {
+async function call(
+  config: ContextDevConfig,
+  path: string,
+  body: object,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Outcome<any>> {
   let response: Response;
   try {
     response = await config.fetch(`${API}${path}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ ...body, ...(config.zdr ? { zdr: 'enabled' } : {}) }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
     });
   } catch (error) {
     return fail(error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'unreachable', 0, true);
@@ -82,8 +88,12 @@ async function call(config: ContextDevConfig, path: string, body: object, timeou
 const str = (value: unknown) => (typeof value === 'string' ? value : '');
 
 /** Ranked hits, best first. */
-export async function contextDevSearch(config: ContextDevConfig, query: string): Promise<Outcome<Hit[]>> {
-  const outcome = await call(config, '/web/search', { query, numResults: SEARCH_RESULTS }, 12_000);
+export async function contextDevSearch(
+  config: ContextDevConfig,
+  query: string,
+  signal?: AbortSignal,
+): Promise<Outcome<Hit[]>> {
+  const outcome = await call(config, '/web/search', { query, numResults: SEARCH_RESULTS }, 12_000, signal);
   if (!outcome.ok) return outcome;
   const results: any[] = Array.isArray(outcome.value?.results) ? outcome.value.results : [];
   const hits = results
@@ -93,7 +103,11 @@ export async function contextDevSearch(config: ContextDevConfig, query: string):
 }
 
 /** Main-content Markdown of one page. */
-export async function contextDevScrape(config: ContextDevConfig, url: string): Promise<Outcome<Page>> {
+export async function contextDevScrape(
+  config: ContextDevConfig,
+  url: string,
+  signal?: AbortSignal,
+): Promise<Outcome<Page>> {
   const outcome = await call(
     config,
     '/web/scrape',
@@ -104,6 +118,7 @@ export async function contextDevScrape(config: ContextDevConfig, url: string): P
       timeoutOpts: { milliseconds: 8_000 },
     },
     10_000,
+    signal,
   );
   if (!outcome.ok) return outcome;
   const markdown = outcome.value?.markdown;
