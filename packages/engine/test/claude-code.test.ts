@@ -83,10 +83,10 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
  const compacted=typeof x.message.content==='string'&&x.message.content.includes('compacted by OMS');
- if(mode==='prompt-too-long-always'||mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'||mode.split(' ').includes('prompt-too-long')&&!compacted){
+ if(mode==='prompt-too-long-always'||mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'||mode==='prompt-too-long-silent-then-usage'||mode.split(' ').includes('prompt-too-long')&&!compacted){
   const launches=readFileSync(root+'/launch','utf8').trim().split('\\n').length,u={input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0};
-  if(mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'&&launches===1){u.input_tokens=20*launches;u.output_tokens=10*launches;u.cache_read_input_tokens=30*launches;u.cache_creation_input_tokens=40*launches;}
-  if(mode==='prompt-too-long-usage-then-silent'&&launches>1)emit({type:'stream_event',event:{type:'message_start',message:{id:'msg_'+ ++n,model:'claude-haiku-5-5',usage}}});
+  if(mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'&&launches===1||mode==='prompt-too-long-silent-then-usage'&&launches>1){u.input_tokens=20*launches;u.output_tokens=10*launches;u.cache_read_input_tokens=30*launches;u.cache_creation_input_tokens=40*launches;}
+  if(mode==='prompt-too-long-usage-then-silent'&&launches>1||mode==='prompt-too-long-silent-then-usage'&&launches===1)emit({type:'stream_event',event:{type:'message_start',message:{id:'msg_'+ ++n,model:'claude-haiku-5-5',usage}}});
   emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:u,modelUsage:{},errors:['Prompt is too long']});return;
  }
  const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':throttled?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
@@ -228,7 +228,7 @@ test('native prompt-too-long exhaustion ends as named context-overflow with know
     }
   }));
 
-test('a resend after a usage-carrying overflow keeps the usage its own receipt reports', async (t) =>
+test('a resend after a usage-carrying overflow banks each session’s provable usage', async (t) =>
   toolFreeFixture(t, 'prompt-too-long-always-with-usage', async (directory) => {
     const { native, model } = await modelAndSession();
     const { ledger, stream } = meteredNative(native);
@@ -239,9 +239,29 @@ test('a resend after a usage-carrying overflow keeps the usage its own receipt r
       assert.equal(rows(join(directory, 'launch')).length, 3, 'one initial attempt plus two compaction retries');
       assert.equal(ledger.reservations().length, 1);
       assert.equal(ledger.snapshot().accounting, 'known');
-      // Each resend's publish replaces the superseded attempt's: the last receipt settles at its 300.
-      assert.equal(ledger.snapshot().used.tokens, 300);
+      // Each fresh session's receipt reports only its own attempt: 100, 200 and 300 are banked
+      // across the resends instead of the last publish replacing the superseded attempts' spend.
+      assert.equal(ledger.snapshot().used.tokens, 600);
       assert.match(response.errorMessage!, /usage the provider reported was counted/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a resend after an unprovable attempt keeps the bound even when later receipts report usage', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long-silent-then-usage', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(response.rawStopReason, 'claude-code-context-overflow');
+      assert.equal(rows(join(directory, 'launch')).length, 3);
+      // The first attempt streamed usage its receipt could not prove; the later sessions' provable
+      // deltas still cannot account for it, so the dispatch settles at the reservation bound.
+      assert.equal(ledger.snapshot().accounting, 'known');
+      assert.equal(ledger.snapshot().used.tokens, 1_128_000);
+      assert.match(response.errorMessage!, /charged at its reserved maximum/);
     } finally {
       await native.close();
     }
