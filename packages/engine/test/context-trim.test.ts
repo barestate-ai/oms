@@ -129,6 +129,35 @@ test('the newest results are stubbed too when they alone exceed the cap, keeping
   assert.doesNotMatch(JSON.stringify(sent), /result-\d-body/);
 });
 
+test('an oversized result is stubbed without discarding a short result that already fits', () => {
+  const small = {
+    role: 'toolResult',
+    toolName: 'read',
+    toolCallId: 'c0',
+    isError: false,
+    content: [{ type: 'text', text: 'MODE=test' }],
+  };
+  const big = {
+    role: 'toolResult',
+    toolName: 'read',
+    toolCallId: 'c1',
+    isError: false,
+    content: [{ type: 'text', text: `source-body ${'x'.repeat(140_000)}` }],
+  };
+  const messages = [{ role: 'user', content: 'go' }, call(0), small, call(1), big];
+  const sent = createContextTrimmer(() => CAP_TOKENS)(messages) as typeof messages;
+  // The short result stays readable: its stub would have been longer than the text itself.
+  assert.match(JSON.stringify(sent), /MODE=test/);
+  assert.doesNotMatch(JSON.stringify(sent), /source-body/);
+  assert.match(JSON.stringify(sent), /earlier read result removed to fit the context limit/);
+  for (const n of [0, 1]) assert.match(JSON.stringify(sent), new RegExp(`step ${n}`));
+  assert.deepEqual(
+    sent.filter((m) => m.role === 'toolResult').map((m) => (m as { toolCallId?: string }).toolCallId),
+    ['c0', 'c1'],
+    'both calls keep a result with the matching call id',
+  );
+});
+
 test('the newest results are kept in full while they fit the budget', () => {
   const messages = transcript(2, 30_000);
   assert.equal(createContextTrimmer(() => CAP_TOKENS)(messages), messages);

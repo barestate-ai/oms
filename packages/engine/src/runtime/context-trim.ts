@@ -123,25 +123,26 @@ export function createContextTrimmer(capTokens: () => number | undefined, overhe
     const shrunk = (m: M): M => (m.role === 'toolResult' ? stub(m) : withoutReasoning(m));
     const sizes = messages.map(bytes);
     let total = sizes.reduce((a, b) => a + b, 1);
-    const shrink = (n: number) => {
-      const i = candidates[n]!;
-      total += bytes(shrunk(messages[i]!)) - sizes[i]!;
+    const shrunkSet = new Set<number>();
+    // A stub is only written where it saves bytes — a short result keeps its content rather than
+    // trading it for a longer replacement.
+    const shrink = (i: number) => {
+      const saved = sizes[i]! - bytes(shrunk(messages[i]!));
+      if (saved > 0) {
+        total -= saved;
+        shrunkSet.add(i);
+      }
     };
-    for (let n = 0; n < Math.min(trimmed, candidates.length); n++) shrink(n);
+    for (let n = 0; n < Math.min(trimmed, candidates.length); n++) shrink(candidates[n]!);
     if (total > start) {
-      while (trimmed < candidates.length && total > target) shrink(trimmed++);
+      while (trimmed < candidates.length && total > target) shrink(candidates[trimmed++]!);
     }
-    const shrunkSet = new Set(candidates.slice(0, trimmed));
     // Even the newest results can outweigh the request budget on their own; when the message total
     // still exceeds it, stub them too, oldest first. The stub keeps the toolCallId and tells the
     // model to re-read a smaller range.
     if (total > usable) {
       for (let i = cutoff; i < messages.length && total > usable; i++) {
-        const m = messages[i]!;
-        if (m.role === 'toolResult' && !isStub(m)) {
-          shrunkSet.add(i);
-          total += bytes(stub(m)) - sizes[i]!;
-        }
+        if (messages[i]!.role === 'toolResult' && !isStub(messages[i]!)) shrink(i);
       }
     }
     if (shrunkSet.size === 0) return forgotten.size ? messages : input;
