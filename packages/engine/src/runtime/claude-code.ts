@@ -43,7 +43,13 @@ class NativeContextOverflowError extends Error {}
  * suffix / long-context credits) and subscription traffic is refused past the standard
  * 200k window: the `main-solbh-oms3-web-fable-sub-swap` run died on a "Prompt is too long"
  * reply at ~184k conversation tokens. Smaller limits the native receipt reports in
- * modelUsage.contextWindow are adopted on top of this. */
+ * modelUsage.contextWindow are adopted on top of this.
+ *
+ * This bound only steers compaction decisions (windowFor/shouldCompact). Registered models
+ * keep their catalog limits and reservations stay catalog-priced on purpose: the reservation
+ * is a worst-case bound for what a dispatched request can consume, and the plan's real limit
+ * is only known from receipts — under-reserving against a guessed window would let a Max or
+ * long-context login overrun its budget accounting. Over-reserving is the safe direction. */
 const CLAUDE_CODE_SUBSCRIPTION_WINDOW = 200_000;
 /** Share of the effective window that triggers compaction before the next native prompt. */
 const CLAUDE_CODE_COMPACT_AT = 0.8;
@@ -1498,7 +1504,11 @@ export class ClaudeCodeSession implements NativeChatControls {
             this.save();
           } else if (message.stopReason === 'error') {
             const interruptedMark = this.state.pending.length ? '|pending' : '';
-            if (error instanceof ClaudeCodeSignInError) message.rawStopReason = CLAUDE_CODE_SIGNIN;
+            // A sign-in refusal is releasable only while nothing was dispatched: after a
+            // prompt reached the native transport, a failing re-check (e.g. during an
+            // overflow retry) keeps its usage charged at the bound instead of refunding.
+            if (error instanceof ClaudeCodeSignInError)
+              message.rawStopReason = nativeDispatched ? `${CLAUDE_CODE_AUTH}${interruptedMark}` : CLAUDE_CODE_SIGNIN;
             else if (error instanceof NativeContextOverflowError) message.rawStopReason = CLAUDE_CODE_CONTEXT_OVERFLOW;
             else if (!nativeDispatched) message.rawStopReason = `${CLAUDE_CODE_NOT_DISPATCHED}:${this.failure}`;
             else if (error instanceof NativeAuthError) message.rawStopReason = `${CLAUDE_CODE_AUTH}${interruptedMark}`;

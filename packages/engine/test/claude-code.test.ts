@@ -82,7 +82,7 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
  const compacted=typeof x.message.content==='string'&&x.message.content.includes('compacted by OMS');
- if(mode==='prompt-too-long-always'||mode==='prompt-too-long'&&!compacted){
+ if(mode==='prompt-too-long-always'||mode.split(' ').includes('prompt-too-long')&&!compacted){
   emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:['Prompt is too long']});return;
  }
  const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':throttled?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
@@ -425,7 +425,16 @@ test('a cut pending result with cut arguments is marked incomplete instead of re
       await agent.prompt('probe');
       const summary = rows(join(directory, 'input'))[1]!.message.content;
       assert.match(summary, /PENDING TOOL RESULTS[\s\S]*\[call_[^\]]+\] \[incomplete\]:/);
-      assert.match(summary, /chars cut\]/, 'both the arguments and the result are clipped');
+      assert.match(
+        summary,
+        /read\(\{"path":"src\/p+… \[\d+ chars cut\]\)/,
+        'the call header shows the arguments were clipped',
+      );
+      assert.match(
+        summary,
+        /\[incomplete\]:\nREALr+… \[\d+ chars cut\]/,
+        'the result body shows the tool output was clipped',
+      );
       assert.match(summary, /narrower call/, 'recovery guidance points at a narrower call');
       assert.doesNotMatch(summary, /re-issue that exact call/);
     } finally {
@@ -495,6 +504,26 @@ test('a failed start after compaction never lets the summary replace the next us
       const input = rows(join(directory, 'input'));
       assert.equal(input.length, 2);
       assert.equal(input[1]!.message.content, 'SECOND_PROMPT', 'the stale summary must not replace the new prompt');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a sign-in probe that fails after the prompt was sent keeps the charge', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long auth-fails-once-after-input', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      // First send overflows; the compacted retry's login re-check then fails, so the
+      // prompt already dispatched must stay charged instead of releasing as unsent.
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.match(response.errorMessage!, /no longer valid/);
+      assert.match(response.errorMessage!, /maximum cost/);
+      assert.equal(rows(join(directory, 'input')).length, 1, 'the compacted retry never reached the transport');
+      assert.equal(ledger.reservations().length, 1);
+      assert.equal(ledger.snapshot().accounting, 'unknown', 'a dispatched turn is not released as unsent');
+      assert.equal(ledger.snapshot().used.tokens, 1_128_000, 'usage stays charged at the bound');
     } finally {
       await native.close();
     }
