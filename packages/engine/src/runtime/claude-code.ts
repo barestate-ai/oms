@@ -337,7 +337,7 @@ const clip = (text: string, limit: number) =>
  * reports them), the files it wrote, tool results the new session has not seen, and the
  * state to continue from. Extractive on purpose; no model call is made to write it.
  * `scale` shrinks every budget so a resend after an overflow is smaller than the last. */
-function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet<string>, scale: number): string {
+function compactionSummary(messages: readonly unknown[], pendingCalls: readonly ToolCall[], scale: number): string {
   const items = messages as TranscriptMessage[];
   const budget = (limit: number) => Math.max(200, Math.floor(limit / scale));
   const section = (title: string, body: string) => `\n\n## ${title}\n${body.trim() || 'none recorded'}`;
@@ -362,17 +362,11 @@ function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet
     .flatMap((m) => (m.role === 'assistant' ? [clip(textOf(m.content), budget(1_500)).trim()] : []))
     .filter(Boolean)
     .slice(-2);
-  const pending = items.filter((m) => m.role === 'toolResult' && pendingIds.has(m.toolCallId!));
-  const callFor = (id: string | undefined) =>
-    items
-      .flatMap((m) => (m.role === 'assistant' && Array.isArray(m.content) ? m.content : []))
-      .find(
-        (block) =>
-          (block as { type?: string; id?: string }).type === 'toolCall' && (block as { id?: string }).id === id,
-      ) as { name?: string; arguments?: unknown } | undefined;
+  const pendingById = new Map(pendingCalls.map((call) => [call.id, call]));
+  const pending = items.filter((m) => m.role === 'toolResult' && pendingById.has(m.toolCallId!));
   const results = items
     .flatMap((m) =>
-      m.role === 'toolResult' && !pendingIds.has(m.toolCallId!)
+      m.role === 'toolResult' && !pendingById.has(m.toolCallId!)
         ? [`${m.toolName ?? 'tool'}: ${clip(textOf(m.content), budget(800)).trim()}`]
         : [],
     )
@@ -394,7 +388,7 @@ function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet
       'PENDING TOOL RESULTS',
       pending
         .map((m) => {
-          const call = callFor(m.toolCallId);
+          const call = pendingById.get(m.toolCallId!);
           const args = call?.arguments === undefined ? '' : `(${clip(JSON.stringify(call.arguments), budget(400))})`;
           return `${call?.name ?? m.toolName ?? 'tool'}${args} [${m.toolCallId}]:\n${clip(textOf(m.content), budget(16_000))}`;
         })
@@ -405,6 +399,9 @@ function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet
     section(
       'NEXT STEP',
       'Continue from RECENT WORK and TASK STATE; re-check task_status before spending capped actions.' +
+        (pending.length
+          ? ' A PENDING TOOL RESULT ending in "chars cut" was shortened to fit; re-issue that exact call to fetch the rest if it is safe to repeat.'
+          : '') +
         (request ? ` The latest request follows:\n${clip(textOf(request.content), budget(16_000))}` : ''),
     )
   );
@@ -680,10 +677,9 @@ export class ClaudeCodeSession implements NativeChatControls {
    * place of the bare user message; native tool batches are not replayable, so their real
    * OMS results are carried inside the summary instead. */
   private async beginCompaction(messages: readonly unknown[], scale = 1): Promise<void> {
-    // Pending tool results are captured inside the summary before their ids are dropped:
+    // Pending tool results are captured inside the summary before the batch is dropped:
     // the fresh session cannot receive them as tool_result blocks, only as text.
-    const pendingIds = new Set(this.state.pending.map((call) => call.id));
-    const summary = compactionSummary(messages, pendingIds, scale);
+    const summary = compactionSummary(messages, this.state.pending, scale);
     await this.disconnect();
     this.state.sessionId = randomUUID();
     this.state.started = false;

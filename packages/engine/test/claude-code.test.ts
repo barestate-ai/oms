@@ -94,7 +94,7 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
   emit({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'end_turn'},usage}});
   emit({type:'stream_event',event:{type:'message_stop'}});receipt(1);return;
  }
- if(JSON.stringify(x.message.content).includes('probe')){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');if(mode==='multi'){assistant({type:'tool_use',id:'call_'+id+'_2',name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const second=await mcp();appendFileSync(root+'/results',JSON.stringify(second)+'\\n');assistant({type:'text',text:JSON.stringify(second)});receipt(3);}else{assistant({type:'text',text:JSON.stringify(result)});receipt(2);}}
+ if(JSON.stringify(x.message.content).includes('probe')&&!compacted){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');if(mode==='multi'){assistant({type:'tool_use',id:'call_'+id+'_2',name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const second=await mcp();appendFileSync(root+'/results',JSON.stringify(second)+'\\n');assistant({type:'text',text:JSON.stringify(second)});receipt(3);}else{assistant({type:'text',text:JSON.stringify(result)});receipt(2);}}
  else{assistant({type:'text',text:mode==='quotes-phrase'?'Explaining when the Prompt is too long error appears':JSON.stringify(x.message.content).includes('recall')?JSON.stringify(history[0]):'reply'});receipt(1);}
 });input.on('close',()=>{bridge?.kill();process.exit(0);});
 `,
@@ -303,6 +303,7 @@ test('compaction during a tool batch carries the pending result into the summary
   fixture('big-prompt', async (directory) => {
     const { model, native } = await modelAndSession();
     const { stream } = meteredNative(native);
+    let executed = 0;
     const agent = new Agent({
       initialState: {
         systemPrompt: 'Use read',
@@ -314,6 +315,7 @@ test('compaction during a tool batch carries the pending result into the summary
             description: 'Read',
             parameters: Type.Object({ path: Type.String() }),
             async execute() {
+              executed++;
               return { content: [{ type: 'text', text: 'REAL' }], details: undefined };
             },
           },
@@ -328,6 +330,9 @@ test('compaction during a tool batch carries the pending result into the summary
       assert.match(input[1]!.message.content, /compacted by OMS/);
       assert.match(input[1]!.message.content, /PENDING TOOL RESULTS[\s\S]*src\/main\.ts[\s\S]*REAL/);
       assert.match(input[1]!.message.content, /## TASK[\s\S]*probe/);
+      assert.equal(executed, 1, 'the carried result is enough; the tool is not re-executed');
+      const responses = agent.state.messages.filter((message) => message.role === 'assistant');
+      assert.equal(responses.at(-1)!.stopReason, 'stop', 'the compacted session finishes the turn');
     } finally {
       await native.close();
     }
