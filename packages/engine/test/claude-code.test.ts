@@ -930,17 +930,18 @@ test('a session launched on a native model verifies the ambient login on its fir
     }
   }));
 test('a turn that expires during the login check never submits the prompt', async () =>
-  fixture('ok', async (directory) => {
+  fixture('hang-auth', async (directory) => {
     const f = await createChatFixture();
     try {
       const chat = await createChatSession({
         ...f.options,
         model: undefined,
         modelSelection: { provider: 'claude-code', id: 'haiku' },
-        caps: { tokens: 10_000_000, spendMicroUsd: 1_000_000, wallClockMs: 5 },
+        caps: { tokens: 10_000_000, spendMicroUsd: 1_000_000, wallClockMs: 2_000 },
       });
       try {
         await assert.rejects(chat.session.prompt('say hi'), /wall-clock/);
+        assert.equal(authChecks(directory), 1, 'the deadline interrupted an in-flight login check');
         assert.equal(existsSync(join(directory, 'launch')), false, 'the prompt is never submitted');
       } finally {
         await chat.close();
