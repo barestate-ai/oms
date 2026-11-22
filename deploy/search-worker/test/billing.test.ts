@@ -184,6 +184,10 @@ test('billing that throws or is not bound fails closed: 503 SEARCH_BILLING_UNAVA
     error: { code: 'SEARCH_BILLING_UNAVAILABLE', message: 'search billing is unavailable' },
   });
   assert.equal(upstream.calls.length, 0);
+  const charge = billing.calls.find((c) => c.method === 'charge')!;
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 1, 'a thrown charge is uncertain: it is refunded once before the 503');
+  assert.deepEqual(refunds[0]!.input, { userId: 'user-1', requestId: charge.input.requestId });
 
   const unbound = setup(routes, { BILLING: undefined });
   const missing = await unbound.userCall('/v1/search', { query: 'q' });
@@ -192,13 +196,17 @@ test('billing that throws or is not bound fails closed: 503 SEARCH_BILLING_UNAVA
   assert.equal(unbound.upstream.calls.length, 0);
 });
 
-test('a malformed billing answer fails closed too', async () => {
+test('a malformed billing answer fails closed too, and is refunded as uncertain', async () => {
   const { userCall, billing, upstream } = setup(routes);
   billing.state.result = 'garbage';
   const response = await userCall('/v1/search', { query: 'q' });
   assert.equal(response.status, 503);
   assert.equal((await response.json<any>()).error.code, 'SEARCH_BILLING_UNAVAILABLE');
   assert.equal(upstream.calls.length, 0);
+  const charge = billing.calls.find((c) => c.method === 'charge')!;
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 1, 'an unreadable charge answer is an uncertain charge: refund it once');
+  assert.deepEqual(refunds[0]!.input, { userId: 'user-1', requestId: charge.input.requestId });
 });
 
 test('INVALID_REQUEST from billing is not a paywall: 503 SEARCH_BILLING_UNAVAILABLE, nothing served', async () => {
@@ -218,4 +226,90 @@ test('the bench token path is never billed', async () => {
   assert.equal((await call('/search', { query: 'q' })).status, 200);
   assert.equal((await call('/fetch', { url: 'https://docs.example.com/p' })).status, 200);
   assert.equal(billing.calls.length, 0);
+});
+
+test('a charge that throws is refunded once with the same requestId, then refused 503', async () => {
+  const { userCall, billing, upstream } = setup(routes);
+  billing.state.failure = 'charge';
+  const response = await userCall('/v1/search', { query: 'q' });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json<any>()).error.code, 'SEARCH_BILLING_UNAVAILABLE');
+  assert.equal(upstream.calls.length, 0);
+  const charge = billing.calls.find((c) => c.method === 'charge')!;
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 1, 'exactly one refund is attempted for the uncertain charge');
+  assert.deepEqual(refunds[0]!.input, { userId: 'user-1', requestId: charge.input.requestId });
+});
+
+test('a clean charge refusal is a 402 and never refunded', async () => {
+  const { userCall, billing, upstream } = setup(routes);
+  billing.state.result = { ok: false, code: 'SEARCH_PAYMENT_REQUIRED', message: 'free searches used up' };
+  assert.equal((await userCall('/v1/search', { query: 'q' })).status, 402);
+  assert.equal(billing.calls.filter((c) => c.method === 'refund').length, 0, 'a refusal is not a charge');
+  assert.equal(upstream.calls.length, 0);
+});
+
+test('a refund answered ok:false is a failed refund: retried once, logged and metered', async () => {
+  const { userCall, billing, events } = setup({
+    [SEARCH]: () => new Response('', { status: 503 }),
+  });
+  billing.state.refundResult = { ok: false };
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(' '));
+  try {
+    const response = await userCall('/v1/search', { query: 'q' });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json<any>()).error.code, 'SEARCH_UNAVAILABLE');
+  } finally {
+    console.error = original;
+  }
+  const charge = billing.calls.find((c) => c.method === 'charge')!;
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 2, 'the refused refund was retried once');
+  for (const refund of refunds) assert.deepEqual(refund.input, { userId: 'user-1', requestId: charge.input.requestId });
+  const marker = events.find((e) => (e as { blobs?: string[] }).blobs?.[0] === 'refund_failed');
+  assert.deepEqual(marker, {
+    indexes: ['user-1'],
+    blobs: ['refund_failed', 'search', charge.input.requestId],
+    doubles: [1],
+  });
+  const line = logged.find((l) => l.includes('refund_failed'))!;
+  assert.ok(line, 'the failure was logged');
+  assert.ok(line.includes(charge.input.requestId));
+});
+
+test('a limit refusal with resetsAt beyond the Date range fails closed: 503, never NaN', async () => {
+  const { userCall, billing, upstream } = setup(routes);
+  for (const resetsAt of [8_640_000_000_000_001, 9e15, Number.POSITIVE_INFINITY]) {
+    billing.state.result = { ok: false, code: 'SEARCH_LIMIT_REACHED', message: 'x', resetsAt };
+    const response = await userCall('/v1/search', { query: 'q' });
+    assert.equal(response.status, 503, JSON.stringify(resetsAt));
+    const body = await response.json<any>();
+    assert.equal(body.error.code, 'SEARCH_BILLING_UNAVAILABLE');
+    assert.ok(!JSON.stringify(body).includes('NaN'), `no NaN leaks into the message for ${resetsAt}`);
+  }
+  assert.equal(upstream.calls.length, 0);
+  billing.state.result = {
+    ok: false,
+    code: 'SEARCH_LIMIT_REACHED',
+    message: 'x',
+    resetsAt: 8_640_000_000_000_000,
+  };
+  const boundary = await userCall('/v1/search', { query: 'q' });
+  assert.equal(boundary.status, 402, 'the boundary epoch itself is still a usable reset date');
+  assert.match((await boundary.json<any>()).error.message, /Sep 13/);
+});
+
+test('a failed upstream fetch refunds the charge with the same requestId', async () => {
+  const { userCall, billing } = setup({
+    [SCRAPE]: () => new Response('', { status: 503 }),
+  });
+  const response = await userCall('/v1/fetch', { url: 'https://docs.example.com/p' });
+  assert.equal(response.status, 502);
+  const charge = billing.calls.find((c) => c.method === 'charge')!;
+  assert.equal(charge.input.kind, 'fetch');
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 1, 'the fetch charge was refunded');
+  assert.deepEqual(refunds[0]!.input, { userId: 'user-1', requestId: charge.input.requestId });
 });

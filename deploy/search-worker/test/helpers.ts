@@ -98,10 +98,14 @@ export function fakeGateway(users: Record<string, string> = { [SESSION]: 'user-1
   return { gateway, calls, state };
 }
 
-/** The `oms` gateway SearchBilling entrypoint: records every call, answers `state.result`, or throws on `state.failure`. */
+/** The `oms` gateway SearchBilling entrypoint: records every call, answers `state.result`/`state.refundResult`, or throws on `state.failure`. */
 export function fakeBilling() {
   const calls: { method: 'charge' | 'refund'; input: { userId: string; requestId: string; kind?: string } }[] = [];
-  const state: { result: unknown; failure: 'charge' | 'refund' | null } = { result: { ok: true }, failure: null };
+  const state: { result: unknown; refundResult: unknown; failure: 'charge' | 'refund' | null } = {
+    result: { ok: true },
+    refundResult: { ok: true },
+    failure: null,
+  };
   const billing: SearchBillingRpc = {
     charge: async (input) => {
       calls.push({ method: 'charge', input });
@@ -111,7 +115,7 @@ export function fakeBilling() {
     refund: async (input) => {
       calls.push({ method: 'refund', input });
       if (state.failure === 'refund') throw new Error('refund unreachable');
-      return { ok: true };
+      return state.refundResult as { ok: boolean };
     },
   };
   return { billing, calls, state };
