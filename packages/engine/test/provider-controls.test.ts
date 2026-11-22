@@ -530,6 +530,7 @@ test('an unchecked Claude Code login stays selectable until the first native che
     checked: false,
     detail: 'The local Claude Code login has not been checked yet.',
   };
+  let ready = true;
   const controls = createProviderControls({
     modelRuntime: f.runtime,
     session: {
@@ -541,6 +542,10 @@ test('an unchecked Claude Code login stays selectable until the first native che
     async withUserOperation(action) {
       return action();
     },
+    modelReadiness: () => ({
+      ready,
+      detail: ready ? 'Connected' : 'Insufficient remaining spend allowance · /status',
+    }),
     claudeCodeAccess: {
       status: () => status,
       async inspect(signal) {
@@ -552,6 +557,11 @@ test('an unchecked Claude Code login stays selectable until the first native che
   const choice = () => controls.listModels().find((model) => model.provider === 'claude-code')!;
   assert.equal(choice().configured, false);
   assert.equal(choice().selectable, true, 'an unchecked login must not gate a resumed native model');
+  assert.equal(choice().detail, 'The local Claude Code login has not been checked yet.');
+  ready = false;
+  assert.equal(choice().selectable, false);
+  assert.match(choice().detail!, /spend allowance/, 'a local limit still shows over unchecked login guidance');
+  ready = true;
   status = { ...status, checked: true, detail: 'Sign in with claude auth login.' };
   assert.equal(choice().selectable, false, 'a failed check still blocks selection');
   assert.equal(choice().detail, 'Sign in with claude auth login.');

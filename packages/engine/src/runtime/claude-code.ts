@@ -229,6 +229,9 @@ export async function inspectClaudeCode(signal?: AbortSignal, timeoutMs = 15_000
         : 'Sign in to Claude Code with your Claude subscription using claude auth login. API-key and third-party Claude Code accounts are not used by this connector.',
     };
   } catch (error) {
+    // A cancelled probe proved nothing about the login: keep the earlier status so the model is not
+    // left checked-and-unconfigured, which would block resending until an explicit re-check.
+    if (signal?.aborted) return getClaudeCodeStatus();
     const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT';
     const timedOut = !!error && typeof error === 'object' && 'code' in error && error.code === 'ETIMEDOUT';
     status = {

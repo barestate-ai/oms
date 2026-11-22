@@ -19,6 +19,7 @@ import {
   claudeCodeEnvironment,
   createClaudeCodeProvider,
   createClaudeCodeStream,
+  getClaudeCodeStatus,
   inspectClaudeCode,
   runClaudeCode,
 } from '../src/runtime/claude-code.ts';
@@ -948,4 +949,12 @@ test('a Claude Code login check that times out says so', async () =>
     const result = await inspectClaudeCode(undefined, 50);
     assert.equal(result.configured, false);
     assert.match(result.detail, /timed out/);
+  }));
+test('a cancelled Claude Code login check leaves the earlier status alone', async () =>
+  fixture('ok', async () => {
+    const before = getClaudeCodeStatus();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await inspectClaudeCode(controller.signal);
+    assert.deepEqual(result, before, 'a cancelled probe must not record a checked failure');
   }));

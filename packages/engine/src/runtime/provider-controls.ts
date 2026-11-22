@@ -140,7 +140,9 @@ export function createProviderControls(options: ProviderControlsOptions): Provid
       name: model.name,
       configured: connected,
       selectable: readiness.ready,
-      detail: unchecked ? claudeCode.status().detail : readiness.detail,
+      // The unchecked-login note is informational only; a real readiness failure (e.g. a spend cap)
+      // must still be the detail the operator sees.
+      detail: unchecked && readiness.ready ? claudeCode.status().detail : readiness.detail,
     };
   };
   const listModels: ProviderControls['listModels'] = () => supportedModels().map(modelChoice);
