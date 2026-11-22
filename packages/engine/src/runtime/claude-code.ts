@@ -365,7 +365,32 @@ function compactionSummary(messages: readonly unknown[], pendingCalls: readonly 
     .filter(Boolean)
     .slice(-2);
   const pendingById = new Map(pendingCalls.map((call) => [call.id, call]));
-  const pending = items.filter((m) => m.role === 'toolResult' && pendingById.has(m.toolCallId!));
+  const pending = items
+    .filter((m) => m.role === 'toolResult' && pendingById.has(m.toolCallId!))
+    .map((m) => {
+      const call = pendingById.get(m.toolCallId!);
+      const fullArgs = call?.arguments === undefined ? '' : JSON.stringify(call.arguments);
+      const text = textOf(m.content);
+      const shortened = text.length > budget(16_000);
+      const replayable = call !== undefined && fullArgs.length <= budget(400);
+      return {
+        shortened,
+        replayable,
+        entry:
+          `${call?.name ?? m.toolName ?? 'tool'}` +
+          (fullArgs === '' ? '' : `(${clip(fullArgs, budget(400))})`) +
+          ` [${m.toolCallId}]${shortened && !replayable ? ' [incomplete]' : ''}:\n${clip(text, budget(16_000))}`,
+      };
+    });
+  const shortened = pending.filter((entry) => entry.shortened);
+  const pendingNote = shortened.length
+    ? shortened.every((entry) => entry.replayable)
+      ? ' A PENDING TOOL RESULT ending in "chars cut" was shortened to fit; re-issue that exact call to fetch the rest if it is safe to repeat.'
+      : ' A PENDING TOOL RESULT marked incomplete was shortened to fit and its full call is not preserved, so it cannot be replayed exactly; retrieve the missing data with a narrower call where possible.' +
+        (shortened.some((entry) => entry.replayable)
+          ? ' A shortened result whose full arguments appear above may be re-issued exactly if it is safe to repeat.'
+          : '')
+    : '';
   const results = items
     .flatMap((m) =>
       m.role === 'toolResult' && !pendingById.has(m.toolCallId!)
@@ -390,13 +415,7 @@ function compactionSummary(messages: readonly unknown[], pendingCalls: readonly 
     section('FILES WRITTEN OR EDITED', files.join('\n')) +
     section(
       'PENDING TOOL RESULTS',
-      pending
-        .map((m) => {
-          const call = pendingById.get(m.toolCallId!);
-          const args = call?.arguments === undefined ? '' : `(${clip(JSON.stringify(call.arguments), budget(400))})`;
-          return `${call?.name ?? m.toolName ?? 'tool'}${args} [${m.toolCallId}]:\n${clip(textOf(m.content), budget(16_000))}`;
-        })
-        .join('\n\n') || 'none — no tool batch was in flight',
+      pending.map((entry) => entry.entry).join('\n\n') || 'none — no tool batch was in flight',
     ) +
     section('RECENT WORK', replies.join('\n')) +
     section('RECENT TOOL RESULTS', results.join('\n')) +
@@ -404,9 +423,7 @@ function compactionSummary(messages: readonly unknown[], pendingCalls: readonly 
       'NEXT STEP',
       'Continue from RECENT WORK and TASK STATE' +
         (hasTaskStatus ? '; re-check task_status before spending capped actions.' : '.') +
-        (pending.length
-          ? ' A PENDING TOOL RESULT ending in "chars cut" was shortened to fit; re-issue that exact call to fetch the rest if it is safe to repeat.'
-          : '') +
+        pendingNote +
         (request ? ` The latest request follows:\n${clip(textOf(request.content), budget(16_000))}` : ''),
     )
   );

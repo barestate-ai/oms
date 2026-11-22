@@ -44,7 +44,8 @@ const id=get(args.includes('--resume')?'--resume':'--session-id');appendFileSync
 const file=root+'/'+id+'.json';if(args.includes('--resume')&&!existsSync(file))process.exit(1);
 const history=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):[],decl=JSON.parse(get('--mcp-config')).mcpServers.oms;
 let bridge,response,seq=0;if(decl&&mode!=='empty-after-tool'){bridge=spawn(decl.command,decl.args,{stdio:['pipe','pipe','ignore']});createInterface({input:bridge.stdout}).on('line',line=>{const x=JSON.parse(line);if(x.id===response?.id){const done=response;response=undefined;done.resolve(x.result);}});}
-const mcp=()=>new Promise(resolve=>{if(mode==='empty-after-tool'){const timer=setInterval(()=>{if(existsSync(root+'/delivered')){clearInterval(timer);resolve(JSON.parse(readFileSync(root+'/delivered','utf8')));}},5);return;}response={id:++seq,resolve};bridge.stdin.write(JSON.stringify({jsonrpc:'2.0',id:seq,method:'tools/call',params:{name:'read',arguments:{path:'src/main.ts'}}})+'\\n');});
+const toolArgs=mode.includes('big-args')?{path:'src/'+'p'.repeat(600)+'.ts'}:{path:'src/main.ts'};
+const mcp=()=>new Promise(resolve=>{if(mode==='empty-after-tool'){const timer=setInterval(()=>{if(existsSync(root+'/delivered')){clearInterval(timer);resolve(JSON.parse(readFileSync(root+'/delivered','utf8')));}},5);return;}response={id:++seq,resolve};bridge.stdin.write(JSON.stringify({jsonrpc:'2.0',id:seq,method:'tools/call',params:{name:'read',arguments:toolArgs}})+'\\n');});
 if(mode==='stubborn')process.on('SIGTERM',()=>{});
 const emit=x=>process.stdout.write(JSON.stringify({session_id:id,...x})+'\\n');
 const tools=decl?JSON.parse(readFileSync(decl.args[1],'utf8')).map(t=>'mcp__oms__'+t.name):[];
@@ -82,7 +83,7 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
   emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:[]});return;
  }
  if(mode==='empty-after-tool'){
-  if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:[]});}
+  if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:toolArgs},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:[]});}
   else{assistant({type:'text',text:'reply after tool'});receipt(1);}return;
  }
  if(mode==='active-turn'||mode==='active-then-idle'){
@@ -94,7 +95,7 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
   emit({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'end_turn'},usage}});
   emit({type:'stream_event',event:{type:'message_stop'}});receipt(1);return;
  }
- if(JSON.stringify(x.message.content).includes('probe')&&!compacted){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');if(mode==='multi'){assistant({type:'tool_use',id:'call_'+id+'_2',name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const second=await mcp();appendFileSync(root+'/results',JSON.stringify(second)+'\\n');assistant({type:'text',text:JSON.stringify(second)});receipt(3);}else{assistant({type:'text',text:JSON.stringify(result)});receipt(2);}}
+ if(JSON.stringify(x.message.content).includes('probe')&&!compacted){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:toolArgs},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');if(mode==='multi'){assistant({type:'tool_use',id:'call_'+id+'_2',name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const second=await mcp();appendFileSync(root+'/results',JSON.stringify(second)+'\\n');assistant({type:'text',text:JSON.stringify(second)});receipt(3);}else{assistant({type:'text',text:JSON.stringify(result)});receipt(2);}}
  else{assistant({type:'text',text:mode==='quotes-phrase'?'Explaining when the Prompt is too long error appears':JSON.stringify(x.message.content).includes('recall')?JSON.stringify(history[0]):'reply'});receipt(1);}
 });input.on('close',()=>{bridge?.kill();process.exit(0);});
 `,
@@ -347,6 +348,76 @@ test('compaction during a tool batch carries the pending result into the summary
       assert.equal(executed, 1, 'the carried result is enough; the tool is not re-executed');
       const responses = agent.state.messages.filter((message) => message.role === 'assistant');
       assert.equal(responses.at(-1)!.stopReason, 'stop', 'the compacted session finishes the turn');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a cut pending result with complete arguments still offers exact replay', async () =>
+  fixture('big-prompt', async (directory) => {
+    const { model, native } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: 'Use read',
+        model,
+        tools: [
+          {
+            name: 'read',
+            label: 'Read',
+            description: 'Read',
+            parameters: Type.Object({ path: Type.String() }),
+            async execute() {
+              return { content: [{ type: 'text', text: `REAL${'r'.repeat(20_000)}` }], details: undefined };
+            },
+          },
+        ],
+      },
+      streamFn: stream,
+    });
+    try {
+      await agent.prompt('probe');
+      const summary = rows(join(directory, 'input'))[1]!.message.content;
+      assert.match(
+        summary,
+        /PENDING TOOL RESULTS[\s\S]*read\(\{"path":"src\/main\.ts"\}\) \[call_[^\]]+\]:\n[\s\S]*chars cut\]/,
+      );
+      assert.doesNotMatch(summary, /\[incomplete\]/, 'a fully preserved call is not marked incomplete');
+      assert.match(summary, /re-issue that exact call/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a cut pending result with cut arguments is marked incomplete instead of replayed', async () =>
+  fixture('big-prompt big-args', async (directory) => {
+    const { model, native } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: 'Use read',
+        model,
+        tools: [
+          {
+            name: 'read',
+            label: 'Read',
+            description: 'Read',
+            parameters: Type.Object({ path: Type.String() }),
+            async execute() {
+              return { content: [{ type: 'text', text: `REAL${'r'.repeat(20_000)}` }], details: undefined };
+            },
+          },
+        ],
+      },
+      streamFn: stream,
+    });
+    try {
+      await agent.prompt('probe');
+      const summary = rows(join(directory, 'input'))[1]!.message.content;
+      assert.match(summary, /PENDING TOOL RESULTS[\s\S]*\[call_[^\]]+\] \[incomplete\]:/);
+      assert.match(summary, /chars cut\]/, 'both the arguments and the result are clipped');
+      assert.match(summary, /narrower call/, 'recovery guidance points at a narrower call');
+      assert.doesNotMatch(summary, /re-issue that exact call/);
     } finally {
       await native.close();
     }
