@@ -31,7 +31,8 @@ export const SUBSCRIPTION_MODELS: Record<Harness, Record<string, ContenderModel>
   oms3: {
     'gpt-sol': sub('openai-codex', 'gpt-6.1-sol', 272_000),
     // OMS drives the installed Claude Code CLI as its model (provider `claude-code`, alias `opus` = Claude Opus 5.5).
-    'opus-sub': sub('claude-code', 'opus', 1_000_000, 'anthropic-messages'),
+    // Subscription serves the standard 200k window; 1M needs a `[1m]` opt-in the connector does not send.
+    'opus-sub': sub('claude-code', 'opus', 200_000, 'anthropic-messages'),
   },
   codex: { 'gpt-sol': sub('openai', 'gpt-6.1-sol', 272_000) },
   'claude-code': { 'opus-sub': sub('anthropic', 'claude-opus-5-5', 1_000_000, 'anthropic-messages') },

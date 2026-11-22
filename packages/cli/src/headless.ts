@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  CLAUDE_CODE_CONTEXT_OVERFLOW,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
   modelReadiness,
@@ -192,6 +193,14 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         if (noProgressTurns > 0) noProgressContinuations++;
         await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         observe();
+        const last = [...current.session.messages].reverse().find((message) => message.role === 'assistant') as
+          { rawStopReason?: string } | undefined;
+        if (last?.rawStopReason === CLAUDE_CODE_CONTEXT_OVERFLOW) {
+          status = 'capped';
+          cap = 'tokens';
+          reason = 'context-overflow';
+          break;
+        }
         if (JSON.stringify(itemStates(current)) !== before) {
           noProgressTurns = 0;
           continue;
