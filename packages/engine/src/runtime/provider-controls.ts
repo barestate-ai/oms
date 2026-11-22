@@ -122,22 +122,27 @@ export function createProviderControls(options: ProviderControlsOptions): Provid
   };
   const modelChoice = (model: Model<Api>): ProviderModelChoice => {
     const connected = configured(model.provider);
-    const readiness = connected
-      ? (options.modelReadiness?.(model) ?? { ready: true, detail: 'Connected' })
-      : {
-          ready: false,
-          detail:
-            model.provider === CLAUDE_CODE_PROVIDER
-              ? claudeCode.status().detail
-              : 'Needs setup · /connect this provider first',
-        };
+    // An unchecked native login is not a failed one: keep the model usable and let first use verify it.
+    const unchecked = model.provider === CLAUDE_CODE_PROVIDER && !claudeCode.status().checked;
+    const readiness =
+      connected || unchecked
+        ? (options.modelReadiness?.(model) ?? { ready: true, detail: 'Connected' })
+        : {
+            ready: false,
+            detail:
+              model.provider === CLAUDE_CODE_PROVIDER
+                ? claudeCode.status().detail
+                : 'Needs setup · /connect this provider first',
+          };
     return {
       provider: model.provider,
       id: model.id,
       name: model.name,
       configured: connected,
       selectable: readiness.ready,
-      detail: readiness.detail,
+      // The unchecked-login note is informational only; a real readiness failure (e.g. a spend cap)
+      // must still be the detail the operator sees.
+      detail: unchecked && readiness.ready ? claudeCode.status().detail : readiness.detail,
     };
   };
   const listModels: ProviderControls['listModels'] = () => supportedModels().map(modelChoice);
