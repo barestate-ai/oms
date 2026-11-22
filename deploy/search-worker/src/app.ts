@@ -44,7 +44,6 @@ const PREFIX = '/oms-search-api';
 const USER_PREFIX = '/oms/search';
 /** The gateway's old SEARCH_RATE_LIMIT. */
 export const USER_RATE_PER_MIN = 30;
-const SESSION_OK_MS = 5 * 60_000;
 const SESSION_REFUSED_MS = 30_000;
 const ME_URL = 'https://barestate.xyz/oms/api/me';
 const FETCH_TIMEOUT_MS = 9_000;
@@ -126,7 +125,14 @@ function contextDev(env: Env, deps: Deps): ContextDevConfig | undefined {
     : undefined;
 }
 
-async function search(env: Env, deps: Deps, caller: Caller, query: string, count: number): Promise<Response> {
+async function search(
+  env: Env,
+  deps: Deps,
+  caller: Caller,
+  query: string,
+  count: number,
+  signal?: AbortSignal,
+): Promise<Response> {
   // The key is a digest, so KV never holds query text.
   const key = `search:v2:${await sha256Hex(query.toLowerCase())}`;
   const hit = await env.CACHE.get<SearchAnswer>(key, 'json');
@@ -142,7 +148,7 @@ async function search(env: Env, deps: Deps, caller: Caller, query: string, count
   const config = contextDev(env, deps);
   if (!config)
     return json(503, { error: 'no search backend is configured', backends, answered: [] }, retryAfter(60_000));
-  const { grant, outcome } = await throughGate(env, 'search', caller, () => contextDevSearch(config, query));
+  const { grant, outcome } = await throughGate(env, 'search', caller, () => contextDevSearch(config, query, signal));
   if (!('lease' in grant)) {
     backends[CONTEXT_DEV] = coolingDown(grant.retryAfterMs);
     return json(
@@ -193,7 +199,7 @@ async function validateFetch(raw: string, deps: Deps): Promise<URL | Response> {
   return url;
 }
 
-async function fetchPage(env: Env, deps: Deps, caller: Caller, url: URL): Promise<Response> {
+async function fetchPage(env: Env, deps: Deps, caller: Caller, url: URL, signal?: AbortSignal): Promise<Response> {
   const key = `page:v2:${await sha256Hex(canonicalUrl(url.href) ?? url.href)}`;
   const hit = await env.CACHE.get<PageAnswer>(key, 'json');
   if (hit) return json(200, { ...hit, cached: true });
@@ -218,7 +224,9 @@ async function fetchPage(env: Env, deps: Deps, caller: Caller, url: URL): Promis
 
   const config = contextDev(env, deps);
   if (config) {
-    const { grant, outcome } = await throughGate(env, 'fetch', caller, () => contextDevScrape(config, url.href));
+    const { grant, outcome } = await throughGate(env, 'fetch', caller, () =>
+      contextDevScrape(config, url.href, signal),
+    );
     if (!('lease' in grant)) attempts[CONTEXT_DEV] = coolingDown(grant.retryAfterMs);
     else if (outcome?.ok) return answer(CONTEXT_DEV, outcome.value);
     else attempts[CONTEXT_DEV] = outcome?.error ?? 'failed';
@@ -226,7 +234,12 @@ async function fetchPage(env: Env, deps: Deps, caller: Caller, url: URL): Promis
   try {
     return await answer(
       'plain',
-      await plainFetch(url, deps.resolve, AbortSignal.timeout(FETCH_TIMEOUT_MS), deps.fetch),
+      await plainFetch(
+        url,
+        deps.resolve,
+        AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(signal ? [signal] : [])]),
+        deps.fetch,
+      ),
     );
   } catch (error) {
     attempts.plain = describe(error);
@@ -273,11 +286,11 @@ async function readInput(pathname: '/search' | '/fetch', request: Request, deps:
 }
 
 /** Runs a validated input; an internal failure is a bare 500, like the pre-charge refusals above. */
-async function dispatch(input: Input, env: Env, deps: Deps, caller: Caller): Promise<Response> {
+async function dispatch(input: Input, env: Env, deps: Deps, caller: Caller, signal?: AbortSignal): Promise<Response> {
   try {
     return input.kind === 'search'
-      ? await search(env, deps, caller, input.query, input.count)
-      : await fetchPage(env, deps, caller, input.url);
+      ? await search(env, deps, caller, input.query, input.count, signal)
+      : await fetchPage(env, deps, caller, input.url, signal);
   } catch {
     return json(500, { error: 'internal error' });
   }
@@ -287,7 +300,7 @@ async function dispatch(input: Input, env: Env, deps: Deps, caller: Caller): Pro
 async function serve(pathname: '/search' | '/fetch', request: Request, env: Env, deps: Deps, caller: Caller) {
   const input = await readInput(pathname, request, deps).catch(() => json(500, { error: 'internal error' }));
   if (input instanceof Response) return input;
-  return dispatch(input, env, deps, caller);
+  return dispatch(input, env, deps, caller, request.signal);
 }
 
 const gatewayError = (status: number, code: string, message: string, headers: Record<string, string> = {}) =>
@@ -307,15 +320,17 @@ async function gatewayStyle(response: Response): Promise<Response> {
 }
 
 /**
- * The OMS user behind a session token, checked with the gateway's /api/me. Only the token's SHA-256 is cached:
- * a valid session for 5 minutes, a refused one for 30 seconds. Gateway failures other than 401/403 are not cached.
+ * The OMS user behind a session token, checked with the gateway's /api/me. Only the token's SHA-256 is
+ * cached — and only a refusal, for 30 seconds. An approval is verified live on every call: a cached one
+ * can outlive the session it came from (logout revokes the token) and would keep authorizing charges.
+ * Gateway failures other than 401/403 are not cached either.
  */
 async function sessionUser(request: Request, env: Env, deps: Deps): Promise<string | undefined> {
   const token = /^Bearer ([A-Za-z0-9_-]{16,512})$/.exec(request.headers.get('authorization') ?? '')?.[1];
   if (!token || !env.GATEWAY) return undefined;
   const key = `session:${await sha256Hex(token)}`;
   const cached = await env.CACHE.get<{ userId?: string; until: number }>(key, 'json');
-  if (cached && cached.until > deps.now()) return cached.userId;
+  if (cached && !cached.userId && cached.until > deps.now()) return undefined;
   let userId: string | undefined;
   let settled = false;
   try {
@@ -331,12 +346,11 @@ async function sessionUser(request: Request, env: Env, deps: Deps): Promise<stri
   } catch {
     /* the gateway is unreachable: refuse, uncached */
   }
-  if (settled) {
-    const ms = userId ? SESSION_OK_MS : SESSION_REFUSED_MS;
+  if (settled && !userId) {
     // KV expiry has a 60 s floor, so `until` carries the exact lifetime.
     try {
-      await env.CACHE.put(key, JSON.stringify({ ...(userId ? { userId } : {}), until: deps.now() + ms }), {
-        expirationTtl: Math.max(60, ms / 1000),
+      await env.CACHE.put(key, JSON.stringify({ until: deps.now() + SESSION_REFUSED_MS }), {
+        expirationTtl: Math.max(60, SESSION_REFUSED_MS / 1000),
       });
     } catch {}
   }
@@ -344,7 +358,13 @@ async function sessionUser(request: Request, env: Env, deps: Deps): Promise<stri
 }
 
 /** POST /oms/search/v1/search and /v1/fetch for signed-in OMS users. */
-async function userRoute(subpath: string, request: Request, env: Env, deps: Deps): Promise<Response> {
+async function userRoute(
+  subpath: string,
+  request: Request,
+  env: Env,
+  deps: Deps,
+  ctx?: ExecutionContext,
+): Promise<Response> {
   const pathname = subpath === '/v1/search' ? '/search' : subpath === '/v1/fetch' ? '/fetch' : undefined;
   if (!pathname) return gatewayError(404, 'NOT_FOUND', 'not found');
   if (request.method !== 'POST') return gatewayError(405, 'METHOD_NOT_ALLOWED', 'use POST', { allow: 'POST' });
@@ -359,23 +379,31 @@ async function userRoute(subpath: string, request: Request, env: Env, deps: Deps
   const requestId = crypto.randomUUID();
   const refusal = await chargeSearch(env, user, input.kind, requestId);
   if (refusal) return refusal;
-  let response: Response;
-  try {
-    response = await dispatch(input, env, deps, { token: 'session', user });
-  } catch {
-    await refundSearch(env, user, requestId, input.kind);
-    return gatewayError(500, 'SEARCH_UNAVAILABLE', 'internal error');
-  }
-  if (!response.ok) await refundSearch(env, user, requestId, input.kind);
-  return gatewayStyle(response);
+  // Settlement must outlive the request: a client disconnect cancels the request and drops
+  // request-scoped work, so the dispatch and its refund run as one task registered with waitUntil
+  // before it is awaited. A charged call that never produces a 2xx answer refunds the charge inside
+  // it; the request signal reaches the upstream calls so a dead client also stops the work.
+  const settled = (async (): Promise<Response> => {
+    let response: Response;
+    try {
+      response = await dispatch(input, env, deps, { token: 'session', user }, request.signal);
+    } catch {
+      await refundSearch(env, user, requestId, input.kind);
+      return gatewayError(500, 'SEARCH_UNAVAILABLE', 'internal error');
+    }
+    if (!response.ok) await refundSearch(env, user, requestId, input.kind);
+    return response;
+  })();
+  ctx?.waitUntil(settled);
+  return gatewayStyle(await settled);
 }
 
 export function createApp(deps: Deps) {
   const limit = rateLimiter(deps.now);
-  return async function handle(request: Request, env: Env): Promise<Response> {
+  return async function handle(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith(`${USER_PREFIX}/`))
-      return userRoute(url.pathname.slice(USER_PREFIX.length), request, env, deps);
+      return userRoute(url.pathname.slice(USER_PREFIX.length), request, env, deps, ctx);
     const pathname = url.pathname.startsWith(PREFIX) ? url.pathname.slice(PREFIX.length) || '/' : url.pathname;
     if (pathname === '/health' && request.method === 'GET') return json(200, { ok: true });
     if (pathname === '/usage') {

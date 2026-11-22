@@ -170,7 +170,7 @@ export function setup(routes: Record<string, Route>, overrides: Partial<Env> = {
       }),
       env,
     );
-  return { env, kv, gate, upstream, events, call, userCall, gateway, billing };
+  return { env, kv, gate, upstream, events, call, userCall, gateway, billing, handle };
 }
 
 export const searchResult = (url: string, title = url, relevance = 'medium', description = `about ${url}`) => ({

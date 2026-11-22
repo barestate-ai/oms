@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SCRAPE, SEARCH, scrapeBody, searchBody, searchResult, setup, sha } from './helpers.ts';
+import { SCRAPE, SEARCH, SESSION, scrapeBody, searchBody, searchResult, setup, sha } from './helpers.ts';
 
 const routes = {
   [SEARCH]: () => searchBody([searchResult('https://example.com/a', 'A')], 1),
@@ -312,4 +312,42 @@ test('a failed upstream fetch refunds the charge with the same requestId', async
   const refunds = billing.calls.filter((c) => c.method === 'refund');
   assert.equal(refunds.length, 1, 'the fetch charge was refunded');
   assert.deepEqual(refunds[0]!.input, { userId: 'user-1', requestId: charge.input.requestId });
+});
+
+test('a client that disconnects after the charge still gets the refund via waitUntil', async () => {
+  const { env, billing, handle } = setup({
+    [SEARCH]: (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const drop = () => reject(new DOMException('aborted', 'AbortError'));
+        if (init.signal?.aborted) return drop();
+        init.signal?.addEventListener('abort', drop);
+      }),
+  });
+  const controller = new AbortController();
+  const charge = billing.billing.charge.bind(billing.billing);
+  billing.billing.charge = async (input) => {
+    const result = await charge(input);
+    controller.abort(); // the client is gone the moment the debit lands
+    return result;
+  };
+  const waited: Promise<unknown>[] = [];
+  const ctx = { waitUntil: (p: Promise<unknown>) => void waited.push(p) } as unknown as ExecutionContext;
+  const response = await handle(
+    new Request('https://barestate.xyz/oms/search/v1/search', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${SESSION}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ query: 'q' }),
+      signal: controller.signal,
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(response.status, 503);
+  assert.equal((await response.json<any>()).error.code, 'SEARCH_UNAVAILABLE');
+  await Promise.all(waited);
+  assert.equal(waited.length, 1, 'settlement was registered with ctx.waitUntil');
+  const charged = billing.calls.find((c) => c.method === 'charge')!;
+  const refunds = billing.calls.filter((c) => c.method === 'refund');
+  assert.equal(refunds.length, 1, 'the charge was refunded even though the client was gone');
+  assert.deepEqual(refunds[0]!.input, { userId: 'user-1', requestId: charged.input.requestId });
 });

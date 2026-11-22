@@ -7,6 +7,7 @@ import {
   SEARCH,
   SESSION,
   TOKEN,
+  fakeGateway,
   scrapeBody,
   searchBody,
   searchResult,
@@ -44,7 +45,10 @@ test('a valid session gets the /search and /fetch shapes from /oms/search/v1/*',
   const page = await (await userCall('/v1/fetch', { url: 'https://docs.example.com/p' })).json<any>();
   assert.equal(page.backend, 'contextdev');
   assert.equal(page.text, '# Page');
-  assert.deepEqual(gateway.calls, [{ url: 'https://barestate.xyz/oms/api/me', authorization: `Bearer ${SESSION}` }]);
+  assert.deepEqual(gateway.calls, [
+    { url: 'https://barestate.xyz/oms/api/me', authorization: `Bearer ${SESSION}` },
+    { url: 'https://barestate.xyz/oms/api/me', authorization: `Bearer ${SESSION}` },
+  ]);
   const bench = await (await call('/search', { query: 'anchor idl', count: 5 })).json<any>();
   assert.equal(bench.cached, true, 'the KV cache is shared with the bench route');
 });
@@ -101,15 +105,25 @@ test('a gateway failure is 401 but is not cached', async () => {
   assert.equal(gateway.calls.length, 2);
 });
 
-test('a cached session skips the gateway call; it is kept 5 minutes under the token digest', async () => {
+test('an approval is revalidated with the gateway on every call; only refusals are cached', async () => {
   const { userCall, gateway, kv } = setup(routes);
   for (let i = 0; i < 4; i++) assert.equal((await userCall('/v1/search', { query: `q${i}` })).status, 200);
-  assert.equal(gateway.calls.length, 1);
-  const entry = kv.data.get(`session:${sha(SESSION)}`)!;
-  assert.equal(entry.ttl, 300);
-  const value = JSON.parse(entry.value);
-  assert.equal(value.userId, 'user-1');
-  assert.ok(value.until - Date.now() <= 300_000 && value.until - Date.now() > 295_000);
+  assert.equal(gateway.calls.length, 4, 'a cached approval never authorizes a charge');
+  assert.equal(kv.data.get(`session:${sha(SESSION)}`), undefined, 'approvals are not written to KV');
+});
+
+test('a revoked session is refused and never charged', async () => {
+  const users: Record<string, string> = { [SESSION]: 'user-1' };
+  const revoked = fakeGateway(users);
+  const { userCall, billing } = setup(routes, { GATEWAY: revoked.gateway as unknown as Fetcher });
+  assert.equal((await userCall('/v1/search', { query: 'q' })).status, 200);
+  delete users[SESSION]; // logout revokes the token
+  const response = await userCall('/v1/search', { query: 'q2' });
+  assert.equal(response.status, 401);
+  assert.equal((await response.json<any>()).error.code, 'UNAUTHENTICATED');
+  assert.equal(revoked.calls.length, 2, 'the second call revalidated instead of trusting the approval');
+  const charges = billing.calls.filter((c) => c.method === 'charge');
+  assert.equal(charges.length, 1, 'the revoked session was never charged');
 });
 
 test('the 31st call in a minute is 429 RATE_LIMITED with Retry-After, per user id', async () => {
