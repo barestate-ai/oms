@@ -40,6 +40,14 @@ const expected = {
     continuations: MAX_NO_PROGRESS_TURNS - 1,
     exit: 2,
   },
+  'refuses a continuation it cannot fund': {
+    status: 'capped',
+    reason: 'capped:usd',
+    cap: 'usd',
+    calls: 1,
+    continuations: 0,
+    exit: 2,
+  },
   'reaches the deadline mid-stall': {
     status: 'capped',
     reason: 'capped:wall',
@@ -49,6 +57,12 @@ const expected = {
     exit: 2,
   },
 } as const;
+
+const spendScenarios: Record<string, { settledUsd: number; spendUsd: string }> = {
+  'runs out of budget mid-stall': { settledUsd: 4, spendUsd: '6' },
+  'runs out of budget at the stall cutoff': { settledUsd: 2, spendUsd: '6' },
+  'refuses a continuation it cannot fund': { settledUsd: 0.15, spendUsd: '0.2' },
+};
 
 for (const [scenario, want] of Object.entries(expected)) {
   test(`headless run that ${scenario} ends as ${want.reason ?? want.status}`, { timeout: 180_000 }, async (t) => {
@@ -84,9 +98,11 @@ for (const [scenario, want] of Object.entries(expected)) {
           narrate(),
         ]);
       } else {
-        // Mid-stall settles at $4 and the cutoff at $2, both against a $6 allowance: the cap must end the
-        // run whether it trips before or exactly at the streak cutoff, ahead of no-verified-progress.
-        const settledUsd = scenario === 'runs out of budget mid-stall' ? 4 : 2;
+        // The overrun cases settle at $4 and $2 against a $6 allowance: the cap must end the run whether
+        // it trips mid-stall or exactly at the streak cutoff, ahead of no-verified-progress. The last
+        // case settles at $0.15 against $0.20, leaving $0.05 — positive, but below the $0.131328
+        // reservation bound, so the next call is refused rather than overspent.
+        const { settledUsd } = spendScenarios[scenario]!;
         f.modelRuntime.registerProvider(f.model.provider, {
           api: f.model.api,
           apiKey: 'synthetic-fixture-not-a-provider-key',
@@ -147,7 +163,7 @@ for (const [scenario, want] of Object.entries(expected)) {
           '--minutes',
           '40',
           '--spend-usd',
-          scenario.startsWith('runs out of budget') ? '6' : '4',
+          spendScenarios[scenario]?.spendUsd ?? '4',
           '--output-tokens',
           '128',
           '--surfpool-binary',
@@ -162,8 +178,11 @@ for (const [scenario, want] of Object.entries(expected)) {
       assert.equal(record.reason, want.reason);
       assert.equal(record.cap, want.cap);
       assert.equal(exitCode, want.exit);
-      assert.equal(scenario.startsWith('runs out of budget') ? calls : f.faux.state.callCount, want.calls);
+      assert.equal(scenario in spendScenarios ? calls : f.faux.state.callCount, want.calls);
       assert.equal(record.dispatches.length, want.calls);
+      if (scenario === 'refuses a continuation it cannot fund')
+        // $0.05 remains unspent: the allowance was positive but could not fund one more reservation.
+        assert.equal(record.settledMicroUsd, 150_000);
       assert.equal(record.noProgressContinuations, want.continuations);
       const transcript = readFileSync(record.transcriptPath!, 'utf8');
       // The first turn carries the task context; every continuation is the unchanged headless instruction.
