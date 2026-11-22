@@ -112,7 +112,7 @@ function executable(): string {
 }
 /** Own the process group, including the descriptor MCP child. No stderr or native
  * diagnostics are projected into model history or the UI. */
-function runClaudeCode(
+export function runClaudeCode(
   args: readonly string[],
   options: {
     cwd: string;
@@ -147,14 +147,15 @@ function runClaudeCode(
         /* already stopped */
       }
     };
-    const abort = () => {
-      failure ??= new Error('Claude Code request cancelled');
+    const abort = (cause = new Error('Claude Code request cancelled')) => {
+      failure ??= cause;
       kill('SIGTERM');
       killTimer ??= setTimeout(() => kill('SIGKILL'), 500);
     };
-    const deadline = setTimeout(abort, options.timeoutMs ?? 120_000);
-    options.signal?.addEventListener('abort', abort, { once: true });
-    if (options.signal?.aborted) abort();
+    const cancel = () => abort();
+    const deadline = setTimeout(() => abort(new Error('Claude Code request timed out')), options.timeoutMs ?? 120_000);
+    options.signal?.addEventListener('abort', cancel, { once: true });
+    if (options.signal?.aborted) cancel();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (part: string) => {
       if (failure) return;
@@ -191,7 +192,7 @@ function runClaudeCode(
     child.on('close', (code) => {
       clearTimeout(deadline);
       clearTimeout(killTimer);
-      options.signal?.removeEventListener('abort', abort);
+      options.signal?.removeEventListener('abort', cancel);
       // Native CLI may finish before its MCP transport; reap the complete group.
       kill('SIGKILL');
       if (failure) reject(failure);
@@ -538,7 +539,8 @@ export class ClaudeCodeSession implements NativeChatControls {
       );
     const startupSignal =
       signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
-    const auth = await inspectClaudeCode(startupSignal);
+    // A configured check is reused for the session; a failed check retries on the next start.
+    const auth = status.configured ? status : await inspectClaudeCode(startupSignal);
     startupSignal?.throwIfAborted();
     if (!auth.configured) throw new Error(auth.detail);
     const { model, context, maxTokens, effort } = this.configuration;
@@ -1151,7 +1153,8 @@ export async function createClaudeCodeProvider(
   runtime: ModelRuntime,
   options?: ClaudeCodeSessionOptions,
 ): Promise<ClaudeCodeSession> {
-  await inspectClaudeCode();
+  // `claude auth status` is deferred to the first native use (start) or an explicit
+  // /connect + /model inspection so unrelated sessions never spawn the CLI.
   const models = (Object.entries(NATIVE_MODELS) as [NativeAlias, string][]).flatMap(([alias, id]) => {
     const original = runtime.getModel('anthropic', id);
     return original
