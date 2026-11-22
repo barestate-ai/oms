@@ -51,7 +51,8 @@ import {
   isClaudeCodeModel,
 } from '@oms/core/usage';
 import type { DispatchAllocator } from '@oms/core/dispatch';
-import { CLAUDE_CODE_EMPTY_RESPONSE } from './claude-code.ts';
+import { CLAUDE_CODE_EMPTY_RESPONSE, CLAUDE_CODE_CONTEXT_OVERFLOW } from './claude-code.ts';
+export { CLAUDE_CODE_CONTEXT_OVERFLOW } from './claude-code.ts';
 
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -269,7 +270,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
     let timer: NodeJS.Timeout | undefined;
     const controller = new AbortController();
     const onCallerAbort = () => controller.abort();
-    const failed = (text: string, aborted = false): void => {
+    const failed = (text: string, aborted = false, rawStopReason?: string): void => {
       const message: AssistantMessage = {
         role: 'assistant',
         content: [],
@@ -278,6 +279,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
         provider: model.provider,
         timestamp: clock(),
         stopReason: aborted ? 'aborted' : 'error',
+        ...(rawStopReason ? { rawStopReason } : {}),
         errorMessage: text,
         usage: {
           input: 0,
@@ -608,6 +610,24 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
                 JSON.stringify({ reason: event.reason, message: errorMessage }).slice(0, 600),
               );
             if (releaseUnsent() || releaseRejected()) return;
+            if (
+              isClaudeCodeModel(model) &&
+              event.error.rawStopReason === CLAUDE_CODE_CONTEXT_OVERFLOW &&
+              event.reason !== 'aborted' &&
+              !controller.signal.aborted
+            ) {
+              // The request was dispatched; compaction retried and it still did not fit.
+              // Usage stays charged at its bound (a known outcome), and the reason is named
+              // so interactive and headless callers can report context overflow, not
+              // 'broke off' or unknown usage.
+              settleAtBound();
+              failed(
+                'Claude Code ran out of context window: the conversation was compacted and resent and still did not fit. Usage is charged at its reserved maximum.',
+                false,
+                CLAUDE_CODE_CONTEXT_OVERFLOW,
+              );
+              return;
+            }
             if (
               isClaudeCodeModel(model) &&
               event.error.rawStopReason === CLAUDE_CODE_EMPTY_RESPONSE &&

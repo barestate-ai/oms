@@ -6,6 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { isMissing, privateDirectory, readPrivateJson, writePrivateJson } from '../workspace/storage.ts';
+import { BYTES_PER_TOKEN } from './context-trim.ts';
 import { fileURLToPath } from 'node:url';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import {
@@ -24,10 +25,25 @@ import {
 
 export const CLAUDE_CODE_PROVIDER = 'claude-code';
 export const CLAUDE_CODE_EMPTY_RESPONSE = 'claude-code-empty-response';
+export const CLAUDE_CODE_CONTEXT_OVERFLOW = 'claude-code-context-overflow';
 export const CLAUDE_CODE_EMPTY_CONTINUATION =
   'Your previous reply came back empty. Continue the task from where you stopped; the earlier tool results are already in this conversation.';
 const CLAUDE_CODE_BASE_URL = 'claude-code://local';
 class NativeEmptyResponseError extends Error {}
+class NativeContextOverflowError extends Error {}
+
+/** Usable context window for a claude.ai subscription login. The CLI's baked-in catalog
+ * (claude 2.1.319) maps these aliases to native-1M models, but 1M is opt-in (`model[1m]`
+ * suffix / long-context credits) and subscription traffic is refused past the standard
+ * 200k window: the `main-solbh-oms3-web-fable-sub-swap` run died on a "Prompt is too long"
+ * reply at ~184k conversation tokens. Smaller limits the native receipt reports in
+ * modelUsage.contextWindow are adopted on top of this. */
+const CLAUDE_CODE_SUBSCRIPTION_WINDOW = 200_000;
+/** Share of the effective window that triggers compaction before the next native prompt. */
+const CLAUDE_CODE_COMPACT_AT = 0.8;
+/** Compaction resends after a "Prompt is too long" receipt before the turn fails as context overflow. */
+const CLAUDE_CODE_MAX_COMPACTIONS = 2;
+const PROMPT_TOO_LONG = /\bprompt is too long\b/i;
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;
@@ -235,7 +251,12 @@ export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCod
   return getClaudeCodeStatus();
 }
 
-const NATIVE_MODELS = { sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5', haiku: 'claude-haiku-5-5' } as const;
+const NATIVE_MODELS = {
+  sonnet: 'claude-sonnet-5-5',
+  opus: 'claude-opus-5-5',
+  haiku: 'claude-haiku-5-5',
+  fable: 'claude-fable-5-1',
+} as const;
 type NativeAlias = keyof typeof NATIVE_MODELS;
 const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -281,12 +302,89 @@ function nativeUsage(value: unknown): NativeUsage {
 }
 const usageKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h'] as const;
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const byteSize = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const canonical = (value: unknown): string =>
   JSON.stringify(value, (_key, item) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
       : item,
   );
+
+interface TranscriptMessage {
+  role?: string;
+  toolName?: string;
+  content?: unknown;
+}
+const textOf = (content: unknown): string =>
+  typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+          .map((block) =>
+            block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string'
+              ? (block as { text: string }).text
+              : '',
+          )
+          .join('')
+      : '';
+const clip = (text: string, limit: number) =>
+  text.length <= limit ? text : `${text.slice(0, limit)}… [${text.length - limit} chars cut]`;
+
+/** OMS-written carry-over for a compacted native session: the task, its latest trusted
+ * status snapshot (item states, remaining submission/time budget when the task tool
+ * reports them), the files it wrote, and the state to continue from. Extractive on
+ * purpose; no model call is made to write it. */
+function compactionSummary(messages: readonly unknown[]): string {
+  const items = messages as TranscriptMessage[];
+  const section = (title: string, body: string) => `\n\n## ${title}\n${body.trim() || 'none recorded'}`;
+  const task = clip(textOf(items.find((m) => m.role === 'user')?.content), 4_000);
+  const status = items.findLast((m) => m.role === 'toolResult' && m.toolName === 'task_status');
+  const files = [
+    ...new Set(
+      items.flatMap((m) =>
+        m.role === 'assistant' && Array.isArray(m.content)
+          ? m.content.flatMap((block) => {
+              const call = block as { type?: string; name?: string; arguments?: Record<string, unknown> };
+              if (call.type !== 'toolCall' || !/write|edit|patch|create|rename|apply|append/i.test(call.name ?? ''))
+                return [];
+              const target = call.arguments?.path ?? call.arguments?.file ?? call.arguments?.target;
+              return [typeof target === 'string' ? clip(target, 200) : call.name!];
+            })
+          : [],
+      ),
+    ),
+  ].slice(0, 24);
+  const replies = items
+    .flatMap((m) => (m.role === 'assistant' ? [clip(textOf(m.content), 1_500).trim()] : []))
+    .filter(Boolean)
+    .slice(-2);
+  const results = items
+    .flatMap((m) =>
+      m.role === 'toolResult' ? [`${m.toolName ?? 'tool'}: ${clip(textOf(m.content), 800).trim()}`] : [],
+    )
+    .filter((entry) => entry.trim().length > entry.indexOf(':') + 1)
+    .slice(-4);
+  const request = items.findLast((m) => m.role === 'user');
+  return (
+    `This Claude Code session was compacted by OMS after the conversation approached the model's context limit. ` +
+    `The earlier turns are not in this session; continue from the preserved state below.` +
+    section('TASK', task) +
+    section(
+      'TASK STATE',
+      status
+        ? clip(textOf(status.content), 4_000)
+        : 'No task_status snapshot yet — call the task_status tool to refresh item states and the remaining submission/time budget.',
+    ) +
+    section('FILES WRITTEN OR EDITED', files.join('\n')) +
+    section('RECENT WORK', replies.join('\n')) +
+    section('RECENT TOOL RESULTS', results.join('\n')) +
+    section(
+      'NEXT STEP',
+      'Continue from RECENT WORK and TASK STATE; re-check task_status before spending capped actions.' +
+        (request ? ` The latest request follows:\n${clip(textOf(request.content), 4_000)}` : ''),
+    )
+  );
+}
 interface NativeState {
   version: 1;
   binding?: string;
@@ -296,6 +394,12 @@ interface NativeState {
   pending: ToolCall[];
   emitted: NativeUsage;
   blocked?: string;
+  /** Real prompt size of the last completed native request, from its receipt usage. */
+  observedPrompt?: number;
+  /** Smallest context window any native receipt has reported for this login. */
+  nativeWindow?: number;
+  /** Smallest output cap any native receipt has reported for this login. */
+  nativeMaxOutput?: number;
 }
 export type ClaudeCodeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -363,6 +467,7 @@ export class ClaudeCodeSession implements NativeChatControls {
   private active?: Completion;
   private failure?: string;
   private retryUser?: string;
+  private compactionMessage?: string;
   private toolResultDelivered = false;
   private waiting: { socket: Socket; name: string; args: unknown }[] = [];
   private delivered = new Set<string>();
@@ -396,6 +501,9 @@ export class ClaudeCodeSession implements NativeChatControls {
         this.state = saved as unknown as NativeState;
         for (const key of usageKeys)
           if (!isCount(this.state.emitted[key])) throw new Error('Invalid native usage checkpoint');
+        for (const key of ['observedPrompt', 'nativeWindow', 'nativeMaxOutput'] as const)
+          if (this.state[key] !== undefined && (!isCount(this.state[key]) || !this.state[key]))
+            throw new Error('Invalid native session limits');
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
@@ -436,6 +544,8 @@ export class ClaudeCodeSession implements NativeChatControls {
       pending: [],
       emitted: emptyUsage(),
       ...(this.state.lastUser ? { lastUser: this.state.lastUser } : {}),
+      ...(this.state.nativeWindow ? { nativeWindow: this.state.nativeWindow } : {}),
+      ...(this.state.nativeMaxOutput ? { nativeMaxOutput: this.state.nativeMaxOutput } : {}),
     };
     this.failure = undefined;
     this.retryUser = undefined;
@@ -503,14 +613,18 @@ export class ClaudeCodeSession implements NativeChatControls {
         : error instanceof Error
           ? error.message
           : 'Invalid native protocol';
-    if (!(error instanceof NativeEmptyResponseError))
+    if (!(error instanceof NativeEmptyResponseError) && !(error instanceof NativeContextOverflowError))
       this.state.blocked =
         'Native protocol failed verification; review the OMS transcript, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view; task files and verification are retained';
     this.save();
     this.handshake?.reject(new Error(this.failure));
     if (this.active) {
       this.active.failed = true;
-      this.active.reject(error instanceof NativeEmptyResponseError ? error : new Error(this.failure));
+      this.active.reject(
+        error instanceof NativeEmptyResponseError || error instanceof NativeContextOverflowError
+          ? error
+          : new Error(this.failure),
+      );
     }
     this.kill('SIGTERM');
     // Reap the whole native/MCP process group even when a protocol peer stalls.
@@ -527,6 +641,39 @@ export class ClaudeCodeSession implements NativeChatControls {
       ) &&
       this.state.pending.every((call) => this.delivered.has(call.id))
     );
+  }
+  /** The window this login effectively gets: the subscription bound lowered by any smaller
+   * limit the native receipts have reported. Never raised back up by a larger receipt. */
+  private windowFor(model: Model<Api>): number {
+    return Math.min(model.contextWindow, this.state.nativeWindow ?? model.contextWindow);
+  }
+  private outputFor(model: Model<Api>): number {
+    return Math.min(model.maxTokens, this.state.nativeMaxOutput ?? model.maxTokens);
+  }
+  /** Replace the native conversation with a fresh session seeded by an OMS-written summary
+   * of the OMS transcript (which keeps every turn). The next send carries the summary in
+   * place of the bare user message; native tool batches are not replayable, so their real
+   * OMS results are carried inside the summary instead. */
+  private async beginCompaction(messages: readonly unknown[]): Promise<void> {
+    const summary = compactionSummary(messages);
+    await this.disconnect();
+    this.state.sessionId = randomUUID();
+    this.state.started = false;
+    this.state.pending = [];
+    this.state.emitted = emptyUsage();
+    this.state.lastUser = undefined;
+    this.state.observedPrompt = undefined;
+    this.retryUser = undefined;
+    this.toolResultDelivered = false;
+    this.compactionMessage = summary;
+    this.save();
+  }
+  /** Compact before the next prompt when the last observed native prompt (plus the new
+   * content) reached the share of the effective window that leaves room for the reply.
+   * Before the first receipt, the OMS transcript byte estimate stands in for the real count. */
+  private shouldCompact(messages: readonly unknown[], added: readonly unknown[], model: Model<Api>): boolean {
+    const observed = this.state.observedPrompt ?? Math.ceil(byteSize(messages) / BYTES_PER_TOKEN);
+    return observed + Math.ceil(byteSize(added) / BYTES_PER_TOKEN) >= this.windowFor(model) * CLAUDE_CODE_COMPACT_AT;
   }
   private async start(signal?: AbortSignal): Promise<void> {
     if (this.child) return;
@@ -745,8 +892,8 @@ export class ClaudeCodeSession implements NativeChatControls {
     Object.assign(current.message.usage, usage);
     current.message.usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
     if (
-      usage.output > current.model.maxTokens ||
-      usage.input + usage.cacheRead + usage.cacheWrite > current.model.contextWindow
+      usage.output > this.outputFor(current.model) ||
+      usage.input + usage.cacheRead + usage.cacheWrite > this.windowFor(current.model)
     )
       throw new Error('Native usage exceeds the admitted model limits');
     calculateCost(current.model, current.message.usage);
@@ -922,9 +1069,11 @@ export class ClaudeCodeSession implements NativeChatControls {
     }
     if (event.type === 'result') {
       const current = this.active;
+      const receiptText = JSON.stringify([event.errors, event.error, event.result]);
+      if (PROMPT_TOO_LONG.test(receiptText)) throw new NativeContextOverflowError('Native prompt is too long');
       if (current && event.is_error === true && event.subtype === 'error_during_execution' && this.emptyResponse()) {
         const usage = nativeUsage(event.usage);
-        const reason = JSON.stringify([event.errors, event.error, event.result]);
+        const reason = receiptText;
         if (
           (usageKeys.every((key) => usage[key] === 0) ||
             usageKeys.every((key) => usage[key] === this.state.emitted[key])) &&
@@ -952,12 +1101,18 @@ export class ClaudeCodeSession implements NativeChatControls {
         model.provider !== 'firstParty' ||
         !isCount(model.contextWindow) ||
         !model.contextWindow ||
-        model.contextWindow > current.model.contextWindow ||
         !isCount(model.maxOutputTokens) ||
-        !model.maxOutputTokens ||
-        model.maxOutputTokens > current.model.maxTokens
+        !model.maxOutputTokens
       )
         throw new Error('Native model limits changed');
+      // A smaller limit the native receipt reports is the effective one for this login and
+      // is adopted session-wide; a larger one is catalog knowledge, not this login's limit.
+      if (model.contextWindow < (this.state.nativeWindow ?? Infinity)) {
+        this.state.nativeWindow = model.contextWindow;
+      }
+      if (model.maxOutputTokens < (this.state.nativeMaxOutput ?? Infinity)) {
+        this.state.nativeMaxOutput = model.maxOutputTokens;
+      }
       const aggregate = nativeUsage(event.usage),
         response = nativeUsage(current.rawUsage);
       for (const key of usageKeys)
@@ -971,6 +1126,9 @@ export class ClaudeCodeSession implements NativeChatControls {
       if (!current.message.content.length) throw new Error('Incomplete or duplicate native response');
       this.state.pending = [];
       this.state.emitted = emptyUsage();
+      // The real prompt size this request carried, cache reads included: the baseline the
+      // next compaction decision grows from.
+      this.state.observedPrompt = response.input + response.cacheRead + response.cacheWrite;
       this.save();
       this.finish(response, current.stop === 'max_tokens' ? 'length' : 'stop');
     }
@@ -995,147 +1153,197 @@ export class ClaudeCodeSession implements NativeChatControls {
       },
     };
     void (async () => {
-      let abort: (() => void) | undefined;
-      let timer: NodeJS.Timeout | undefined;
-      let requestFinished = false;
-      try {
-        options?.signal?.throwIfAborted();
-        this.options.signal?.throwIfAborted();
-        if (this.active) throw new Error('Native conversation is already active');
-        if (
-          model.provider !== CLAUDE_CODE_PROVIDER ||
-          model.api !== CLAUDE_CODE_PROVIDER ||
-          model.baseUrl !== CLAUDE_CODE_BASE_URL ||
-          !Object.hasOwn(NATIVE_MODELS, model.id)
-        )
-          throw new Error('Unsupported Claude Code model');
-        const effort = claudeCodeEffort(this.options.effort);
-        const key = hash({
-          model: model.id,
-          effort,
-          prompt: getCurrentSystemPrompt(context.messages),
-          tools: getCurrentTools(context.messages),
-        });
-        if (this.configurationKey && this.configurationKey !== key) await this.disconnect();
-        this.configuration = {
-          model,
-          context,
-          maxTokens: Math.min(options?.maxTokens ?? model.maxTokens, model.maxTokens),
-          effort,
-        };
-        this.configurationKey = key;
-        // Cancellation covers native startup/auth as well as model streaming.
-        abort = () => {
-          if (requestFinished) return;
-          this.handshake?.reject(new Error('Native startup cancelled'));
-          this.active?.reject(new Error('Native turn cancelled'));
-          this.kill('SIGTERM');
-        };
-        options?.signal?.addEventListener('abort', abort, { once: true });
-        // Start/resume never silently substitutes a new native identity.
-        await this.start(options?.signal);
-        options?.signal?.throwIfAborted();
-        const pending = this.state.pending;
-        const user = context.messages.findLast((item) => item.role === 'user');
-        const userKey = user ? hash(user) : undefined;
-        await options?.onPayload?.(
-          { model: model.id, effort, nativeSessionId: this.state.sessionId, continuation: pending.length > 0 },
-          model,
-        );
-        const completion = new Promise<void>((resolve, reject) => {
-          this.active = {
-            model,
-            message,
-            output,
-            resolve: () => {
-              requestFinished = true;
-              resolve();
-            },
-            reject,
-            onEvent: () => {
-              timer?.refresh();
-            },
-            stopped: false,
-            settled: false,
-            finishing: false,
-            failed: false,
-            blocks: new Map(),
-          };
-        });
-        void completion.catch(() => {});
-        timer = setTimeout(() => {
-          if (this.emptyResponse()) {
-            this.active?.reject(new NativeEmptyResponseError('Native turn timed out without a response'));
-            this.kill('SIGTERM');
-          } else abort?.();
-        }, options?.timeoutMs || 120_000);
-        output.push({ type: 'start', partial: message });
-        if (pending.length) {
-          if (userKey !== this.state.lastUser)
-            throw new Error('Wait for the native tool batch to finish before sending another user message');
-          for (const call of pending) {
-            const result = context.messages.findLast(
-              (item) => item.role === 'toolResult' && item.toolCallId === call.id,
-            );
-            if (!result || result.role !== 'toolResult')
-              throw new Error('Missing real Pi tool result; native inference remains paused');
-            if (result.content.some((block) => block.type !== 'text'))
-              throw new Error('Native tool results currently support text only');
-            this.results.set(call.id, { content: result.content, isError: result.isError });
-          }
-          this.flushResults();
-          // Native owns the exact tool_result history; do not send a duplicate user message.
-        } else {
-          if (!user || user.role !== 'user' || (userKey === this.state.lastUser && userKey !== this.retryUser))
-            throw new Error('No new user message for the native chat');
-          if (typeof user.content !== 'string' && user.content.some((block) => block.type !== 'text'))
-            throw new Error('Native chat currently supports text only');
-          const retrying = userKey === this.retryUser;
-          if (!retrying) this.toolResultDelivered = false;
-          this.state.lastUser = userKey;
-          this.retryUser = undefined;
-          this.state.emitted = emptyUsage();
-          this.save();
-          this.child!.stdin.write(
-            JSON.stringify({
-              type: 'user',
-              message: {
-                role: 'user',
-                content: retrying && this.toolResultDelivered ? CLAUDE_CODE_EMPTY_CONTINUATION : user.content,
-              },
-              parent_tool_use_id: null,
-              session_id: this.state.sessionId,
-            }) + '\n',
-          );
-        }
-        await completion;
-      } catch (error) {
-        this.failure = error instanceof Error ? error.message : 'Native transport failed';
-        this.initialized = false;
-        this.transportReady = false;
-        message.stopReason = options?.signal?.aborted || this.options.signal?.aborted ? 'aborted' : 'error';
-        if (error instanceof NativeEmptyResponseError && message.stopReason === 'error' && !this.state.blocked) {
-          message.rawStopReason = CLAUDE_CODE_EMPTY_RESPONSE;
-          this.retryUser = this.state.lastUser;
-          // Delivered tool results remain in the native session; retry with a continuation after any delivery.
-          this.state.pending = [];
-          this.state.emitted = emptyUsage();
-          this.save();
-        }
-        message.errorMessage = `Claude Code native chat stopped: ${this.failure}. No API-key fallback was used.`;
-        // Error completion is not visible until the owned CLI/MCP process group
-        // has exited, including the bounded SIGKILL escalation in stop().
+      for (let compacted = 0; ; compacted++) {
+        let abort: (() => void) | undefined;
+        let timer: NodeJS.Timeout | undefined;
+        let requestFinished = false;
         try {
-          await this.disconnect();
-        } catch {
-          message.errorMessage += ' Native cleanup could not be verified; close OMS before continuing.';
+          options?.signal?.throwIfAborted();
+          this.options.signal?.throwIfAborted();
+          if (this.active) throw new Error('Native conversation is already active');
+          if (
+            model.provider !== CLAUDE_CODE_PROVIDER ||
+            model.api !== CLAUDE_CODE_PROVIDER ||
+            model.baseUrl !== CLAUDE_CODE_BASE_URL ||
+            !Object.hasOwn(NATIVE_MODELS, model.id)
+          )
+            throw new Error('Unsupported Claude Code model');
+          const effort = claudeCodeEffort(this.options.effort);
+          const key = hash({
+            model: model.id,
+            effort,
+            prompt: getCurrentSystemPrompt(context.messages),
+            tools: getCurrentTools(context.messages),
+          });
+          if (this.configurationKey && this.configurationKey !== key) await this.disconnect();
+          this.configuration = {
+            model,
+            context,
+            maxTokens: Math.min(options?.maxTokens ?? model.maxTokens, model.maxTokens),
+            effort,
+          };
+          this.configurationKey = key;
+          // Cancellation covers native startup/auth as well as model streaming.
+          abort = () => {
+            if (requestFinished) return;
+            this.handshake?.reject(new Error('Native startup cancelled'));
+            this.active?.reject(new Error('Native turn cancelled'));
+            this.kill('SIGTERM');
+          };
+          options?.signal?.addEventListener('abort', abort, { once: true });
+          const user = context.messages.findLast((item) => item.role === 'user');
+          const userKey = user ? hash(user) : undefined;
+          // A nearly-full native window gets a compacted session before the next prompt.
+          if (
+            this.compactionMessage === undefined &&
+            this.state.started &&
+            this.shouldCompact(
+              context.messages,
+              this.state.pending.length
+                ? context.messages.filter(
+                    (item) =>
+                      item.role === 'toolResult' && this.state.pending.some((call) => call.id === item.toolCallId),
+                  )
+                : user
+                  ? [user]
+                  : [],
+              model,
+            )
+          )
+            await this.beginCompaction(context.messages);
+          // Start/resume never silently substitutes a new native identity.
+          await this.start(options?.signal);
+          options?.signal?.throwIfAborted();
+          const pending = this.state.pending;
+          if (compacted === 0)
+            await options?.onPayload?.(
+              { model: model.id, effort, nativeSessionId: this.state.sessionId, continuation: pending.length > 0 },
+              model,
+            );
+          const completion = new Promise<void>((resolve, reject) => {
+            this.active = {
+              model,
+              message,
+              output,
+              resolve: () => {
+                requestFinished = true;
+                resolve();
+              },
+              reject,
+              onEvent: () => {
+                timer?.refresh();
+              },
+              stopped: false,
+              settled: false,
+              finishing: false,
+              failed: false,
+              blocks: new Map(),
+            };
+          });
+          void completion.catch(() => {});
+          timer = setTimeout(() => {
+            if (this.emptyResponse()) {
+              this.active?.reject(new NativeEmptyResponseError('Native turn timed out without a response'));
+              this.kill('SIGTERM');
+            } else abort?.();
+          }, options?.timeoutMs || 120_000);
+          if (compacted === 0) output.push({ type: 'start', partial: message });
+          if (pending.length) {
+            if (userKey !== this.state.lastUser)
+              throw new Error('Wait for the native tool batch to finish before sending another user message');
+            for (const call of pending) {
+              const result = context.messages.findLast(
+                (item) => item.role === 'toolResult' && item.toolCallId === call.id,
+              );
+              if (!result || result.role !== 'toolResult')
+                throw new Error('Missing real Pi tool result; native inference remains paused');
+              if (result.content.some((block) => block.type !== 'text'))
+                throw new Error('Native tool results currently support text only');
+              this.results.set(call.id, { content: result.content, isError: result.isError });
+            }
+            this.flushResults();
+            // Native owns the exact tool_result history; do not send a duplicate user message.
+          } else {
+            if (!user || user.role !== 'user' || (userKey === this.state.lastUser && userKey !== this.retryUser))
+              throw new Error('No new user message for the native chat');
+            if (typeof user.content !== 'string' && user.content.some((block) => block.type !== 'text'))
+              throw new Error('Native chat currently supports text only');
+            const retrying = userKey === this.retryUser;
+            if (!retrying) this.toolResultDelivered = false;
+            this.state.lastUser = userKey;
+            this.retryUser = undefined;
+            this.state.emitted = emptyUsage();
+            this.save();
+            const compactedUser = this.compactionMessage;
+            this.compactionMessage = undefined;
+            this.child!.stdin.write(
+              JSON.stringify({
+                type: 'user',
+                message: {
+                  role: 'user',
+                  content:
+                    compactedUser ??
+                    (retrying && this.toolResultDelivered ? CLAUDE_CODE_EMPTY_CONTINUATION : user.content),
+                },
+                parent_tool_use_id: null,
+                session_id: this.state.sessionId,
+              }) + '\n',
+            );
+          }
+          await completion;
+          return;
+        } catch (error) {
+          // A "Prompt is too long" receipt is a context overflow, not a protocol failure:
+          // compact into a fresh session and resend, at most CLAUDE_CODE_MAX_COMPACTIONS times.
+          if (
+            error instanceof NativeContextOverflowError &&
+            compacted < CLAUDE_CODE_MAX_COMPACTIONS &&
+            !options?.signal?.aborted &&
+            !this.options.signal?.aborted
+          ) {
+            message.content = [];
+            Object.assign(message.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
+            message.timestamp = Date.now();
+            try {
+              await this.beginCompaction(context.messages);
+              continue;
+            } catch {
+              /* the compaction itself could not be prepared; report the overflow below */
+            }
+          }
+          this.failure = error instanceof Error ? error.message : 'Native transport failed';
+          this.initialized = false;
+          this.transportReady = false;
+          message.stopReason = options?.signal?.aborted || this.options.signal?.aborted ? 'aborted' : 'error';
+          if (error instanceof NativeEmptyResponseError && message.stopReason === 'error' && !this.state.blocked) {
+            message.rawStopReason = CLAUDE_CODE_EMPTY_RESPONSE;
+            this.retryUser = this.state.lastUser;
+            // Delivered tool results remain in the native session; retry with a continuation after any delivery.
+            this.state.pending = [];
+            this.state.emitted = emptyUsage();
+            this.save();
+          }
+          if (error instanceof NativeContextOverflowError && message.stopReason === 'error')
+            message.rawStopReason = CLAUDE_CODE_CONTEXT_OVERFLOW;
+          message.errorMessage =
+            error instanceof NativeContextOverflowError
+              ? `Claude Code ran out of context window: OMS compacted the native session and resent the request ${CLAUDE_CODE_MAX_COMPACTIONS} times and it still did not fit. No API-key fallback was used. Start a new chat or /clear the native session to continue.`
+              : `Claude Code native chat stopped: ${this.failure}. No API-key fallback was used.`;
+          // Error completion is not visible until the owned CLI/MCP process group
+          // has exited, including the bounded SIGKILL escalation in stop().
+          try {
+            await this.disconnect();
+          } catch {
+            message.errorMessage += ' Native cleanup could not be verified; close OMS before continuing.';
+          }
+          output.push({ type: 'error', reason: message.stopReason, error: message });
+          output.end();
+          return;
+        } finally {
+          clearTimeout(timer);
+          if (abort) options?.signal?.removeEventListener('abort', abort);
+          if (this.active?.message === message) this.active = undefined;
         }
-        output.push({ type: 'error', reason: message.stopReason, error: message });
-        output.end();
-      } finally {
-        clearTimeout(timer);
-        if (abort) options?.signal?.removeEventListener('abort', abort);
-        if (this.active?.message === message) this.active = undefined;
       }
     })();
     return output;
@@ -1152,6 +1360,15 @@ export async function createClaudeCodeProvider(
   options?: ClaudeCodeSessionOptions,
 ): Promise<ClaudeCodeSession> {
   await inspectClaudeCode();
+  // Test-only overrides for the subscription limits (forced-low compaction checks).
+  const forcedWindow = process.env.OMS_CLAUDE_CODE_CONTEXT_WINDOW;
+  const forcedOutput = process.env.OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+  for (const [name, value] of [
+    ['OMS_CLAUDE_CODE_CONTEXT_WINDOW', forcedWindow],
+    ['OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS', forcedOutput],
+  ])
+    if (value !== undefined && (!isCount(Number(value)) || !Number(value)))
+      throw new Error(`${name} must be a positive token count`);
   const models = (Object.entries(NATIVE_MODELS) as [NativeAlias, string][]).flatMap(([alias, id]) => {
     const original = runtime.getModel('anthropic', id);
     return original
@@ -1163,6 +1380,8 @@ export async function createClaudeCodeProvider(
             provider: CLAUDE_CODE_PROVIDER,
             api: CLAUDE_CODE_PROVIDER,
             baseUrl: CLAUDE_CODE_BASE_URL,
+            contextWindow: forcedWindow === undefined ? CLAUDE_CODE_SUBSCRIPTION_WINDOW : Number(forcedWindow),
+            maxTokens: forcedOutput === undefined ? original.maxTokens : Number(forcedOutput),
             input: ['text'] as 'text'[],
             reasoning: false,
           },

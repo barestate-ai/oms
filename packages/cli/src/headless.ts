@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  CLAUDE_CODE_CONTEXT_OVERFLOW,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
   modelReadiness,
@@ -186,6 +187,14 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         const before = JSON.stringify(items);
         await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         observe();
+        const last = [...current.session.messages].reverse().find((message) => message.role === 'assistant') as
+          { rawStopReason?: string } | undefined;
+        if (last?.rawStopReason === CLAUDE_CODE_CONTEXT_OVERFLOW) {
+          status = 'capped';
+          cap = 'tokens';
+          reason = 'context-overflow';
+          break;
+        }
         // A narration-only response is not a completion proof, nor a reason to spend indefinitely.
         if (
           JSON.stringify(itemStates(current)) === before &&
