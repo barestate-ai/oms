@@ -2240,6 +2240,11 @@ export async function runOmsInterface(
         if (event.type === 'message_end' && event.message.role === 'assistant') {
           completedTokens += event.message.usage?.output ?? 0;
           streamingTokens = 0;
+          if (event.message.stopReason === 'length')
+            conversation.note(
+              'Answer cut off',
+              'The reply hit its output limit and may be incomplete. Ask it to continue.',
+            );
         }
         if (
           event.type === 'tool_execution_end' &&

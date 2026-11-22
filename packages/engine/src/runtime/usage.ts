@@ -41,6 +41,7 @@ import {
   describeRejection,
   describeTransient,
   isRejectionStatus,
+  nativeRefusalText,
   providerName,
 } from './provider-rejection.ts';
 import {
@@ -629,6 +630,25 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               return;
             }
             if (!isClaudeCodeModel(model) && event.reason !== 'aborted' && interrupted(errorMessage)) return;
+            // A native refusal with no content and no usage proves the provider did no billable
+            // work ('prompt is too long', auth, quota): release the reservation and show its reason.
+            if (isClaudeCodeModel(model) && event.reason !== 'aborted' && !controller.signal.aborted) {
+              const refusal = nativeRefusalText(event.error);
+              if (refusal !== undefined) {
+                const released = config.ledger.settle({
+                  dispatchId: id,
+                  receiptId: randomUUID(),
+                  outcome: 'not_dispatched',
+                  tokens: 0,
+                  spendMicroUsd: 0,
+                });
+                if (released.ok) {
+                  settled = true;
+                  failed(refusal);
+                  return;
+                }
+              }
+            }
             uncertain();
             failed(describeFailure(model.provider), event.reason === 'aborted');
             return;

@@ -70,7 +70,32 @@ export function describeFailure(provider: string): string {
   return `${providerName(provider)}'s answer broke off before it finished. It is counted at its maximum cost. Send your message again to continue.`;
 }
 
-function plain(text: string | undefined): string {
+/**
+ * The native Claude Code transport reports refusals as stream errors, never HTTP statuses. When the message carried no
+ * content and no usage, refusal words in its bounded error text mean the provider did no billable work: the request can
+ * be released as not dispatched. 'limit' alone is too ambiguous (it appears in partial-answer failures); only refusal
+ * words that say the request never ran count.
+ */
+const REFUSAL =
+  /too long|overflow|context window|context length|rate.?limit|too many requests|auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|quota|billing|payment|credit|unauthorized|forbidden|\b(?:401|403)\b/i;
+
+export function nativeRefusalText(message: {
+  content?: unknown[];
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  errorMessage?: string;
+}): string | undefined {
+  if (message.content?.length) return undefined;
+  const usage = message.usage;
+  if (usage && (usage.input! + usage.output! + usage.cacheRead! + usage.cacheWrite!) !== 0) return undefined;
+  // The boilerplate wrapper claude-code.ts adds would itself trip the refusal words ('API-key').
+  const inner = (message.errorMessage ?? '')
+    .replace(/^Claude Code native chat stopped:/i, '')
+    .replace(/No API-key fallback was used\.?/i, '');
+  const text = plain(inner);
+  return REFUSAL.test(text) ? text : undefined;
+}
+
+export function plain(text: string | undefined): string {
   return (
     (text ?? '')
       .replace(KEY_LIKE, '[key]')

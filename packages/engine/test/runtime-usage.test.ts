@@ -250,6 +250,112 @@ test('native Claude missing usage or cancellation retains the full token reserva
   }
 });
 
+test('native Claude refusal with no output releases the reservation and shows the provider reason', async () => {
+  const ledger = createBudgetLedger({ caps, clock: Date.now, persist() {} });
+  let calls = 0;
+  const stream = createMeteredStream({
+    ledger,
+    allocate: createDispatchAllocator(),
+    maxOutputTokens: 5,
+    logicalTurnId: () => 'native-refusal',
+    streamFunction: (selected) => {
+      calls++;
+      const source = createAssistantMessageEventStream();
+      if (calls === 1) {
+        source.push({
+          type: 'error',
+          reason: 'error',
+          error: {
+            ...message(),
+            api: selected.api,
+            provider: selected.provider,
+            model: selected.id,
+            content: [],
+            stopReason: 'error',
+            errorMessage:
+              'Claude Code native chat stopped: Prompt is too long. No API-key fallback was used.',
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        });
+        source.end();
+      } else {
+        const result = {
+          ...message(),
+          api: selected.api,
+          provider: selected.provider,
+          model: selected.id,
+        };
+        source.push({ type: 'start', partial: result });
+        source.push({ type: 'done', reason: 'stop', message: result });
+        source.end();
+      }
+      return source;
+    },
+  });
+  const result = (await consume(stream, nativeClaude)).result;
+  assert.equal(result.stopReason, 'error');
+  assert.match(result.errorMessage!, /too long/);
+  assert.equal(ledger.snapshot().accounting, 'known');
+  assert.equal(ledger.snapshot().used.tokens, 0);
+  const retry = (await consume(stream, nativeClaude)).result;
+  assert.equal(retry.stopReason, 'stop');
+  assert.equal(calls, 2);
+});
+
+test('native Claude failure after streamed output or without refusal words stays unknown', async () => {
+  for (const variant of ['content', 'generic'] as const) {
+    const ledger = createBudgetLedger({ caps, clock: Date.now, persist() {} });
+    let calls = 0;
+    const stream = createMeteredStream({
+      ledger,
+      allocate: createDispatchAllocator(),
+      maxOutputTokens: 5,
+      logicalTurnId: () => `native-failure-${variant}`,
+      streamFunction: (selected) => {
+        calls++;
+        const source = createAssistantMessageEventStream();
+        const error: AssistantMessage = {
+          ...message(),
+          api: selected.api,
+          provider: selected.provider,
+          model: selected.id,
+          content: variant === 'content' ? message().content : [],
+          stopReason: 'error',
+          errorMessage:
+            variant === 'content'
+              ? 'Claude Code native chat stopped: rate limit reached mid-answer. No API-key fallback was used.'
+              : 'Claude Code native chat stopped: Unexpected or failed native receipt. No API-key fallback was used.',
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        };
+        source.push({ type: 'error', reason: 'error', error });
+        source.end();
+        return source;
+      },
+    });
+    const result = (await consume(stream, nativeClaude)).result;
+    assert.equal(result.stopReason, 'error');
+    assert.match(result.errorMessage!, /broke off/);
+    assert.equal(ledger.snapshot().accounting, 'unknown');
+    assert.equal(ledger.snapshot().used.tokens, 1_100);
+    await consume(stream, nativeClaude);
+    assert.equal(calls, 1);
+  }
+});
+
 test('custom native Claude identities never gain the subscription transport exemption', async () => {
   const f = fixture();
   for (const candidate of [
