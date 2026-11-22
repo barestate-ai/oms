@@ -48,12 +48,14 @@ class NativeLimitError extends NativeRefusalError {
 /** Native receipts that report the Claude plan's usage limit rather than a transport failure. */
 const NATIVE_LIMIT_REASON =
   /usage.?limit|rate.?limit|hit (?:the |your )?limit|limit reached|quota|billing|payment|credit|insufficient|too many requests|\b429\b/i;
-/** Native receipts that report a missing, expired or rejected Claude subscription sign-in. */
+/** Native receipts carrying a real sign-in signal: a status code, an auth word or a login phrase — not prose like "account". */
 const NATIVE_AUTH_REASON =
-  /auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|account|\b(?:401|403|unauthorized|forbidden)\b/i;
-/** Every sign-in or limit-shaped reason; kept identical to what empty-response admission already excluded. */
-const NATIVE_ACCOUNT_REASON =
-  /auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|limit|quota|billing|payment|credit|account|\b(?:401|403|unauthorized|forbidden)\b/i;
+  /auth|log(?:ged)?.?in|sign.?in|api.?key|subscription|\b(?:401|403|unauthorized|forbidden)\b/i;
+/** Every sign-in or limit-shaped reason: the union of the classifiers plus the broad terms the empty-retry gate already excluded. */
+const NATIVE_ACCOUNT_REASON = new RegExp(
+  `${NATIVE_LIMIT_REASON.source}|${NATIVE_AUTH_REASON.source}|limit|account|credential`,
+  'i',
+);
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;

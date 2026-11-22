@@ -72,8 +72,9 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(mode==='exit-empty'){process.stdout.write('',()=>process.exit(1));return;}
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
- if(authError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'){
-  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:[]});return;
+ const refusalError={'limit-429':'API Error: 429','insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
+ if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'){
+  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:refusalError?[refusalError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:[]});return;
  }
  if(mode==='empty-after-tool'){
   if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:[]});}
@@ -205,6 +206,8 @@ for (const mode of [
   'auth-failure',
   'usage-limit',
   'usage-limit-reset',
+  'limit-429',
+  'insufficient-quota',
   'auth-401',
   'auth-403',
   'auth-403-forbidden',
@@ -221,7 +224,7 @@ for (const mode of [
         assert.equal(rows(join(directory, 'input')).length, 1);
         assert.equal(ledger.reservations().length, 1);
         assert.equal(ledger.snapshot().accounting, 'unknown');
-        if (mode === 'usage-limit' || mode === 'usage-limit-reset')
+        if (['usage-limit', 'usage-limit-reset', 'limit-429', 'insufficient-quota'].includes(mode))
           assert.match(response.errorMessage!, /Claude Code's usage limit was reached/);
         else assert.match(response.errorMessage!, /Claude subscription sign-in is no longer valid/);
         if (mode === 'usage-limit-reset') assert.match(response.errorMessage!, /It resets at 3:00 PM \(UTC\)\./);
@@ -230,6 +233,22 @@ for (const mode of [
         await native.close();
       }
     }));
+
+test('a transient receipt whose text only mentions an account stays a generic failure', async (t) =>
+  toolFreeFixture(t, 'account-network', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(rows(join(directory, 'input')).length, 1);
+      assert.equal(ledger.snapshot().accounting, 'unknown');
+      assert.match(response.errorMessage!, /broke off/);
+      assert.ok(!/sign-in|usage limit/i.test(response.errorMessage!));
+    } finally {
+      await native.close();
+    }
+  }));
 
 test('an unconfigured Claude sign-in names re-authentication and releases the reservation', async (t) =>
   toolFreeFixture(t, 'api-auth', async (directory) => {
