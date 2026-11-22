@@ -20,6 +20,7 @@ import {
   type Provider,
   type StreamOptions,
   type TranscriptContext,
+  type TranscriptMessages,
   type ToolCall,
 } from '@earendil-works/pi-ai';
 
@@ -44,7 +45,7 @@ const CLAUDE_CODE_COMPACT_AT = 0.8;
 /** Compaction resends after a "Prompt is too long" receipt before the turn fails as context overflow. */
 const CLAUDE_CODE_MAX_COMPACTIONS = 2;
 const PROMPT_TOO_LONG = /\bprompt is too long\b/i;
-const PROMPT_TOO_LONG_ONLY = /^\s*prompt is too long\s*$/i;
+const PROMPT_TOO_LONG_ONLY = /^\s*prompt is too long[\s.!?…]*$/i;
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;
@@ -343,6 +344,7 @@ function compactionSummary(messages: readonly unknown[], pendingCalls: readonly 
   const section = (title: string, body: string) => `\n\n## ${title}\n${body.trim() || 'none recorded'}`;
   const task = clip(textOf(items.find((m) => m.role === 'user')?.content), budget(4_000));
   const status = items.findLast((m) => m.role === 'toolResult' && m.toolName === 'task_status');
+  const hasTaskStatus = getCurrentTools(messages as TranscriptMessages).some((tool) => tool.name === 'task_status');
   const files = [
     ...new Set(
       items.flatMap((m) =>
@@ -381,7 +383,9 @@ function compactionSummary(messages: readonly unknown[], pendingCalls: readonly 
       'TASK STATE',
       status
         ? clip(textOf(status.content), budget(4_000))
-        : 'No task_status snapshot yet — call the task_status tool to refresh item states and the remaining submission/time budget.',
+        : hasTaskStatus
+          ? 'No task_status snapshot yet — call the task_status tool to refresh item states and the remaining submission/time budget.'
+          : 'No task status snapshot recorded.',
     ) +
     section('FILES WRITTEN OR EDITED', files.join('\n')) +
     section(
@@ -398,7 +402,8 @@ function compactionSummary(messages: readonly unknown[], pendingCalls: readonly 
     section('RECENT TOOL RESULTS', results.join('\n')) +
     section(
       'NEXT STEP',
-      'Continue from RECENT WORK and TASK STATE; re-check task_status before spending capped actions.' +
+      'Continue from RECENT WORK and TASK STATE' +
+        (hasTaskStatus ? '; re-check task_status before spending capped actions.' : '.') +
         (pending.length
           ? ' A PENDING TOOL RESULT ending in "chars cut" was shortened to fit; re-issue that exact call to fetch the rest if it is safe to repeat.'
           : '') +
@@ -1348,6 +1353,9 @@ export class ClaudeCodeSession implements NativeChatControls {
           this.failure = error instanceof Error ? error.message : 'Native transport failed';
           this.initialized = false;
           this.transportReady = false;
+          // A prepared summary is consumed by the send that follows start(); when that send
+          // never happens, it must not replace the user's next prompt.
+          this.compactionMessage = undefined;
           message.stopReason = options?.signal?.aborted || this.options.signal?.aborted ? 'aborted' : 'error';
           if (error instanceof NativeEmptyResponseError && message.stopReason === 'error' && !this.state.blocked) {
             message.rawStopReason = CLAUDE_CODE_EMPTY_RESPONSE;

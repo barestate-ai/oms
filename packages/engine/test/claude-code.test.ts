@@ -39,7 +39,7 @@ async function fixture(mode: string, run: (directory: string) => Promise<void>) 
 import{appendFileSync,existsSync,readFileSync,writeFileSync}from'node:fs';
 import{spawn}from'node:child_process';import{createInterface}from'node:readline';
 const mode=${JSON.stringify(mode)},root=${JSON.stringify(directory)},args=process.argv.slice(2),get=k=>args[args.indexOf(k)+1];
-if(args[0]==='auth'){console.log(JSON.stringify({loggedIn:true,authMethod:mode==='api-auth'?'api_key':'claude.ai',apiProvider:'firstParty'}));process.exit(0);}
+if(args[0]==='auth'){if(mode.includes('auth-fails-once-after-input')&&existsSync(root+'/input')&&!existsSync(root+'/auth-failed')){writeFileSync(root+'/auth-failed','1');process.exit(1);}console.log(JSON.stringify({loggedIn:true,authMethod:mode==='api-auth'?'api_key':'claude.ai',apiProvider:'firstParty'}));process.exit(0);}
 const id=get(args.includes('--resume')?'--resume':'--session-id');appendFileSync(root+'/launch',JSON.stringify({args,pid:process.pid})+'\\n');
 const file=root+'/'+id+'.json';if(args.includes('--resume')&&!existsSync(file))process.exit(1);
 const history=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):[],decl=JSON.parse(get('--mcp-config')).mcpServers.oms;
@@ -65,7 +65,7 @@ function assistant(block,stop='end_turn'){
 function receipt(mult){const u={input_tokens:promptInput()*mult,output_tokens:10*mult,cache_read_input_tokens:30*mult,cache_creation_input_tokens:40*mult,cache_creation:{ephemeral_1h_input_tokens:40*mult}};
  if(emptySuccess()){for(const key of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'])u[key]=0;u.cache_creation.ephemeral_1h_input_tokens=0;}
  if(mode==='larger')u.input_tokens++;if(mode==='smaller')u.input_tokens--;
- const r=mode==='synthetic-overflow'||mode==='synthetic-once'&&!String(history.at(-1)).includes('compacted by OMS')?'Prompt is too long':mode==='quotes-phrase'?'Explaining when the Prompt is too long error appears':undefined;
+ const r=mode==='synthetic-overflow'||mode==='synthetic-once'&&!String(history.at(-1)).includes('compacted by OMS')?'Prompt is too long':mode==='synthetic-period'?'Prompt is too long.':mode==='quotes-phrase'?'Explaining when the Prompt is too long error appears':undefined;
  const x={type:'result',subtype:'success',is_error:false,usage:u,result:r,modelUsage:{'claude-haiku-5-5':{provider:'firstParty',contextWindow:mode.includes('small-window')?160000:1000000,maxOutputTokens:mode==='small-output'?16000:128000},...(mode==='fallback'?{'other':{}}:{})}};emit(x);if(mode==='duplicate-receipt')emit(x);
 }
 const input=createInterface({input:process.stdin});input.on('line',async line=>{
@@ -275,6 +275,20 @@ test('synthetic Prompt is too long replies exhaust as context-overflow', async (
     }
   }));
 
+test('a synthetic Prompt is too long reply with trailing punctuation is still an overflow', async (t) =>
+  toolFreeFixture(t, 'synthetic-period', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(response.rawStopReason, 'claude-code-context-overflow');
+      assert.equal(rows(join(directory, 'launch')).length, 3);
+    } finally {
+      await native.close();
+    }
+  }));
+
 test('the compacted request keeps a long user instruction intact', async (t) =>
   toolFreeFixture(t, 'prompt-too-long', async (directory) => {
     const { native, model } = await modelAndSession();
@@ -352,7 +366,54 @@ test('a smaller native contextWindow receipt shrinks the effective window', asyn
       context.messages.push({ role: 'user', content: 'go on', timestamp: 2 });
       await (await stream(model, context)).result();
       assert.equal(rows(join(directory, 'launch')).length, 2);
-      assert.match(rows(join(directory, 'input'))[1]!.message.content, /compacted by OMS/);
+      const summary = rows(join(directory, 'input'))[1]!.message.content;
+      assert.match(summary, /compacted by OMS/);
+      assert.doesNotMatch(summary, /task_status/, 'a session without the tool gets no invented guidance');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('the summary keeps task_status guidance only when the session declares that tool', async (t) =>
+  toolFreeFixture(t, 'big-prompt', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const transcript = normalizeContext({
+      systemPrompt: 'Trusted OMS',
+      tools: [{ name: 'task_status', description: 'Report item states', parameters: Type.Object({}) }],
+      messages: [{ role: 'user', content: 'FIRST_SECRET', timestamp: 1 }],
+    });
+    try {
+      const first = await native.stream(model, transcript).result();
+      assert.equal(first.stopReason, 'stop', first.errorMessage);
+      transcript.messages.push(first, { role: 'user', content: 'go on', timestamp: 2 });
+      const second = await native.stream(model, transcript).result();
+      assert.equal(second.stopReason, 'stop', second.errorMessage);
+      const summary = rows(join(directory, 'input'))[1]!.message.content;
+      assert.match(summary, /compacted by OMS/);
+      assert.match(summary, /re-check task_status/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a failed start after compaction never lets the summary replace the next user prompt', async (t) =>
+  toolFreeFixture(t, 'big-prompt auth-fails-once-after-input', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const transcript = toolFreeContext();
+    try {
+      const first = await native.stream(model, transcript).result();
+      assert.equal(first.stopReason, 'stop', first.errorMessage);
+      transcript.messages.push(first, { role: 'user', content: 'go on', timestamp: 2 });
+      // The ~170k observed prompt compacts before this turn; the post-compaction start
+      // then dies in the native auth check, so the summary is never sent.
+      const failed = await native.stream(model, transcript).result();
+      assert.equal(failed.stopReason, 'error');
+      transcript.messages.push({ role: 'user', content: 'SECOND_PROMPT', timestamp: 3 });
+      const recovered = await native.stream(model, transcript).result();
+      assert.equal(recovered.stopReason, 'stop', recovered.errorMessage);
+      const input = rows(join(directory, 'input'));
+      assert.equal(input.length, 2);
+      assert.equal(input[1]!.message.content, 'SECOND_PROMPT', 'the stale summary must not replace the new prompt');
     } finally {
       await native.close();
     }

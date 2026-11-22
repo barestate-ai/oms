@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
-import { acquireTaskLease } from '@oms/engine';
+import { acquireTaskLease, parseRunRecord } from '@oms/engine';
 import { runHarnessCommand, parseLaunchOptions } from '../src/harness.ts';
 import { createHarnessFixture } from '../../engine/test-support/runtime-fixture.ts';
 import { skipUnavailable } from '../../sandbox/test-support/infrastructure.ts';
@@ -184,6 +185,97 @@ for (const scenario of ['closed', 'blocked', 'usd', 'wall', 'unknown', 'owned'] 
     },
   );
 }
+
+test(
+  'a Claude Code context overflow is recorded as capped tokens, not a generic blocked run',
+  { timeout: 120_000 },
+  async (t) => {
+    if (
+      (await skipUnavailable(t, { docker: [image, forwarderImage], surfpool: binary })) ||
+      !binary ||
+      !image ||
+      !forwarderImage
+    )
+      return;
+    const f = await createHarnessFixture({ binary, image, forwarderImage });
+    // A native CLI that authenticates but refuses every prompt as too long: the session
+    // compacts and resends twice, then names the overflow instead of a generic failure.
+    const fake = mkdtempSync(join(tmpdir(), 'oms-headless-claude-'));
+    writeFileSync(
+      join(fake, 'claude'),
+      `#!${process.execPath}
+import{appendFileSync,readFileSync}from'node:fs';
+import{createInterface}from'node:readline';
+const root=${JSON.stringify(fake)},args=process.argv.slice(2),get=k=>args[args.indexOf(k)+1];
+if(args[0]==='auth'){console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty'}));process.exit(0);}
+const id=get(args.includes('--resume')?'--resume':'--session-id');appendFileSync(root+'/launch',JSON.stringify({args})+'\\n');
+const decl=JSON.parse(get('--mcp-config')).mcpServers.oms;
+const tools=decl?JSON.parse(readFileSync(decl.args[1],'utf8')).map(t=>'mcp__oms__'+t.name):[];
+const emit=x=>process.stdout.write(JSON.stringify({session_id:id,...x})+'\\n');
+createInterface({input:process.stdin}).on('line',line=>{
+ const x=JSON.parse(line);
+ if(x.type==='control_request'){emit({type:'control_response',response:{subtype:'success',request_id:x.request_id,response:{}}});return;}
+ if(x.type!=='user')return;
+ emit({type:'system',subtype:'init',tools,mcp_servers:tools.length?[{name:'oms',status:'connected'}]:[]});
+ emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:['Prompt is too long']});
+});
+`,
+      { mode: 0o700 },
+    );
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fake}:${originalPath}`;
+    const jsonOut = join(f.base, 'record.json');
+    try {
+      const exitCode = await runHarnessCommand(
+        'run',
+        [
+          '--headless',
+          '--sandbox',
+          'docker',
+          '--workspace',
+          f.repo,
+          '--state-root',
+          join(f.base, 'state'),
+          '--task',
+          f.task.id,
+          '--provider',
+          'claude-code',
+          '--model',
+          'haiku',
+          '--minutes',
+          '40',
+          '--spend-usd',
+          '4',
+          '--output-tokens',
+          '128',
+          '--surfpool-binary',
+          binary,
+          '--json-out',
+          jsonOut,
+        ],
+        { modelRuntime: f.modelRuntime },
+      );
+      assert.equal(exitCode, 2);
+      const record = parseRunRecord(JSON.parse(readFileSync(jsonOut, 'utf8')));
+      assert.equal(record.status, 'capped');
+      assert.equal(record.cap, 'tokens');
+      assert.equal(record.reason, 'context-overflow');
+      assert.equal(record.accounting, 'known', 'the overflow settles at its bound, never usage-unknown');
+      assert.equal(record.dispatches.length, 1, 'compaction retries stay inside the one dispatched turn');
+      const launches = readFileSync(join(fake, 'launch'), 'utf8').trim().split('\n');
+      assert.equal(launches.length, 3, 'one attempt plus two compaction retries');
+      assert.equal(
+        launches.filter((launch) => launch.includes('--resume')).length,
+        0,
+        'each compaction retry starts a fresh native session',
+      );
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(fake, { recursive: true, force: true });
+      rmSync(f.base, { recursive: true, force: true });
+    }
+  },
+);
 
 test('normal launch defaults remain unchanged and headless requires explicit identity and record destination', async () => {
   assert.equal(parseLaunchOptions([]).executionMode, 'interactive');
