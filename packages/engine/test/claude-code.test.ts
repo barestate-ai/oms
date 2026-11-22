@@ -42,7 +42,7 @@ async function fixture(mode: string, run: (directory: string) => Promise<void>) 
 import{appendFileSync,existsSync,readFileSync,writeFileSync}from'node:fs';
 import{spawn}from'node:child_process';import{createInterface}from'node:readline';
 const mode=${JSON.stringify(mode)},root=${JSON.stringify(directory)},args=process.argv.slice(2),get=k=>args[args.indexOf(k)+1];
-if(args[0]==='auth'){appendFileSync(root+'/auth-count','{}\\n');if(mode==='hang-auth'){setInterval(()=>{},1000);}else{console.log(JSON.stringify({loggedIn:true,authMethod:mode==='api-auth'?'api_key':'claude.ai',apiProvider:'firstParty'}));process.exit(0);}}
+if(args[0]==='auth'){appendFileSync(root+'/auth-count','{}\\n');if(mode==='hang-auth'){setInterval(()=>{},1000);await new Promise(()=>{});}else{console.log(JSON.stringify({loggedIn:true,authMethod:mode==='api-auth'?'api_key':'claude.ai',apiProvider:'firstParty'}));process.exit(0);}}
 const id=get(args.includes('--resume')?'--resume':'--session-id');appendFileSync(root+'/launch',JSON.stringify({args,pid:process.pid})+'\\n');
 const file=root+'/'+id+'.json';if(args.includes('--resume')&&!existsSync(file))process.exit(1);
 const history=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):[],decl=JSON.parse(get('--mcp-config')).mcpServers.oms;
@@ -891,4 +891,17 @@ test('creating the provider defers claude auth status to first use and caches it
         await native.close();
       }
     });
+  }));
+test('a first native use without a Claude Code login reports the sign-in step', async (t) =>
+  toolFreeFixture(t, 'api-auth', async (directory) => {
+    assert.equal((await inspectClaudeCode()).configured, false, 'seed an unconfigured ambient status');
+    const { model, native } = await modelAndSession();
+    try {
+      const response = await native.stream(model, toolFreeContext()).result();
+      assert.equal(response.stopReason, 'error');
+      assert.match(response.errorMessage!, /claude auth login/);
+      assert.equal(authChecks(directory), 2, 'the seed and the first-use check each spawned the CLI once');
+    } finally {
+      await native.close();
+    }
   }));

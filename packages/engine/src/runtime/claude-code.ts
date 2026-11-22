@@ -31,11 +31,14 @@ class NativeEmptyResponseError extends Error {}
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;
+  /** False until the first `claude auth status` probe settles; not the same as a failed check. */
+  checked: boolean;
   detail: string;
 }
 let status: ClaudeCodeStatus = {
   installed: false,
   configured: false,
+  checked: false,
   detail: 'Run claude auth login, then check the local Claude Code connection in /connect.',
 };
 export function getClaudeCodeStatus(): ClaudeCodeStatus {
@@ -219,6 +222,7 @@ export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCod
     status = {
       installed: true,
       configured,
+      checked: true,
       detail: configured
         ? 'Local Claude Code subscription is connected; Claude plan limits apply.'
         : 'Sign in to Claude Code with your Claude subscription using claude auth login. API-key and third-party Claude Code accounts are not used by this connector.',
@@ -228,6 +232,7 @@ export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCod
     status = {
       installed: !missing,
       configured: false,
+      checked: true,
       detail: missing
         ? 'Install Claude Code, run claude auth login, then check the connection again.'
         : 'Claude Code login could not be checked. Run claude auth status in a terminal, then check the connection again.',
@@ -539,7 +544,7 @@ export class ClaudeCodeSession implements NativeChatControls {
       );
     const startupSignal =
       signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
-    // A configured check is reused for the session; a failed check retries on the next start.
+    // A configured check is reused for the rest of the process; a failed check retries on the next start.
     const auth = status.configured ? status : await inspectClaudeCode(startupSignal);
     startupSignal?.throwIfAborted();
     if (!auth.configured) throw new Error(auth.detail);
