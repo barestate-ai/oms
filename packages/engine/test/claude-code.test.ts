@@ -48,10 +48,11 @@ const mcp=()=>new Promise(resolve=>{if(mode==='empty-after-tool'){const timer=se
 if(mode==='stubborn')process.on('SIGTERM',()=>{});
 const emit=x=>process.stdout.write(JSON.stringify({session_id:id,...x})+'\\n');
 const tools=decl?JSON.parse(readFileSync(decl.args[1],'utf8')).map(t=>'mcp__oms__'+t.name):[];
-const usage={input_tokens:mode.includes('big-prompt')?170000:mode.includes('mid-prompt')?130000:20,output_tokens:10,cache_read_input_tokens:30,cache_creation_input_tokens:40,cache_creation:{ephemeral_1h_input_tokens:40}};let n=0;
+const promptInput=()=>mode.includes('big-prompt')&&String(history.at(-1)).includes('compacted by OMS')?20:mode.includes('big-prompt')?170000:mode.includes('mid-prompt')?130000:20;
+const usage={input_tokens:20,output_tokens:10,cache_read_input_tokens:30,cache_creation_input_tokens:40,cache_creation:{ephemeral_1h_input_tokens:40}};let n=0;
 const emptySuccess=()=>mode.startsWith('empty-success-')&&history.length===1;
 function assistant(block,stop='end_turn'){
- const mid='msg_'+ ++n,u=emptySuccess()?{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}:{...usage,output_tokens:mode==='overflow'?128001:10};
+ const mid='msg_'+ ++n,u=emptySuccess()?{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}:{...usage,input_tokens:promptInput(),output_tokens:mode==='overflow'?128001:10};
  const start={type:'stream_event',event:{type:'message_start',message:{id:mid,model:'claude-haiku-5-5',usage:u}}};emit(start);if(mode==='duplicate-start')emit(start);
  if(mode==='empty-success-no-blocks-then-good'&&history.length===1){emit({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:stop},usage:u}});emit({type:'stream_event',event:{type:'message_stop'}});return;}
  emit({type:'stream_event',event:{type:'content_block_start',index:0,content_block:block.type==='text'?{type:'text',text:''}:block}});
@@ -61,10 +62,11 @@ function assistant(block,stop='end_turn'){
  emit({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:stop},usage:u}});
  emit({type:'stream_event',event:{type:'message_stop'}});
 }
-function receipt(mult){const u={input_tokens:usage.input_tokens*mult,output_tokens:10*mult,cache_read_input_tokens:30*mult,cache_creation_input_tokens:40*mult,cache_creation:{ephemeral_1h_input_tokens:40*mult}};
+function receipt(mult){const u={input_tokens:promptInput()*mult,output_tokens:10*mult,cache_read_input_tokens:30*mult,cache_creation_input_tokens:40*mult,cache_creation:{ephemeral_1h_input_tokens:40*mult}};
  if(emptySuccess()){for(const key of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'])u[key]=0;u.cache_creation.ephemeral_1h_input_tokens=0;}
  if(mode==='larger')u.input_tokens++;if(mode==='smaller')u.input_tokens--;
- const x={type:'result',subtype:'success',is_error:false,usage:u,modelUsage:{'claude-haiku-5-5':{provider:'firstParty',contextWindow:mode.includes('small-window')?160000:1000000,maxOutputTokens:mode==='small-output'?16000:128000},...(mode==='fallback'?{'other':{}}:{})}};emit(x);if(mode==='duplicate-receipt')emit(x);
+ const r=mode==='synthetic-overflow'||mode==='synthetic-once'&&!String(history.at(-1)).includes('compacted by OMS')?'Prompt is too long':mode==='quotes-phrase'?'Explaining when the Prompt is too long error appears':undefined;
+ const x={type:'result',subtype:'success',is_error:false,usage:u,result:r,modelUsage:{'claude-haiku-5-5':{provider:'firstParty',contextWindow:mode.includes('small-window')?160000:1000000,maxOutputTokens:mode==='small-output'?16000:128000},...(mode==='fallback'?{'other':{}}:{})}};emit(x);if(mode==='duplicate-receipt')emit(x);
 }
 const input=createInterface({input:process.stdin});input.on('line',async line=>{
  const x=JSON.parse(line);if(x.type==='control_request'){emit({type:'control_response',response:{subtype:'success',request_id:x.request_id,response:{}}});return;}history.push(x.message.content);writeFileSync(file,JSON.stringify(history));appendFileSync(root+'/input',JSON.stringify(x)+'\\n');
@@ -93,7 +95,7 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
   emit({type:'stream_event',event:{type:'message_stop'}});receipt(1);return;
  }
  if(JSON.stringify(x.message.content).includes('probe')){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');if(mode==='multi'){assistant({type:'tool_use',id:'call_'+id+'_2',name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const second=await mcp();appendFileSync(root+'/results',JSON.stringify(second)+'\\n');assistant({type:'text',text:JSON.stringify(second)});receipt(3);}else{assistant({type:'text',text:JSON.stringify(result)});receipt(2);}}
- else{assistant({type:'text',text:JSON.stringify(x.message.content).includes('recall')?JSON.stringify(history[0]):'reply'});receipt(1);}
+ else{assistant({type:'text',text:mode==='quotes-phrase'?'Explaining when the Prompt is too long error appears':JSON.stringify(x.message.content).includes('recall')?JSON.stringify(history[0]):'reply'});receipt(1);}
 });input.on('close',()=>{bridge?.kill();process.exit(0);});
 `,
     { mode: 0o700 },
@@ -227,6 +229,105 @@ test('observed prompt near the subscription window compacts proactively', async 
       assert.match(input[1]!.message.content, /compacted by OMS/);
       assert.match(input[1]!.message.content, /SECOND_SECRET/, 'the pending request rides the summary');
       assert.match(input[1]!.message.content, /## TASK[\s\S]*FIRST_SECRET/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a successful reply quoting Prompt is too long is not an overflow', async (t) =>
+  toolFreeFixture(t, 'quotes-phrase', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'stop', response.errorMessage);
+      assert.equal(rows(join(directory, 'launch')).length, 1, 'no compaction for a normal answer');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a synthetic Prompt is too long reply recovers through one compaction', async (t) =>
+  toolFreeFixture(t, 'synthetic-once', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'stop', response.errorMessage);
+      assert.equal(rows(join(directory, 'launch')).length, 2);
+      assert.match(rows(join(directory, 'input'))[1]!.message.content, /compacted by OMS/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('synthetic Prompt is too long replies exhaust as context-overflow', async (t) =>
+  toolFreeFixture(t, 'synthetic-overflow', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(response.rawStopReason, 'claude-code-context-overflow');
+      assert.equal(rows(join(directory, 'launch')).length, 3);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('the compacted request keeps a long user instruction intact', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    try {
+      const long = `fix it ${'x'.repeat(6_000)} TAIL_INSTRUCTION`;
+      const response = await (
+        await stream(
+          model,
+          normalizeContext({
+            systemPrompt: 'Trusted OMS',
+            tools: [],
+            messages: [{ role: 'user', content: long, timestamp: 1 }],
+          }),
+        )
+      ).result();
+      assert.equal(response.stopReason, 'stop', response.errorMessage);
+      const summary = rows(join(directory, 'input'))[1]!.message.content;
+      assert.match(summary, /TAIL_INSTRUCTION/, 'the latest request is not cut at the excerpt bound');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('compaction during a tool batch carries the pending result into the summary', async () =>
+  fixture('big-prompt', async (directory) => {
+    const { model, native } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: 'Use read',
+        model,
+        tools: [
+          {
+            name: 'read',
+            label: 'Read',
+            description: 'Read',
+            parameters: Type.Object({ path: Type.String() }),
+            async execute() {
+              return { content: [{ type: 'text', text: 'REAL' }], details: undefined };
+            },
+          },
+        ],
+      },
+      streamFn: stream,
+    });
+    try {
+      await agent.prompt('probe');
+      const input = rows(join(directory, 'input'));
+      assert.equal(input.length, 2, 'the tool result rides the compaction summary, not a tool_result block');
+      assert.match(input[1]!.message.content, /compacted by OMS/);
+      assert.match(input[1]!.message.content, /PENDING TOOL RESULTS[\s\S]*REAL/);
+      assert.match(input[1]!.message.content, /## TASK[\s\S]*probe/);
     } finally {
       await native.close();
     }

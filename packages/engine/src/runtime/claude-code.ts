@@ -44,6 +44,7 @@ const CLAUDE_CODE_COMPACT_AT = 0.8;
 /** Compaction resends after a "Prompt is too long" receipt before the turn fails as context overflow. */
 const CLAUDE_CODE_MAX_COMPACTIONS = 2;
 const PROMPT_TOO_LONG = /\bprompt is too long\b/i;
+const PROMPT_TOO_LONG_ONLY = /^\s*prompt is too long\s*$/i;
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;
@@ -313,6 +314,7 @@ const canonical = (value: unknown): string =>
 interface TranscriptMessage {
   role?: string;
   toolName?: string;
+  toolCallId?: string;
   content?: unknown;
 }
 const textOf = (content: unknown): string =>
@@ -332,12 +334,14 @@ const clip = (text: string, limit: number) =>
 
 /** OMS-written carry-over for a compacted native session: the task, its latest trusted
  * status snapshot (item states, remaining submission/time budget when the task tool
- * reports them), the files it wrote, and the state to continue from. Extractive on
- * purpose; no model call is made to write it. */
-function compactionSummary(messages: readonly unknown[]): string {
+ * reports them), the files it wrote, tool results the new session has not seen, and the
+ * state to continue from. Extractive on purpose; no model call is made to write it.
+ * `scale` shrinks every budget so a resend after an overflow is smaller than the last. */
+function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet<string>, scale: number): string {
   const items = messages as TranscriptMessage[];
+  const budget = (limit: number) => Math.max(200, Math.floor(limit / scale));
   const section = (title: string, body: string) => `\n\n## ${title}\n${body.trim() || 'none recorded'}`;
-  const task = clip(textOf(items.find((m) => m.role === 'user')?.content), 4_000);
+  const task = clip(textOf(items.find((m) => m.role === 'user')?.content), budget(4_000));
   const status = items.findLast((m) => m.role === 'toolResult' && m.toolName === 'task_status');
   const files = [
     ...new Set(
@@ -355,12 +359,15 @@ function compactionSummary(messages: readonly unknown[]): string {
     ),
   ].slice(0, 24);
   const replies = items
-    .flatMap((m) => (m.role === 'assistant' ? [clip(textOf(m.content), 1_500).trim()] : []))
+    .flatMap((m) => (m.role === 'assistant' ? [clip(textOf(m.content), budget(1_500)).trim()] : []))
     .filter(Boolean)
     .slice(-2);
+  const pending = items.filter((m) => m.role === 'toolResult' && pendingIds.has(m.toolCallId!));
   const results = items
     .flatMap((m) =>
-      m.role === 'toolResult' ? [`${m.toolName ?? 'tool'}: ${clip(textOf(m.content), 800).trim()}`] : [],
+      m.role === 'toolResult' && !pendingIds.has(m.toolCallId!)
+        ? [`${m.toolName ?? 'tool'}: ${clip(textOf(m.content), budget(800)).trim()}`]
+        : [],
     )
     .filter((entry) => entry.trim().length > entry.indexOf(':') + 1)
     .slice(-4);
@@ -372,16 +379,22 @@ function compactionSummary(messages: readonly unknown[]): string {
     section(
       'TASK STATE',
       status
-        ? clip(textOf(status.content), 4_000)
+        ? clip(textOf(status.content), budget(4_000))
         : 'No task_status snapshot yet — call the task_status tool to refresh item states and the remaining submission/time budget.',
     ) +
     section('FILES WRITTEN OR EDITED', files.join('\n')) +
+    section(
+      'PENDING TOOL RESULTS',
+      pending
+        .map((m) => `${m.toolName ?? 'tool'} [${m.toolCallId}]:\n${clip(textOf(m.content), budget(16_000))}`)
+        .join('\n\n') || 'none — no tool batch was in flight',
+    ) +
     section('RECENT WORK', replies.join('\n')) +
     section('RECENT TOOL RESULTS', results.join('\n')) +
     section(
       'NEXT STEP',
       'Continue from RECENT WORK and TASK STATE; re-check task_status before spending capped actions.' +
-        (request ? ` The latest request follows:\n${clip(textOf(request.content), 4_000)}` : ''),
+        (request ? ` The latest request follows:\n${clip(textOf(request.content), budget(16_000))}` : ''),
     )
   );
 }
@@ -550,6 +563,7 @@ export class ClaudeCodeSession implements NativeChatControls {
     this.failure = undefined;
     this.retryUser = undefined;
     this.toolResultDelivered = false;
+    this.compactionMessage = undefined;
     this.save();
   }
   configure(model: Model<Api>, context: TranscriptContext, maxTokens: number): void {
@@ -654,8 +668,11 @@ export class ClaudeCodeSession implements NativeChatControls {
    * of the OMS transcript (which keeps every turn). The next send carries the summary in
    * place of the bare user message; native tool batches are not replayable, so their real
    * OMS results are carried inside the summary instead. */
-  private async beginCompaction(messages: readonly unknown[]): Promise<void> {
-    const summary = compactionSummary(messages);
+  private async beginCompaction(messages: readonly unknown[], scale = 1): Promise<void> {
+    // Pending tool results are captured inside the summary before their ids are dropped:
+    // the fresh session cannot receive them as tool_result blocks, only as text.
+    const pendingIds = new Set(this.state.pending.map((call) => call.id));
+    const summary = compactionSummary(messages, pendingIds, scale);
     await this.disconnect();
     this.state.sessionId = randomUUID();
     this.state.started = false;
@@ -788,7 +805,7 @@ export class ClaudeCodeSession implements NativeChatControls {
     ];
     if (names.size) args.push('--allowedTools', ...names);
     const environment = claudeCodeEnvironment();
-    environment.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
+    environment.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.min(maxTokens, this.state.nativeMaxOutput ?? maxTokens));
     const child = spawn(executable(), args, {
       cwd: work,
       env: environment,
@@ -1058,6 +1075,9 @@ export class ClaudeCodeSession implements NativeChatControls {
           if (current.stop !== 'tool_use') throw new Error('Unexpected native tool stop');
           this.state.pending = structuredClone(calls);
           for (const key of usageKeys) this.state.emitted[key] += usage[key];
+          // The checkpoint usage is this request's real prompt size: keep the compaction
+          // baseline current across the batches of a single turn.
+          this.state.observedPrompt = usage.input + usage.cacheRead + usage.cacheWrite;
           this.delivered.clear();
           this.results.clear();
           this.waiting = this.waiting.filter((item) => !item.socket.writableEnded);
@@ -1070,7 +1090,14 @@ export class ClaudeCodeSession implements NativeChatControls {
     if (event.type === 'result') {
       const current = this.active;
       const receiptText = JSON.stringify([event.errors, event.error, event.result]);
-      if (PROMPT_TOO_LONG.test(receiptText)) throw new NativeContextOverflowError('Native prompt is too long');
+      // Context overflow arrives either as an error receipt naming it, or as the CLI's
+      // synthetic whole-reply "Prompt is too long" on an otherwise clean result. A normal
+      // answer merely quoting the phrase is not an overflow.
+      if (
+        (event.is_error === true && PROMPT_TOO_LONG.test(receiptText)) ||
+        (event.is_error !== true && PROMPT_TOO_LONG_ONLY.test(String(event.result ?? '')))
+      )
+        throw new NativeContextOverflowError('Native prompt is too long');
       if (current && event.is_error === true && event.subtype === 'error_during_execution' && this.emptyResponse()) {
         const usage = nativeUsage(event.usage);
         const reason = receiptText;
@@ -1305,7 +1332,7 @@ export class ClaudeCodeSession implements NativeChatControls {
             Object.assign(message.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
             message.timestamp = Date.now();
             try {
-              await this.beginCompaction(context.messages);
+              await this.beginCompaction(context.messages, compacted + 1);
               continue;
             } catch {
               /* the compaction itself could not be prepared; report the overflow below */
