@@ -5,12 +5,14 @@ import {
   CLAUDE_CODE_CONTEXT_OVERFLOW,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
+  measuredInputBound,
   modelReadiness,
   parseRunRecord,
   type HarnessSession,
   type HarnessSessionOptions,
   type RunRecord,
 } from '@oms/engine';
+import { isClaudeCodeModel } from '@oms/core/usage';
 import { openHarnessWithOwnership } from './ownership.ts';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -142,6 +144,16 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         knowledgeBuilt = primer.built;
       }
       firstTurn = buildFirstTurn({ status: state.ok ? state.value : undefined, brief: briefText, primer: primerText });
+      // Readiness must compare the allowance against what dispatch will actually reserve —
+      // the converted transcript (its leading system message included) plus the pending
+      // instruction — not the catalog window, or a run stops early while a real request fits.
+      const inputBound = async (pending: string) =>
+        measuredInputBound(current.session.model!, {
+          messages: [
+            ...(await current.session.agent.convertToLlm(current.session.agent.state.messages)),
+            { role: 'user', content: pending, timestamp: Date.now() },
+          ],
+        });
       for (let turn = 0; ; turn++) {
         observe();
         const items = itemStates(current);
@@ -167,6 +179,7 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           reason = 'model-unavailable';
           break;
         }
+        const bound = await inputBound(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         const ready = modelReadiness(
           model,
           current.budget,
@@ -174,14 +187,24 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           'bounded',
           options.maxInputTokens,
           options.subscriptionSpendExempt,
+          false,
+          false,
+          undefined,
+          bound,
         );
         if (!ready.ready) {
           // Holds are bounded and cannot be admitted if the remaining allowance cannot cover one more call.
-          status = 'capped';
+          // Codex and Claude Code reserve their full catalog output capacity, matching admission.
+          const outputNeed =
+            model.api === 'openai-codex-responses' || isClaudeCodeModel(model)
+              ? model.maxTokens
+              : options.maxOutputTokens;
           cap =
-            budget.remaining.tokens < (options.maxInputTokens ?? model.contextWindow) + options.maxOutputTokens
+            budget.remaining.tokens <
+            Math.min(bound ?? model.contextWindow, options.maxInputTokens ?? model.contextWindow) + outputNeed
               ? 'tokens'
               : 'usd';
+          status = 'capped';
           reason = `capped:${cap}`;
           break;
         }
@@ -216,6 +239,10 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
             'bounded',
             options.maxInputTokens,
             options.subscriptionSpendExempt,
+            false,
+            false,
+            undefined,
+            await inputBound(HEADLESS_INSTRUCTION),
           ).ready
         ) {
           reason = 'no-verified-progress';

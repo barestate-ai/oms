@@ -20,7 +20,7 @@ import type {
   SessionCore,
 } from './session-types.ts';
 import { createHarnessSettingsControls, flushHarnessSettings } from './settings-controls.ts';
-import { modelReadiness } from './usage.ts';
+import { measuredInputBound, modelReadiness } from './usage.ts';
 
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -136,6 +136,11 @@ export function createCoreApi(parts: SessionApiParts): SessionCore {
         options.maxInputTokens,
         options.subscriptionSpendExempt,
         model.modelRuntime.isUsingSubscription(m.provider),
+        false,
+        undefined,
+        // A preflight bound over the raw transcript (its leading system message carries
+        // the prompt and tool declarations); metered dispatch re-checks the exact body.
+        measuredInputBound(m, { messages: session.agent.state.messages as readonly unknown[] }),
       ),
   });
   const runCommand = (command: string, signal?: AbortSignal): Promise<SandboxResult> =>

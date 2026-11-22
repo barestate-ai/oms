@@ -11,7 +11,7 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { createBudgetLedger, type BudgetLedgerEvent } from '@oms/core';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 import { modelReservationBound } from '@oms/core/usage';
-import { BYTES_PER_TOKEN } from '../src/runtime/context-trim.ts';
+import { BYTES_PER_TOKEN, createContextTrimmer } from '../src/runtime/context-trim.ts';
 import {
   createMeteredStream,
   modelReadiness,
@@ -147,9 +147,11 @@ test('a small Opus request is admitted under $4 by cloning the catalog window to
   assert.equal(result.stopReason, 'stop');
   assert.equal(subject.calls(), 1);
   const reservation = subject.events.find((event) => event.type === 'budget_reserve');
-  assert.equal(reservation?.reservation.tokens, bounded!.tokens);
-  assert.equal(reservation?.reservation.spendMicroUsd, bounded!.spendMicroUsd);
-  assert.ok(reservation!.reservation.spendMicroUsd <= runCaps.spendMicroUsd);
+  // The input side is min(local cap, measured transcript bound): inside the cloned window.
+  assert.ok(reservation!.reservation.tokens! <= bounded!.tokens);
+  assert.ok(reservation!.reservation.tokens! > 1024);
+  assert.ok(reservation!.reservation.spendMicroUsd! <= bounded!.spendMicroUsd!);
+  assert.ok(reservation!.reservation.spendMicroUsd! <= runCaps.spendMicroUsd);
   assert.equal(modelReadiness(opus, subject.ledger, 1024, 'bounded', 20_000).ready, true);
 });
 
@@ -174,7 +176,8 @@ test('known settlement counts cache read and write once and releases the hold', 
 });
 
 test('spend exhaustion after one bounded hold admits no further provider call', async () => {
-  // Measured serialized body is 500069 bytes. Plus the 12288 allowance, one hold is 4119336 micro-USD.
+  // One 500069-byte request's measured hold fits; after it settles, a second request whose
+  // measured bound still exceeds the remaining spend is refused before dispatch.
   const subject = harness({
     maxInputTokens: 512_357,
     caps: { ...runCaps, spendMicroUsd: 4_119_463 },
@@ -202,7 +205,7 @@ test('spend exhaustion after one bounded hold admits no further provider call', 
   const first = await consume(subject, opus, [{ role: 'user', timestamp: 1, content: 'x'.repeat(500_000) }]);
   assert.equal(first.result.stopReason, 'stop');
   assert.equal(subject.calls(), 1);
-  const second = await consume(subject, opus, [{ role: 'user', timestamp: 1, content: 'second' }]);
+  const second = await consume(subject, opus, [{ role: 'user', timestamp: 1, content: 'x'.repeat(1_300_000) }]);
   assert.equal(second.result.stopReason, 'error');
   assert.match(second.result.errorMessage ?? '', /limit|cannot cover|No provider request sent/i);
   assert.equal(subject.calls(), 1);
@@ -213,7 +216,10 @@ test('an unknown outcome retains the bounded hold and blocks another dispatch', 
   const subject = harness({
     maxInputTokens: 20_000,
     countProvider: true,
-    streamFunction: () => {
+    streamFunction: async (selected, _context, streamOptions) => {
+      // Dispatch first so the failure models a request that reached the provider.
+      await streamOptions?.onPayload?.({ model: selected.id, messages: [] }, selected);
+      await streamOptions?.fetch?.('http://127.0.0.1:9', {})?.catch(() => {});
       throw new Error('provider-secret-body');
     },
   });
@@ -223,7 +229,12 @@ test('an unknown outcome retains the bounded hold and blocks another dispatch', 
   assert.ok(!JSON.stringify(failed.result).includes('provider-secret-body'));
   const held = subject.ledger.snapshot().used.spendMicroUsd;
   const bounded = modelReservationBound({ ...opus, contextWindow: 20_000 }, 1024);
-  assert.equal(held, bounded!.spendMicroUsd);
+  assert.ok(held <= bounded!.spendMicroUsd!, 'the held charge stays inside the local input cap');
+  assert.equal(
+    held,
+    subject.events.find((event) => event.type === 'budget_reserve')!.reservation.spendMicroUsd,
+    'an unknown outcome retains the whole measured bound',
+  );
   const next = await consume(subject);
   assert.equal(next.result.stopReason, 'error');
   assert.match(next.result.errorMessage ?? '', /unconfirmed|unknown/i);
@@ -286,20 +297,17 @@ test('media and remote-file inputs are rejected because their tokens are not byt
   assert.equal(subject.fetches(), 0);
 });
 
-test('omitting the input cap preserves the full catalog reservation', async () => {
+test('omitting the input cap reserves the measured transcript bound, below the full catalog reservation', async () => {
   const subject = harness({});
   const full = modelReservationBound(opus, 1024);
+  // Readiness without a serialized transcript still estimates at the catalog window.
   assert.equal(modelReadiness(opus, subject.ledger, 1024, 'bounded').ready, false);
-  const refused = await consume(subject);
-  assert.equal(refused.result.stopReason, 'error');
-  assert.equal(subject.calls(), 0);
-  const wide = harness({ caps: { tokens: 2_000_000_000, spendMicroUsd: 20_000_000_000, wallClockMs: 40 * 60 * 1000 } });
-  const admitted = await consume(wide);
-  assert.equal(admitted.result.stopReason, 'stop');
-  assert.equal(
-    wide.events.find((event) => event.type === 'budget_reserve')?.reservation.spendMicroUsd,
-    full!.spendMicroUsd,
-  );
+  const admitted = await consume(subject);
+  assert.equal(admitted.result.stopReason, 'stop', admitted.result.errorMessage);
+  assert.equal(subject.calls(), 1);
+  const reservation = subject.events.find((event) => event.type === 'budget_reserve')!.reservation;
+  assert.ok(reservation.tokens! < full!.tokens);
+  assert.ok(reservation.spendMicroUsd! < full!.spendMicroUsd);
 });
 
 test('a web_fetch tool call carries a url argument, which is model text, not a remote file: the next turn is admitted', async () => {
@@ -339,17 +347,101 @@ test('a web_fetch tool call carries a url argument, which is model text, not a r
   assert.equal(subject.calls(), 1);
 });
 
-test('the input cap is in tokens: a payload of that many tokens at 3 bytes each is accepted, one clearly over is refused', () => {
+test('the input cap is enforced on serialized bytes: one byte can be one token, so a body over the cap is refused', () => {
   const cap = 20_000;
   const payload = (bytes: number) => ({ model: 'm', messages: [{ role: 'user', content: 'x'.repeat(bytes) }] });
-  assert.equal(BYTES_PER_TOKEN, 3);
-  assert.equal(payloadWithinInputCap(payload(cap * 2), cap), true, 'about 2 bytes per token is well inside the cap');
   assert.equal(
-    payloadWithinInputCap(payload(cap * BYTES_PER_TOKEN), cap),
-    false,
-    'the protocol allowance no longer fits',
+    payloadWithinInputCap(payload(cap - 13_000), cap),
+    true,
+    'a payload inside the byte bound and protocol allowance',
   );
+  assert.equal(payloadWithinInputCap(payload(cap), cap), false, 'no room left for the request envelope');
   assert.equal(payloadWithinInputCap(payload(cap * 4), cap), false);
+});
+
+test('the default headless cap stubs oversized recent reads so the follow-up still dispatches', async () => {
+  // Default --input-tokens is 65,536: two 28 KiB reads (57,344 bytes) leave no room for the
+  // prompt, schemas and envelope, so the trimmer stubs even the newest results and the guarded
+  // follow-up still dispatches instead of stalling.
+  const big = 'x'.repeat(28 * 1024);
+  const transcript = [
+    { role: 'user', timestamp: 1, content: 'read both files' },
+    {
+      role: 'assistant',
+      timestamp: 2,
+      api: opus.api,
+      provider: opus.provider,
+      model: opus.id,
+      stopReason: 'toolUse',
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      content: [
+        { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'a.rs' } },
+        { type: 'toolCall', id: 'c2', name: 'read', arguments: { path: 'b.rs' } },
+      ],
+    },
+    {
+      role: 'toolResult',
+      timestamp: 3,
+      toolCallId: 'c1',
+      toolName: 'read',
+      isError: false,
+      content: [{ type: 'text', text: big }],
+    },
+    {
+      role: 'toolResult',
+      timestamp: 4,
+      toolCallId: 'c2',
+      toolName: 'read',
+      isError: false,
+      content: [{ type: 'text', text: big }],
+    },
+  ];
+  const trimmed = createContextTrimmer(
+    () => Math.ceil(65_536 / BYTES_PER_TOKEN),
+    // The measured prompt plus the schema/envelope allowance leave under 28 KiB per result.
+    () => 40_000,
+  )(transcript as never);
+  const results = trimmed.filter((m) => m.role === 'toolResult');
+  assert.deepEqual(
+    results.map((m) => (m as { toolCallId?: string }).toolCallId),
+    ['c1', 'c2'],
+    'stubs keep their call ids for a smaller re-read',
+  );
+  for (const m of results)
+    assert.match(JSON.stringify(m), /removed to fit the context limit; run the tool again on a smaller range/);
+  const subject = harness({
+    maxInputTokens: 65_536,
+    countProvider: true,
+    streamFunction: async (selected, context, streamOptions) => {
+      const body = { model: selected.id, messages: context.messages, max_tokens: 1 };
+      await streamOptions?.onPayload?.(body, selected);
+      const out = createAssistantMessageEventStream();
+      out.push({
+        type: 'done',
+        reason: 'stop',
+        message: doneMessage(selected, {
+          input: 12,
+          output: 4,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 16,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        }),
+      });
+      out.end();
+      return out;
+    },
+  });
+  const { result } = await consume(subject, opus, trimmed as never);
+  assert.equal(result.stopReason, 'stop', result.errorMessage);
+  assert.equal(subject.calls(), 1);
 });
 
 test('a default-sized output cap is lowered to a smaller model maximum and stays ready; a larger model keeps the cap', async () => {

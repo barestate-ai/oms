@@ -20,13 +20,27 @@ import { sessionToolNames } from '../session-model.ts';
 import { harnessPolicySettings } from '../settings-controls.ts';
 import { KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
 import { withToolExecutionModes } from '../tool-execution.ts';
-import { createMeteredStream, modelReadiness, requestBound } from '../usage.ts';
+import { createMeteredStream, measuredInputBound, modelReadiness, requestBound } from '../usage.ts';
 import { hostSandbox } from '@oms/sandbox';
-import type { AgentDefinition } from './agents.ts';
+import { AGENT_TOOL, type AgentDefinition } from './agents.ts';
 import { fileToolPath, type Claim, type ClaimTable } from './claims.ts';
 import { usageOf } from './records.ts';
 
 export const HELPER_LIMITS = { turns: 40, tokens: 300_000, ms: 10 * 60_000, report: 4000, input: 200_000 } as const;
+
+/**
+ * The most text one helper result can put in the parent's transcript: the capped report
+ * plus its footer, outside-claim notes and failure prefix. The agent tool truncates what
+ * it emits to this, so a pending helper call's transcript growth is provable.
+ */
+export const HELPER_RESULT_TEXT_MAX = HELPER_LIMITS.report + 4096;
+
+/**
+ * Serialized bytes a pending helper result can add to the parent's measured transcript:
+ * its text cap at worst-case JSON escaping plus the toolResult envelope, padded for the
+ * measured bound's proportional slack. chatHeadroom charges this per pending helper call.
+ */
+export const HELPER_RESULT_BOUND_BYTES = Math.ceil((HELPER_RESULT_TEXT_MAX * 6 + 256) * 1.25);
 
 /**
  * A request is admitted against the budget at its largest possible size, so a few at once can claim more than the turn's
@@ -71,8 +85,56 @@ export class RequestGate {
 export const helperInputCap = (configured: number | undefined, model: Model<Api>): number =>
   Math.min(configured ?? HELPER_LIMITS.input, HELPER_LIMITS.input, model.contextWindow);
 
+/** Tool calls whose results have not landed. Only the newest assistant message can still be
+ * producing results: pi lands a batch's results before the next reply, so an older message's
+ * unanswered calls come from an interrupted batch and never produce results. Charging those
+ * stale calls to headroom would reserve the whole catalog window for results that never land. */
+function unansweredToolCalls(messages: readonly unknown[]): Map<string, string> {
+  const pending = new Map<string, string>();
+  let last = messages.length - 1;
+  while (last >= 0 && (messages[last] as { role?: string }).role !== 'assistant') last--;
+  if (last < 0) return pending;
+  const answered = new Set<string>();
+  for (let i = last + 1; i < messages.length; i++) {
+    const record = messages[i] as { role?: string; toolCallId?: unknown };
+    if (record.role === 'toolResult' && typeof record.toolCallId === 'string') answered.add(record.toolCallId);
+  }
+  const content = (messages[last] as { content?: unknown }).content;
+  if (!Array.isArray(content)) return pending;
+  for (const block of content) {
+    const call = block as { type?: string; id?: unknown; name?: unknown };
+    if (
+      call.type === 'toolCall' &&
+      typeof call.id === 'string' &&
+      typeof call.name === 'string' &&
+      !answered.has(call.id)
+    ) {
+      pending.set(call.id, call.name);
+    }
+  }
+  return pending;
+}
+
 function chatHeadroom(parts: SessionApiParts) {
   const model = parts.model.session.model!;
+  // The chat's next request is predicted from its current transcript rather than held at
+  // the whole catalog window; metered dispatch re-checks the exact body anyway. When no
+  // transcript is readable, omitting the bound keeps the conservative catalog reserve.
+  const messages = parts.model.session.agent?.state.messages;
+  // Results of the tool calls the chat is running land in its transcript before that
+  // request is sent. A helper's result text is capped, so each pending helper call is
+  // charged against the measured bound; any other pending result cannot be byte-proven,
+  // and its presence keeps the conservative catalog reserve instead.
+  let helpers = 0;
+  let inputBound: number | undefined;
+  if (messages) {
+    let provable = true;
+    for (const name of unansweredToolCalls(messages).values()) {
+      if (name === AGENT_TOOL) helpers++;
+      else provable = false;
+    }
+    if (provable) inputBound = measuredInputBound(model, { messages: messages as readonly unknown[] });
+  }
   return (
     requestBound(
       model,
@@ -81,11 +143,12 @@ function chatHeadroom(parts: SessionApiParts) {
       parts.options.maxInputTokens,
       parts.options.subscriptionSpendExempt,
       parts.model.modelRuntime.isUsingSubscription(model.provider),
+      inputBound === undefined ? undefined : inputBound + helpers * HELPER_RESULT_BOUND_BYTES,
     ) ?? { tokens: Infinity, spendMicroUsd: Infinity }
   );
 }
 
-export function helperReadiness(parts: SessionApiParts, model: Model<Api>) {
+export function helperReadiness(parts: SessionApiParts, model: Model<Api>, inputBound?: number) {
   return modelReadiness(
     model,
     parts.env.budget,
@@ -96,6 +159,7 @@ export function helperReadiness(parts: SessionApiParts, model: Model<Api>) {
     parts.model.modelRuntime.isUsingSubscription(model.provider),
     true,
     chatHeadroom(parts),
+    inputBound,
   );
 }
 
@@ -296,7 +360,8 @@ export async function runHelper(parts: SessionApiParts, run: HelperRun): Promise
         ...(life.executionController ? [life.executionController.signal] : []),
         ...(streamOptions?.signal ? [streamOptions.signal] : []),
       ]);
-      const ready = () => helperReadiness(parts, model).ready;
+      // The gate measures the same normalized body metered dispatch will send.
+      const ready = () => helperReadiness(parts, model, measuredInputBound(model, context)).ready;
       return run.gate.admit(ready, () => metered(model, context, { ...streamOptions, signal }), signal);
     };
     await session.bindExtensions({});

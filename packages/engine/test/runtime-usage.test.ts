@@ -95,6 +95,12 @@ async function consume(streamFn: StreamFn, selected = model, signal?: AbortSigna
   for await (const event of stream) events.push(event);
   return { events, result: await stream.result() };
 }
+// Issue the metered payload + request a real adapter makes before streaming, so a
+// mid-flight failure settles as sent rather than released as provably never dispatched.
+async function dispatchRequest(selected: Model<Api>, options: Parameters<StreamFn>[2]): Promise<void> {
+  await options?.onPayload?.({ model: selected.id }, selected);
+  await options?.fetch?.('http://127.0.0.1:1')?.catch(() => {});
+}
 
 test('Codex reserves its entire catalog output capacity rather than advertising an unenforceable local cap', async () => {
   const codex = { ...model, api: 'openai-codex-responses', provider: 'openai-codex' };
@@ -122,8 +128,9 @@ test('Codex reserves its entire catalog output capacity rather than advertising 
 test('Codex unknown outcomes retain full output reservation and prevent another dispatch', async () => {
   const codex = { ...model, api: 'openai-codex-responses', provider: 'openai-codex' };
   let calls = 0;
-  const f = fixture(() => {
+  const f = fixture(async (selected, _context, options) => {
     calls++;
+    await dispatchRequest(selected, options);
     throw new Error('synthetic provider failure');
   });
   assert.equal((await consume(f.stream, codex)).result.stopReason, 'error');
@@ -397,8 +404,9 @@ test('another billable attempt uses a distinct dispatch while preserving logical
 
 test('partial provider error preserves the reservation and hides raw diagnostics', async () => {
   let calls = 0;
-  const f = fixture(() => {
+  const f = fixture(async (selected, _context, options) => {
     calls++;
+    await dispatchRequest(selected, options);
     const stream = createAssistantMessageEventStream();
     const partial = message();
     stream.push({ type: 'text_delta', contentIndex: 0, delta: 'partial', partial });
@@ -421,7 +429,8 @@ test('partial provider error preserves the reservation and hides raw diagnostics
 });
 
 test('terminal output without usage is uncertain rather than a free success', async () => {
-  const f = fixture(() => {
+  const f = fixture(async (selected, _context, options) => {
+    await dispatchRequest(selected, options);
     const stream = createAssistantMessageEventStream();
     const result = message();
     result.usage = {
@@ -442,8 +451,9 @@ test('terminal output without usage is uncertain rather than a free success', as
 test('wall deadline aborts a stalled provider and resolves the consumer terminal result', async () => {
   let signal: AbortSignal | undefined;
   const f = fixture(
-    (_model, _context, options) => {
+    async (selected, _context, options) => {
       signal = options?.signal;
+      await dispatchRequest(selected, options);
       return createAssistantMessageEventStream();
     },
     { ...caps, wallClockMs: 40 },
@@ -456,9 +466,13 @@ test('wall deadline aborts a stalled provider and resolves the consumer terminal
 
 test('caller cancellation terminates even an unresolved provider stream promise', async () => {
   const abort = new AbortController();
-  const f = fixture(() => new Promise(() => {}));
+  const f = fixture(async (selected, _context, options) => {
+    await dispatchRequest(selected, options);
+    // Abort once the request is provably in flight, so the hang settles unknown.
+    queueMicrotask(() => abort.abort());
+    return new Promise<never>(() => {});
+  });
   const pending = consume(f.stream, model, abort.signal);
-  abort.abort();
   const { result } = await pending;
   assert.equal(result.stopReason, 'aborted');
   assert.equal(f.ledger.snapshot().accounting, 'unknown');
@@ -624,10 +638,15 @@ test('already cancelled calls never acquire a reservation or contact the provide
 
 test('thrown/rejected request failures become safe unknown errors', async () => {
   const providers: StreamFn[] = [
-    () => {
+    async (selected, _context, options) => {
+      await dispatchRequest(selected, options);
       throw new Error('provider-secret');
     },
-    async () => {
+    // A synchronous throw after dispatch: the metered request was issued, so the
+    // failure still settles uncertain rather than released.
+    (selected, _context, options) => {
+      void options?.onPayload?.({ model: selected.id }, selected);
+      void options?.fetch?.('http://127.0.0.1:1')?.catch(() => {});
       throw new Error('provider-secret');
     },
   ];
@@ -648,7 +667,9 @@ test('hidden provider payload retries fail closed instead of creating an unreser
     throw new Error('unreachable');
   });
   assert.equal((await consume(f.stream)).result.stopReason, 'error');
-  assert.equal(f.ledger.snapshot().accounting, 'unknown');
+  // The refused second payload never reached the wire: the reservation is released.
+  assert.equal(f.ledger.snapshot().accounting, 'known');
+  assert.equal(f.ledger.snapshot().used.tokens, 0);
   assert.equal(f.events.filter((event) => event.type === 'budget_reserve').length, 1);
 });
 
@@ -669,13 +690,15 @@ test('payloads cannot enable separately priced provider tools, routing fallbacks
       return stream;
     });
     assert.equal((await consume(f.stream)).result.stopReason, 'error');
-    assert.equal(f.ledger.snapshot().accounting, 'unknown');
+    // The refused payload never reached the wire: the reservation is released.
+    assert.equal(f.ledger.snapshot().accounting, 'known');
   }
 });
 
 test('the single-request transport refuses hidden retries and does not call fetch twice', async () => {
   let requests = 0;
-  const f = fixture(async (_selected, _context, options) => {
+  const f = fixture(async (selected, _context, options) => {
+    await options!.onPayload!({ model: selected.id }, selected);
     await options!.fetch!('http://127.0.0.1:1');
     await options!.fetch!('http://127.0.0.1:1');
     throw new Error('unreachable');
@@ -784,7 +807,7 @@ test('real Anthropic adapter fits canonical medium thinking inside the total OMS
     provider: 'anthropic',
     reasoning: true,
     maxTokens: 16_384,
-    contextWindow: 32_768,
+    contextWindow: 64_000,
   };
   const events: BudgetLedgerEvent[] = [];
   const ledger = createBudgetLedger({
@@ -823,10 +846,9 @@ test('real Anthropic adapter fits canonical medium thinking inside the total OMS
   assert.equal((await source.result()).stopReason, 'stop');
   assert.equal(requests, 1);
   assert.equal(ledger.snapshot().accounting, 'known');
-  assert.equal(
-    events.find((event) => event.type === 'budget_reserve')?.reservation.tokens,
-    selected.contextWindow + 2048,
-  );
+  const thinkingReservation = events.find((event) => event.type === 'budget_reserve')?.reservation.tokens ?? 0;
+  assert.ok(thinkingReservation < selected.contextWindow + 2048);
+  assert.ok(thinkingReservation > 2048);
 });
 
 test('incompatible thinking is refused before reservation and the real adapter can still run with thinking explicitly off', async () => {
@@ -981,9 +1003,11 @@ test('normal ChatGPT Sol uses subscription limits without an API-dollar admissio
   assert.equal(requests, 1);
   assert.equal(ledger.snapshot().used.tokens, 15);
   assert.equal(ledger.snapshot().used.spendMicroUsd, 0);
-  const reservation = events.find((event) => event.type === 'budget_reserve')!;
-  assert.equal(reservation.reservation.tokens, selected.contextWindow + selected.maxTokens);
-  assert.equal(reservation.reservation.spendMicroUsd, 0);
+  const reservation = events.find((event) => event.type === 'budget_reserve')!.reservation;
+  // The input side reserves the measured transcript bound, not the whole catalog window.
+  assert.ok(reservation.tokens! < selected.contextWindow + selected.maxTokens);
+  assert.ok(reservation.tokens! > selected.maxTokens);
+  assert.equal(reservation.spendMicroUsd, 0);
 });
 
 test('subscription exemption cannot cover bounded runs, other providers or custom endpoints', async () => {
@@ -1002,7 +1026,8 @@ test('subscription exemption cannot cover bounded runs, other providers or custo
     [{ ...selected, baseUrl: 'https://example.test' }, 'interactive'],
   ] as const) {
     const ledger = createBudgetLedger({
-      caps: { tokens: 2_000_000, spendMicroUsd: 5_000_000, wallClockMs: 60_000 },
+      // A priced bound cannot fit this spend cap; a wrongly exempted $0 bound would.
+      caps: { tokens: 2_000_000, spendMicroUsd: 1_000_000, wallClockMs: 60_000 },
       clock: Date.now,
       persist() {},
     });
@@ -1039,8 +1064,9 @@ test('normal subscription failures retain token reservation and cannot dispatch 
     allocate: createDispatchAllocator(),
     maxOutputTokens: 50,
     logicalTurnId: () => 'unknown-subscription',
-    streamFunction: () => {
+    streamFunction: async (selected, _context, options) => {
       calls++;
+      await dispatchRequest(selected, options);
       throw new Error('Interrupted');
     },
   });
@@ -1183,7 +1209,9 @@ test('real Anthropic adapter: a { url } tool call in history (tool_use input) pa
 });
 
 function erroring(message: string, events = 0): StreamFn {
-  return () => {
+  return async (selected, _context, options) => {
+    // Model a request the provider accepted before its stream failed.
+    await dispatchRequest(selected, options);
     const stream = createAssistantMessageEventStream();
     const partial = message_();
     for (let i = 0; i < events; i++) stream.push({ type: 'text_delta', contentIndex: 0, delta: 'x', partial });
@@ -1244,7 +1272,8 @@ test('transient causes (including after partial output) are settled at their bou
   });
   assert.ok(isRetryableAssistantError((await consume(bare.stream)).result));
   assert.equal(forgotten, 1, 'a bare 400 asks the session to resend without old reasoning');
-  const silent = fixture(() => {
+  const silent = fixture(async (selected, _context, options) => {
+    await dispatchRequest(selected, options);
     const stream = createAssistantMessageEventStream();
     stream.end();
     return stream;
@@ -1309,7 +1338,8 @@ test('non-transient failures stay unknown, are not retryable, and block further 
 });
 
 test('missing or mismatched final usage stays unknown and is not retryable', async () => {
-  const mismatched = fixture(() => {
+  const mismatched = fixture(async (selected, _context, options) => {
+    await dispatchRequest(selected, options);
     const stream = createAssistantMessageEventStream();
     stream.push({ type: 'done', reason: 'stop', message: { ...message(), responseModel: 'something-else' } });
     return stream;
@@ -1321,9 +1351,11 @@ test('missing or mismatched final usage stays unknown and is not retryable', asy
 
 test('caller abort and an unpersistable bound are never converted into a conservative settle', async () => {
   const controller = new AbortController();
-  const aborted = fixture(() => {
+  const aborted = fixture(async (selected, _context, options) => {
+    // The request reached the provider before the caller aborted mid-flight.
+    const stream = await erroring('terminated')(selected, _context, options);
     controller.abort();
-    return erroring('terminated')(model, normalizeContext({ messages: [] }), {});
+    return stream;
   });
   const result = (await consume(aborted.stream, model, controller.signal)).result;
   assert.ok(!isRetryableAssistantError(result));
@@ -1348,6 +1380,64 @@ test('caller abort and an unpersistable bound are never converted into a conserv
   assert.ok(!isRetryableAssistantError((await consume(stream)).result));
   assert.equal(ledger.snapshot().used.tokens, modelReservationBound(model, 50)!.tokens);
   assert.notEqual(ledger.snapshot().accounting, 'known');
+});
+
+test('a request that provably never reached the wire releases its reservation', async () => {
+  // A failure before the single metered request means nothing was sent: the reservation
+  // frees instead of holding an unknown charge that would wedge the session.
+  let calls = 0;
+  const f = fixture(async () => {
+    calls++;
+    throw new Error('synthetic provider failure');
+  });
+  assert.equal((await consume(f.stream)).result.stopReason, 'error');
+  assert.equal(f.ledger.snapshot().accounting, 'known');
+  assert.equal(f.ledger.snapshot().used.tokens, 0);
+  assert.equal((await consume(f.stream)).result.stopReason, 'error');
+  assert.equal(calls, 2);
+});
+
+test('a mid-flight failure on a large-window model keeps only its measured bound so the next request fits', async () => {
+  const big: Model<Api> = { ...model, id: 'large-window', contextWindow: 1_000_000, maxTokens: 128_000 };
+  const events: BudgetLedgerEvent[] = [];
+  const ledger = createBudgetLedger({
+    caps: { tokens: 2_000_000, spendMicroUsd: 5_000_000, wallClockMs: 60_000 },
+    executionMode: 'interactive',
+    clock: Date.now,
+    persist: (event) => {
+      events.push(event);
+    },
+  });
+  let calls = 0;
+  const stream = createMeteredStream({
+    ledger,
+    executionMode: 'interactive',
+    allocate: createDispatchAllocator(),
+    maxOutputTokens: 50,
+    logicalTurnId: () => 'large-window-turn',
+    streamFunction: async (selected, _context, options) => {
+      calls++;
+      await dispatchRequest(selected, options);
+      const source = createAssistantMessageEventStream();
+      const partial = message();
+      source.push({
+        type: 'error',
+        reason: 'error',
+        error: { ...partial, stopReason: 'error', errorMessage: 'boom' },
+      });
+      source.end();
+      return source;
+    },
+  });
+  assert.equal(ledger.beginOperation('large-window-turn').ok, true);
+  assert.equal((await consume(stream, big)).result.stopReason, 'error');
+  assert.equal(ledger.snapshot().accounting, 'unknown');
+  const reservation = events.find((event) => event.type === 'budget_reserve')!.reservation;
+  // The uncertain charge holds the measured input bound + output cap, far below window + output.
+  assert.ok(reservation.tokens! < 100_000);
+  // The next request still fits and dispatches even while the failed one stays uncertain.
+  assert.equal((await consume(stream, big)).result.stopReason, 'error');
+  assert.equal(calls, 2);
 });
 
 test('only OpenAI itself is asked for background: false; xAI rejects the field', async () => {

@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { AgentSession, DefaultResourceLoader } from '@earendil-works/pi-coding-agent';
-import { fauxAssistantMessage } from '@earendil-works/pi-ai';
-import { modelReadiness } from '../src/runtime/usage.ts';
-import { HELPER_LIMITS } from '../src/runtime/helpers/runner.ts';
+import { createAssistantMessageEventStream, fauxAssistantMessage, normalizeContext } from '@earendil-works/pi-ai';
+import { createDispatchAllocator } from '@oms/core/dispatch';
+import { createMeteredStream, measuredInputBound, modelReadiness } from '../src/runtime/usage.ts';
+import { HELPER_LIMITS, HELPER_RESULT_BOUND_BYTES, HELPER_RESULT_TEXT_MAX } from '../src/runtime/helpers/runner.ts';
 import { helperRunnerFixture } from '../test-support/helper-runner-fixture.ts';
 import { call, say } from '../test-support/helper-fixture.ts';
 
@@ -60,6 +61,23 @@ for (const spelling of ['symlink', 'case', '@'] as const) {
   });
 }
 
+const assistantCalls = (...calls: Array<[string, string]>) => ({
+  role: 'assistant',
+  content: calls.map(([id, name]) => ({ type: 'toolCall', id, name, arguments: {} })),
+  timestamp: 0,
+});
+const toolResult = (toolCallId: string, toolName: string, content: unknown, isError = false) => ({
+  role: 'toolResult',
+  toolCallId,
+  toolName,
+  content,
+  isError,
+  timestamp: 0,
+});
+/** measuredInputBound inspects only the model's api/provider for Claude Code, so a bare shape sizes the cap. */
+const transcriptBound = (messages: unknown[]) =>
+  measuredInputBound({ api: 'openai-completions' } as never, { messages })!;
+
 test('S3: helpers leave room for the parent request before starting', async (t) => {
   const f = await helperRunnerFixture(t, 7_000);
   // Each model request fits individually, but a helper and the following chat request do not.
@@ -74,7 +92,7 @@ test('S3: helpers leave room for the parent request before starting', async (t) 
 });
 
 test('S3: helper continuations also preserve the parent request allowance', async (t) => {
-  const f = await helperRunnerFixture(t, 115_000);
+  const f = await helperRunnerFixture(t, 105_000);
   f.model.contextWindow = 50_000;
   let requests = 0;
   const step = () => {
@@ -83,8 +101,141 @@ test('S3: helper continuations also preserve the parent request allowance', asyn
   };
   f.faux.setResponses([...Array.from({ length: 8 }, () => step), say('Done.')]);
   await assert.rejects(f.execute('build', 'Write.', ['x.ts']), /remaining.*limit/);
-  assert.equal(requests, 2);
+  // A few continuations run, then the bound plus the parent's allowance stops the run.
+  assert.ok(requests > 0 && requests < 8, `expected the allowance to stop the run early, got ${requests}`);
   assert.equal(modelReadiness(f.model, f.parts.env.budget, 128).ready, true);
+});
+
+test('S3: pending helper results are charged to the parent allowance', async (t) => {
+  const transcript: unknown[] = [
+    { role: 'user', content: [{ type: 'text', text: 'x'.repeat(40_000) }], timestamp: 0 },
+    assistantCalls(['c1', 'agent']),
+  ];
+  // The helper's bound plus the measured chat transcript fit the cap, but not once the
+  // pending helper result is charged to the parent's allowance too.
+  const cap = 200_128 + transcriptBound(transcript) + Math.floor(HELPER_RESULT_BOUND_BYTES / 2);
+  const f = await helperRunnerFixture(t, cap);
+  f.model.contextWindow = 1_000_000;
+  f.chat(transcript);
+  f.faux.setResponses([say('done')]);
+  await assert.rejects(f.execute(), /remaining.*limit/);
+  assert.equal(f.parts.env.budget.reservations().length, 0);
+});
+
+test('S3: a pending result that cannot be bounded keeps the full parent reserve', async (t) => {
+  const transcript: unknown[] = [
+    { role: 'user', content: [{ type: 'text', text: 'x'.repeat(40_000) }], timestamp: 0 },
+    assistantCalls(['c1', 'agent'], ['c2', 'bash']),
+  ];
+  // The measured transcript plus the helper allowance would fit, but the shell call's
+  // result has no provable bound, so the parent keeps its whole catalog reserve.
+  const f = await helperRunnerFixture(t, 400_000);
+  f.model.contextWindow = 1_000_000;
+  f.chat(transcript);
+  f.faux.setResponses([say('done')]);
+  await assert.rejects(f.execute(), /remaining.*limit/);
+});
+
+test('S3: an interrupted batch does not pin the parent allowance at the catalog window', async (t) => {
+  // The interrupted batch's shell call never produced a result, and a later reply
+  // supersedes it — only the newest assistant message's calls are still pending.
+  const transcript: unknown[] = [
+    { role: 'user', content: [{ type: 'text', text: 'x'.repeat(40_000) }], timestamp: 0 },
+    assistantCalls(['dead', 'bash']),
+    { role: 'user', content: [{ type: 'text', text: 'again' }], timestamp: 1 },
+    assistantCalls(['c1', 'agent']),
+  ];
+  // Fits with the measured bound plus the pending helper report; charging the stale
+  // call's unboundable result would reserve the whole catalog window and refuse.
+  const f = await helperRunnerFixture(t, 600_000);
+  f.model.contextWindow = 1_000_000;
+  f.chat(transcript);
+  f.faux.setResponses([say('Done.')]);
+  const result = await f.execute();
+  assert.equal(f.helpers.api.list().length, 1);
+  assert.match(JSON.stringify(result.content), /Helper report/);
+});
+
+test('S3: a thrown helper error stays inside the helper-result bound', async (t) => {
+  const f = await helperRunnerFixture(t);
+  // The claim path echoes the model's own text; left uncapped it would land oversized in
+  // the transcript and exceed the bound headroom reserved for this pending call.
+  await assert.rejects(
+    f.execute('build', 'Task.', [`../${'x'.repeat(HELPER_RESULT_TEXT_MAX * 2)}`]),
+    (error: Error) => {
+      assert.ok(error.message.length <= HELPER_RESULT_TEXT_MAX, `thrown text was ${error.message.length}`);
+      return true;
+    },
+  );
+});
+
+test('S3: an admitted helper leaves the parent room to answer its real result', async (t) => {
+  const transcript: unknown[] = [
+    { role: 'user', content: [{ type: 'text', text: 'x'.repeat(40_000) }], timestamp: 0 },
+    assistantCalls(['c1', 'agent']),
+  ];
+  // The measured headroom covers the pending report, so the helper is admitted and its
+  // real tool result lands in the transcript — and the chat's follow-up still dispatches.
+  const cap = 200_128 + transcriptBound(transcript) + HELPER_RESULT_BOUND_BYTES + 4_096;
+  const f = await helperRunnerFixture(t, cap);
+  f.model.contextWindow = 1_000_000;
+  f.chat(transcript);
+  f.faux.setResponses([say('Done.')]);
+  const result = await f.execute();
+  transcript.push(toolResult('c1', 'agent', result.content));
+  // Dispatch through the real metered path — admission measures the transcript and the
+  // payload guard holds the serialized body inside that bound before the request is sent.
+  // The fetch runs through the metered transport, which only accepts it after onPayload passes.
+  const metered = createMeteredStream({
+    streamFunction: async (selected, _context, options) => {
+      const body = { model: selected.id, messages: transcript, max_tokens: 1 };
+      const encoded = await options?.onPayload?.(body, selected);
+      const response = await options?.fetch?.('https://provider.invalid/request', {
+        method: 'POST',
+        body: JSON.stringify(encoded),
+      });
+      assert.equal((response as Response).status, 200);
+      const out = createAssistantMessageEventStream();
+      out.push({
+        type: 'done',
+        reason: 'stop',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Follow-up.' }],
+          api: selected.api,
+          provider: selected.provider,
+          model: selected.id,
+          timestamp: 0,
+          stopReason: 'stop',
+          usage: {
+            input: 12,
+            output: 4,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 16,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        },
+      });
+      out.end();
+      return out;
+    },
+    ledger: f.parts.env.budget,
+    allocate: f.parts.env.allocate,
+    maxOutputTokens: 128,
+    logicalTurnId: () => 'follow-up',
+    executionMode: 'bounded',
+  });
+  const source = await metered(f.model, normalizeContext({ messages: transcript as never }), {
+    fetch: async () => new Response('provider response'),
+  });
+  const followUp = await source.result();
+  assert.equal(
+    followUp.stopReason,
+    'stop',
+    followUp.errorMessage ??
+      JSON.stringify({ snapshot: f.parts.env.budget.snapshot(), receipts: f.parts.env.budget.receipts() }),
+  );
 });
 
 test('S4: each user message resets the bounded chat helper allowance', async (t) => {
