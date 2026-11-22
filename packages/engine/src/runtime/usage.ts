@@ -181,12 +181,12 @@ export function payloadWithinInputCap(payload: unknown, maxInputTokens: number):
  * names, request wrapper, tool conversion): the larger of 32 KB or a quarter of the transcript. */
 const WRAPPER_SLACK_BYTES = 32 * 1024;
 
-/** The serialized body must stay inside a measured input bound — whose slack is already priced
- * in, unlike `payloadWithinInputCap`'s separate protocol allowance for a user-configured cap. */
-function payloadWithinMeasuredBound(payload: unknown, inputBound: number): boolean {
+/** The serialized body must stay inside the measured byte bound — a tokenizer emits at most
+ * one token per byte, so `bound` in tokens equals the measured bytes plus wrapper slack. */
+function payloadWithinMeasuredBound(payload: unknown, bound: number): boolean {
   if (unboundedInput(payload)) return false;
   try {
-    return Buffer.byteLength(JSON.stringify(payload)) <= inputBound * BYTES_PER_TOKEN;
+    return Buffer.byteLength(JSON.stringify(payload)) <= bound;
   } catch {
     return false;
   }
@@ -197,10 +197,12 @@ function payloadWithinMeasuredBound(payload: unknown, inputBound: number): boole
  * receive, or undefined when that input cannot be byte-bounded: Claude Code's native prompt
  * is invisible to OMS, and media/remote-file content has no byte-proportional token count.
  * The catalog window is only a worst case — reserving `window + output` for a 30 KB
- * transcript leaves a failed request holding a bound it could never reach. The payload hook
- * below holds the serialized body inside this bound, so it stays a provable bound.
+ * transcript leaves a failed request holding a bound it could never reach. A provider
+ * tokenizer emits at most one token per serialized byte, so `bytes + slack` is a provable
+ * upper bound where a chars-per-token estimate could undercount token-dense text. The
+ * payload hook below holds the serialized body inside this bound, so it stays provable.
  */
-function measuredInputBound(model: Model<Api>, context: Parameters<StreamFn>[1]): number | undefined {
+export function measuredInputBound(model: Model<Api>, context: { messages: readonly unknown[] }): number | undefined {
   if (isClaudeCodeModel(model)) return undefined;
   // Tool-result `details` (pi's read truncation copy, edit diffs) are never sent to providers.
   const sent = context.messages.map((message) => ({ ...(message as object), details: undefined }));
@@ -211,8 +213,7 @@ function measuredInputBound(model: Model<Api>, context: Parameters<StreamFn>[1])
   } catch {
     return undefined;
   }
-  const bound = Math.ceil((bytes + Math.max(WRAPPER_SLACK_BYTES, bytes >> 2)) / BYTES_PER_TOKEN);
-  return Math.min(model.contextWindow, bound);
+  return bytes + Math.max(WRAPPER_SLACK_BYTES, bytes >> 2);
 }
 
 function readinessForBound(
@@ -344,8 +345,8 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       output.push({ type: 'error', reason: aborted ? 'aborted' : 'error', error: message });
       output.end();
     };
-    const uncertain = (): void => {
-      if (!dispatchId || settled) return;
+    const uncertain = (): boolean => {
+      if (!dispatchId || settled) return false;
       settled = true;
       // A failure before the single metered request proves nothing reached an API provider,
       // so that reservation is released rather than retained as unknown usage. Claude Code's
@@ -358,6 +359,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
         tokens: sent ? null : 0,
         spendMicroUsd: sent ? null : 0,
       });
+      return !sent;
     };
     // A transport-level failure (dropped stream, 5xx, overload) proves nothing about usage but cannot exceed what admission
     // reserved, so it is settled at that bound: the ledger stays consistent, nothing is under-counted, and later requests
@@ -810,11 +812,13 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               }
             }
             if (!isClaudeCodeModel(model) && event.reason !== 'aborted' && interrupted(errorMessage)) return;
-            if (!observedSettled) uncertain();
+            const released = !observedSettled && uncertain();
             failed(
               observedSettled
                 ? 'The provider request failed after reporting its usage; that usage was counted.'
-                : describeFailure(model.provider),
+                : released
+                  ? 'The request failed before reaching the provider; the reservation was released and nothing was charged.'
+                  : describeFailure(model.provider),
               event.reason === 'aborted',
             );
             return;
@@ -825,9 +829,11 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
                 ? normalizePiUsage(model, event.message.usage)
                 : null;
             if (!usage) {
-              uncertain();
+              const released = uncertain();
               failed(
-                'Provider finished without trustworthy final usage; budget usage is unknown and its reservation is retained.',
+                released
+                  ? 'Provider finished without trustworthy usage, but no request reached it; the reservation was released.'
+                  : 'Provider finished without trustworthy final usage; budget usage is unknown and its reservation is retained.',
               );
               return;
             }
@@ -861,9 +867,11 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           output.push({ ...event, partial: cleanMessage(event.partial) });
         }
         if (!isClaudeCodeModel(model) && interrupted('stream disconnected before completion')) return;
-        uncertain();
+        const released = uncertain();
         failed(
-          'Provider stream ended without a final receipt; budget usage is unknown and its reservation is retained.',
+          released
+            ? 'Provider stream ended before any request was sent; the reservation was released.'
+            : 'Provider stream ended without a final receipt; budget usage is unknown and its reservation is retained.',
         );
       } catch (error) {
         if (controller.signal.aborted && settled) {
@@ -873,10 +881,12 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
         if (releaseUnsent() || releaseRejected()) return;
         if (!isClaudeCodeModel(model) && dispatched && interrupted(error instanceof Error ? error.message : undefined))
           return;
-        uncertain();
+        const released = uncertain();
         failed(
           dispatched
-            ? 'Provider request interrupted; budget usage is unknown and its reservation is retained.'
+            ? released
+              ? 'Provider request was never sent; the reservation was released and nothing was charged.'
+              : 'Provider request interrupted; budget usage is unknown and its reservation is retained.'
             : 'OMS could not prepare this request safely. No provider request sent; your saved work is unchanged.',
           controller.signal.aborted,
         );

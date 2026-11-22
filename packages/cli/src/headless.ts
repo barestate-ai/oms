@@ -4,12 +4,14 @@ import { join } from 'node:path';
 import {
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
+  measuredInputBound,
   modelReadiness,
   parseRunRecord,
   type HarnessSession,
   type HarnessSessionOptions,
   type RunRecord,
 } from '@oms/engine';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { openHarnessWithOwnership } from './ownership.ts';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -141,6 +143,20 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         knowledgeBuilt = primer.built;
       }
       firstTurn = buildFirstTurn({ status: state.ok ? state.value : undefined, brief: briefText, primer: primerText });
+      // Readiness must compare the allowance against what dispatch will actually reserve —
+      // the measured provider-visible transcript plus the pending instruction — not the
+      // catalog window, or a run stops early while a real request would still fit.
+      const inputBound = async (pending: string) =>
+        measuredInputBound(current.session.model!, {
+          messages: [
+            ...normalizeContext({
+              systemPrompt: current.session.agent.state.systemPrompt,
+              tools: current.session.agent.state.tools,
+              messages: await current.session.agent.convertToLlm(current.session.agent.state.messages),
+            }).messages,
+            { role: 'user', content: pending, timestamp: Date.now() },
+          ],
+        });
       for (let turn = 0; ; turn++) {
         observe();
         const items = itemStates(current);
@@ -173,6 +189,10 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           'bounded',
           options.maxInputTokens,
           options.subscriptionSpendExempt,
+          false,
+          false,
+          undefined,
+          await inputBound(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION),
         );
         if (!ready.ready) {
           // Holds are bounded and cannot be admitted if the remaining allowance cannot cover one more call.
@@ -207,6 +227,10 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
             'bounded',
             options.maxInputTokens,
             options.subscriptionSpendExempt,
+            false,
+            false,
+            undefined,
+            await inputBound(HEADLESS_INSTRUCTION),
           ).ready
         ) {
           reason = 'no-verified-progress';

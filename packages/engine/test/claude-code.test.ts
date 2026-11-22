@@ -84,6 +84,7 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  }
  if(mode==='refuse-then-good'&&!existsSync(root+'/refused')){writeFileSync(root+'/refused','');emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage,modelUsage:{},errors:['Request was refused']});return;}
  if(mode==='refuse-unsent'&&!existsSync(root+'/refused')){writeFileSync(root+'/refused','');emit({type:'result',subtype:'error_max_turns',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:['Request was refused']});return;}
+ if(mode==='usage-then-zero-error'){assistant({type:'text',text:'partial'});emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:['execution failed']});return;}
  if(mode==='empty-after-tool'||mode==='auth-after-tool'){
   if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:mode==='auth-after-tool'?['API Error: 401']:[]});}
   else{assistant({type:'text',text:'reply after tool'});receipt(1);}return;
@@ -191,16 +192,11 @@ for (const mode of [
         const input = rows(join(directory, 'input'));
         assert.equal(input.length, mode === 'empty-second-then-good' ? 3 : 2);
         assert.deepEqual(input.at(-1).message, input.at(-2).message, 'the original input is retried unchanged');
-        if (mode.startsWith('empty-success')) {
-          // A success-marked empty receipt carries no provable failed usage: the bound stays.
-          assert.ok(ledger.snapshot().used.tokens >= 1_128_000, 'a receipt-free empty response retains its bound');
-        } else {
-          assert.ok(
-            ledger.receipts().some((receipt) => receipt.outcome === 'known' && receipt.tokens === 0),
-            'the failed attempt settles at the usage its provider reported',
-          );
-          assert.ok(ledger.snapshot().used.tokens < 1_128_000);
-        }
+        assert.ok(
+          ledger.receipts().some((receipt) => receipt.outcome === 'known' && receipt.tokens === 0),
+          'the failed attempt settles at the usage its provider reported',
+        );
+        assert.ok(ledger.snapshot().used.tokens < 1_128_000);
       } finally {
         await native.close();
       }
@@ -447,6 +443,22 @@ for (const mode of ['refuse-then-good', 'refuse-unsent'])
         await native.close();
       }
     }));
+
+test('an error receipt contradicting streamed usage stays fail-closed', async (t) =>
+  toolFreeFixture(t, 'usage-then-zero-error', async () => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native, 2_000_000);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error', response.errorMessage);
+      // The stream reported real usage but the receipt claims none: contradictory, so
+      // the reservation is retained as unknown usage rather than settled at zero.
+      assert.equal(ledger.snapshot().accounting, 'unknown');
+      assert.ok(ledger.snapshot().used.tokens >= 1_128_000);
+    } finally {
+      await native.close();
+    }
+  }));
 
 test('an empty continuation resumes after the delivered tool result without replaying the tool', async (t) => {
   let server: Server;

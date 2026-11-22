@@ -622,6 +622,11 @@ export class ClaudeCodeSession implements NativeChatControls {
   private publishObservedUsage(current: Completion, eventUsage: unknown): void {
     try {
       const aggregate = nativeUsage(eventUsage);
+      const streamed = current.rawUsage === undefined ? undefined : nativeUsage(current.rawUsage);
+      // A turn-cumulative receipt must cover both earlier calls (`emitted`) and the usage the
+      // live stream already showed for this response — a smaller count is a contradictory
+      // receipt, not proof the attempt was cheap, so it stays fail-closed.
+      for (const key of usageKeys) if (aggregate[key] < this.state.emitted[key] + (streamed?.[key] ?? 0)) return;
       const usage = current.message.usage;
       let total = 0;
       for (const key of usageKeys) {
@@ -1079,8 +1084,12 @@ export class ClaudeCodeSession implements NativeChatControls {
       const hosted = object(event.usage).server_tool_use;
       if (hosted && Object.values(object(hosted)).some((value) => value !== 0))
         throw new Error('Unpriced hosted tool usage');
-      if (this.emptyResponse() && usageKeys.every((key) => response[key] === 0))
+      if (this.emptyResponse() && usageKeys.every((key) => response[key] === 0)) {
+        // The receipt reconciled above, so zero usage is provider-proven — the failed
+        // attempt can settle at it, which keeps the empty-response retry admissible.
+        this.publishObservedUsage(current, event.usage);
         throw new NativeEmptyResponseError('Native returned an empty response without usage');
+      }
       if (!current.message.content.length) throw new Error('Incomplete or duplicate native response');
       this.state.pending = [];
       this.state.emitted = emptyUsage();

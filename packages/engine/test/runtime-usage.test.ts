@@ -642,8 +642,11 @@ test('thrown/rejected request failures become safe unknown errors', async () => 
       await dispatchRequest(selected, options);
       throw new Error('provider-secret');
     },
-    async (selected, _context, options) => {
-      await dispatchRequest(selected, options);
+    // A synchronous throw after dispatch: the metered request was issued, so the
+    // failure still settles uncertain rather than released.
+    (selected, _context, options) => {
+      void options?.onPayload?.({ model: selected.id }, selected);
+      void options?.fetch?.('http://127.0.0.1:1')?.catch(() => {});
       throw new Error('provider-secret');
     },
   ];
@@ -804,7 +807,7 @@ test('real Anthropic adapter fits canonical medium thinking inside the total OMS
     provider: 'anthropic',
     reasoning: true,
     maxTokens: 16_384,
-    contextWindow: 32_768,
+    contextWindow: 64_000,
   };
   const events: BudgetLedgerEvent[] = [];
   const ledger = createBudgetLedger({
