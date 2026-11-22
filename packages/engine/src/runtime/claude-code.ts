@@ -677,6 +677,11 @@ export class ClaudeCodeSession implements NativeChatControls {
   configure(model: Model<Api>, context: TranscriptContext, maxTokens: number): void {
     this.configuration = { model, context, maxTokens, effort: claudeCodeEffort(this.options.effort) };
   }
+  /** The tool calls whose OMS results this native batch is still owed; their results reach the MCP
+   * socket verbatim, so the context trimmer must never replace them with re-issue stubs. */
+  pendingCallIds(): ReadonlySet<string> {
+    return new Set(this.state.pending.map((call) => call.id));
+  }
   async reconnect(): Promise<void> {
     if (this.active) throw new Error('Wait for the native turn to finish');
     if (this.state.blocked) throw new Error(this.state.blocked);
@@ -1273,8 +1278,12 @@ export class ClaudeCodeSession implements NativeChatControls {
       if (
         (event.is_error === true && PROMPT_TOO_LONG.test(receiptText)) ||
         (event.is_error !== true && PROMPT_TOO_LONG_ONLY.test(String(event.result ?? '')))
-      )
+      ) {
+        // An overflow receipt can still report the attempt's usage: publish it so the turn settles
+        // at observed usage — an all-zero receipt settles at 0 — not at the reservation bound.
+        if (current) this.publishObservedUsage(current, event.usage);
         throw new NativeContextOverflowError('Native prompt is too long');
+      }
       if (current && event.is_error === true && event.subtype === 'error_during_execution' && this.emptyResponse()) {
         const usage = nativeUsage(event.usage);
         const reason = receiptText;
@@ -1519,6 +1528,9 @@ export class ClaudeCodeSession implements NativeChatControls {
             !this.options.signal?.aborted
           ) {
             message.content = [];
+            // observedUsage aliases this usage object; left set, it would settle the resend at a
+            // superseded attempt's now-zeroed receipt instead of its own provable usage.
+            delete (message as AssistantMessage & ObservedUsage).observedUsage;
             Object.assign(message.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
             message.timestamp = Date.now();
             try {

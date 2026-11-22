@@ -129,6 +129,29 @@ test('the newest results are stubbed too when they alone exceed the cap, keeping
   assert.doesNotMatch(JSON.stringify(sent), /result-\d-body/);
 });
 
+test('a result still owed to a pending call is never stubbed, even oversized and even as a trim candidate', () => {
+  const oversized = [{ role: 'user', content: 'go' }, call(0), result(0, 140_000), call(1), result(1, 140_000)];
+  const sent = createContextTrimmer(
+    () => CAP_TOKENS,
+    () => 0,
+    () => new Set(['c1']),
+  )(oversized) as typeof oversized;
+  assert.doesNotMatch(JSON.stringify(sent), /result-0-body/, 'the unprotected oversized result still stubs');
+  const kept = sent[4]!;
+  assert.match(JSON.stringify(kept.content), /result-1-body/);
+  assert.equal((kept as { toolCallId?: string }).toolCallId, 'c1');
+  // A pending id inside the candidate range — a batch with more than CONTEXT_TRIM_KEEP results —
+  // survives the regular trim its settled neighbours get.
+  const batch = transcript(10, 12_000);
+  const trimmed = createContextTrimmer(
+    () => CAP_TOKENS,
+    () => 0,
+    () => new Set(['c3']),
+  )(batch);
+  assert.match(JSON.stringify(trimmed), /result-3-body/);
+  assert.doesNotMatch(JSON.stringify(trimmed), /result-0-body/);
+});
+
 test('an oversized result is stubbed without discarding a short result that already fits', () => {
   const small = {
     role: 'toolResult',

@@ -80,7 +80,14 @@ function stripReasoning<M extends ContextMessage>(messages: M[], indices: Set<nu
   });
 }
 
-export function createContextTrimmer(capTokens: () => number | undefined, overhead: () => number = () => 0) {
+export function createContextTrimmer(
+  capTokens: () => number | undefined,
+  overhead: () => number = () => 0,
+  /** Tool-call ids whose results are still owed to a caller verbatim — Claude Code's pending native
+   * batch sends them to its MCP socket unchanged, so a stub there would make the model re-issue the
+   * call, and the next result would stub again. Results without such an id are trimmed as usual. */
+  pendingResults: () => ReadonlySet<string> | undefined = () => undefined,
+) {
   let trimmed = 0;
   let forget = false;
   let floor = 0;
@@ -122,12 +129,15 @@ export function createContextTrimmer(capTokens: () => number | undefined, overhe
           };
     const shrunk = (m: M): M => (m.role === 'toolResult' ? stub(m) : withoutReasoning(m));
     const sizes = messages.map(bytes);
+    const pending = pendingResults();
     let total = sizes.reduce((a, b) => a + b, 1);
     const shrunkSet = new Set<number>();
     // A stub is only written where it saves bytes — a short result keeps its content rather than
     // trading it for a longer replacement.
     const shrink = (i: number) => {
-      const saved = sizes[i]! - bytes(shrunk(messages[i]!));
+      const message = messages[i]!;
+      if (message.role === 'toolResult' && pending?.has((message as { toolCallId?: string }).toolCallId ?? '')) return;
+      const saved = sizes[i]! - bytes(shrunk(message));
       if (saved > 0) {
         total -= saved;
         shrunkSet.add(i);
