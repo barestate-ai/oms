@@ -72,8 +72,8 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(mode==='exit-empty'){process.stdout.write('',()=>process.exit(1));return;}
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
- if(authError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'){
-  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:[]});return;
+ if(authError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'){
+  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:[]});return;
  }
  if(mode==='empty-after-tool'){
   if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:[]});}
@@ -204,25 +204,51 @@ test('three empty native failures stop with unknown usage', async (t) =>
 for (const mode of [
   'auth-failure',
   'usage-limit',
+  'usage-limit-reset',
   'auth-401',
   'auth-403',
   'auth-403-forbidden',
   'auth-unauthorized',
   'auth-forbidden',
 ])
-  test(`${mode} never retries native inference`, async (t) =>
+  test(`${mode} never retries native inference and names its real outcome`, async (t) =>
     toolFreeFixture(t, mode, async (directory) => {
       const { native, model } = await modelAndSession();
       const { ledger, stream } = meteredNative(native);
       try {
-        assert.equal((await (await stream(model, toolFreeContext())).result()).stopReason, 'error');
+        const response = await (await stream(model, toolFreeContext())).result();
+        assert.equal(response.stopReason, 'error');
         assert.equal(rows(join(directory, 'input')).length, 1);
         assert.equal(ledger.reservations().length, 1);
         assert.equal(ledger.snapshot().accounting, 'unknown');
+        if (mode === 'usage-limit' || mode === 'usage-limit-reset')
+          assert.match(response.errorMessage!, /Claude Code's usage limit was reached/);
+        else assert.match(response.errorMessage!, /Claude subscription sign-in is no longer valid/);
+        if (mode === 'usage-limit-reset') assert.match(response.errorMessage!, /It resets at 3:00 PM \(UTC\)\./);
+        assert.ok(!/broke off|API key/i.test(response.errorMessage!));
       } finally {
         await native.close();
       }
     }));
+
+test('an unconfigured Claude sign-in names re-authentication and releases the reservation', async (t) =>
+  toolFreeFixture(t, 'api-auth', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(
+        response.errorMessage,
+        'Claude Code needs its Claude subscription sign-in before it can answer. Run claude auth login in a terminal, then check the connection in /connect and send your message again. No provider request was sent.',
+      );
+      assert.equal(existsSync(join(directory, 'launch')), false, 'no native model process may start');
+      assert.equal(ledger.snapshot().used.tokens, 0);
+      assert.equal(ledger.snapshot().accounting, 'known');
+    } finally {
+      await native.close();
+    }
+  }));
 
 for (const mode of ['hang', 'exit-empty'])
   test(`${mode} retries only twice before preserving unknown usage`, async (t) =>

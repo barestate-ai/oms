@@ -24,10 +24,36 @@ import {
 
 export const CLAUDE_CODE_PROVIDER = 'claude-code';
 export const CLAUDE_CODE_EMPTY_RESPONSE = 'claude-code-empty-response';
+export const CLAUDE_CODE_SIGNIN = 'claude-code-signin';
+export const CLAUDE_CODE_AUTH = 'claude-code-auth';
+export const CLAUDE_CODE_LIMIT = 'claude-code-limit';
 export const CLAUDE_CODE_EMPTY_CONTINUATION =
   'Your previous reply came back empty. Continue the task from where you stopped; the earlier tool results are already in this conversation.';
 const CLAUDE_CODE_BASE_URL = 'claude-code://local';
 class NativeEmptyResponseError extends Error {}
+/** A provider or local sign-in refusal, not a protocol breach: the native session stays usable once the cause is fixed. */
+class NativeRefusalError extends Error {}
+/** The local Claude sign-in check failed before any native process started, so no model request exists. */
+class ClaudeCodeSignInError extends NativeRefusalError {}
+/** An in-flight native turn was refused as unauthorized: the Claude subscription sign-in lapsed. */
+class NativeAuthError extends NativeRefusalError {}
+/** The Claude plan usage limit refused a native turn; carries the provider's own reset hint when it gives one. */
+class NativeLimitError extends NativeRefusalError {
+  readonly reset?: string;
+  constructor(message: string, reset?: string) {
+    super(message);
+    this.reset = reset;
+  }
+}
+/** Native receipts that report the Claude plan's usage limit rather than a transport failure. */
+const NATIVE_LIMIT_REASON =
+  /usage.?limit|rate.?limit|hit (?:the |your )?limit|limit reached|quota|billing|payment|credit|insufficient|too many requests|\b429\b/i;
+/** Native receipts that report a missing, expired or rejected Claude subscription sign-in. */
+const NATIVE_AUTH_REASON =
+  /auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|account|\b(?:401|403|unauthorized|forbidden)\b/i;
+/** Every sign-in or limit-shaped reason; kept identical to what empty-response admission already excluded. */
+const NATIVE_ACCOUNT_REASON =
+  /auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|limit|quota|billing|payment|credit|account|\b(?:401|403|unauthorized|forbidden)\b/i;
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;
@@ -280,6 +306,21 @@ function nativeUsage(value: unknown): NativeUsage {
   };
 }
 const usageKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h'] as const;
+/** A failed native receipt names the refusal when the provider reported a sign-in or limit cause we understand. */
+function classifyNativeReceipt(event: Record<string, unknown>): Error {
+  if (event.is_error === true) {
+    const reason = JSON.stringify([event.errors, event.error, event.result]);
+    if (NATIVE_LIMIT_REASON.test(reason))
+      return new NativeLimitError('Claude plan usage limit reached', nativeResetHint(reason));
+    if (NATIVE_AUTH_REASON.test(reason)) return new NativeAuthError('Claude subscription sign-in was rejected');
+  }
+  return new Error('Unexpected or failed native receipt');
+}
+/** The reset hint a native limit message gives, e.g. "at 3:00 PM (UTC)": short, single-line and provider-owned. */
+function nativeResetHint(reason: string): string | undefined {
+  const hint = /\bresets?\s+((?:at|in|on|by|after)\s+[^.,;\n"'\]}\[{]{1,48})/i.exec(reason)?.[1];
+  return hint?.replace(/\s+/g, ' ').trim() || undefined;
+}
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const canonical = (value: unknown): string =>
   JSON.stringify(value, (_key, item) =>
@@ -503,14 +544,18 @@ export class ClaudeCodeSession implements NativeChatControls {
         : error instanceof Error
           ? error.message
           : 'Invalid native protocol';
-    if (!(error instanceof NativeEmptyResponseError))
+    if (!(error instanceof NativeEmptyResponseError || error instanceof NativeRefusalError))
       this.state.blocked =
         'Native protocol failed verification; review the OMS transcript, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view; task files and verification are retained';
     this.save();
     this.handshake?.reject(new Error(this.failure));
     if (this.active) {
       this.active.failed = true;
-      this.active.reject(error instanceof NativeEmptyResponseError ? error : new Error(this.failure));
+      this.active.reject(
+        error instanceof NativeEmptyResponseError || error instanceof NativeRefusalError
+          ? error
+          : new Error(this.failure),
+      );
     }
     this.kill('SIGTERM');
     // Reap the whole native/MCP process group even when a protocol peer stalls.
@@ -540,7 +585,7 @@ export class ClaudeCodeSession implements NativeChatControls {
       signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
     const auth = await inspectClaudeCode(startupSignal);
     startupSignal?.throwIfAborted();
-    if (!auth.configured) throw new Error(auth.detail);
+    if (!auth.configured) throw new ClaudeCodeSignInError(auth.detail);
     const { model, context, maxTokens, effort } = this.configuration;
     const tools = getCurrentTools(context.messages);
     const names = new Set(tools.map((tool) => `mcp__oms__${tool.name}`));
@@ -928,9 +973,7 @@ export class ClaudeCodeSession implements NativeChatControls {
         if (
           (usageKeys.every((key) => usage[key] === 0) ||
             usageKeys.every((key) => usage[key] === this.state.emitted[key])) &&
-          !/auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|limit|quota|billing|payment|credit|account|\b(?:401|403|unauthorized|forbidden)\b/i.test(
-            reason,
-          )
+          !NATIVE_ACCOUNT_REASON.test(reason)
         )
           throw new NativeEmptyResponseError('Unexpected or failed native receipt');
       }
@@ -942,7 +985,7 @@ export class ClaudeCodeSession implements NativeChatControls {
         event.subtype !== 'success' ||
         current.message.content.some((block) => block.type === 'toolCall')
       )
-        throw new Error('Unexpected or failed native receipt');
+        throw classifyNativeReceipt(event);
       const models = object(event.modelUsage),
         nativeModel = NATIVE_MODELS[current.model.id as NativeAlias];
       if (Object.keys(models).length !== 1 || !Object.hasOwn(models, nativeModel))
@@ -1121,6 +1164,11 @@ export class ClaudeCodeSession implements NativeChatControls {
           this.state.pending = [];
           this.state.emitted = emptyUsage();
           this.save();
+        } else if (message.stopReason === 'error') {
+          if (error instanceof ClaudeCodeSignInError) message.rawStopReason = CLAUDE_CODE_SIGNIN;
+          else if (error instanceof NativeAuthError) message.rawStopReason = CLAUDE_CODE_AUTH;
+          else if (error instanceof NativeLimitError)
+            message.rawStopReason = error.reset ? `${CLAUDE_CODE_LIMIT}:${error.reset}` : CLAUDE_CODE_LIMIT;
         }
         message.errorMessage = `Claude Code native chat stopped: ${this.failure}. No API-key fallback was used.`;
         // Error completion is not visible until the owned CLI/MCP process group

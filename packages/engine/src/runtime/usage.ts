@@ -37,6 +37,9 @@ import {
 
 import { BYTES_PER_TOKEN } from './context-trim.ts';
 import {
+  describeClaudeCodeAuth,
+  describeClaudeCodeLimit,
+  describeClaudeCodeSignIn,
   describeFailure,
   describeRejection,
   describeTransient,
@@ -51,7 +54,7 @@ import {
   isClaudeCodeModel,
 } from '@oms/core/usage';
 import type { DispatchAllocator } from '@oms/core/dispatch';
-import { CLAUDE_CODE_EMPTY_RESPONSE } from './claude-code.ts';
+import { CLAUDE_CODE_AUTH, CLAUDE_CODE_EMPTY_RESPONSE, CLAUDE_CODE_LIMIT, CLAUDE_CODE_SIGNIN } from './claude-code.ts';
 
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -365,6 +368,21 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       failed('Serialized text payload exceeds the local input cap. No provider request sent.');
       return true;
     };
+    // Claude Code's local sign-in check runs before any native process exists: like a 4xx refusal, nothing was sent.
+    const releaseClaudeSignIn = (): boolean => {
+      if (!dispatchId || settled) return false;
+      const released = config.ledger.settle({
+        dispatchId,
+        receiptId: randomUUID(),
+        outcome: 'not_dispatched',
+        tokens: 0,
+        spendMicroUsd: 0,
+      });
+      if (!released.ok) return false;
+      settled = true;
+      failed(describeClaudeCodeSignIn(model.provider));
+      return true;
+    };
     const run = async (): Promise<void> => {
       let onAbort: (() => void) | undefined;
       try {
@@ -627,6 +645,21 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               for await (const next of retry) output.push(next);
               output.end();
               return;
+            }
+            // Refusals the native transport already classified get their own outcomes, not the generic broke-off text.
+            if (isClaudeCodeModel(model) && event.reason !== 'aborted' && !controller.signal.aborted) {
+              const stop = event.error.rawStopReason;
+              if (stop === CLAUDE_CODE_SIGNIN && releaseClaudeSignIn()) return;
+              if (stop === CLAUDE_CODE_AUTH) {
+                uncertain();
+                failed(describeClaudeCodeAuth(model.provider));
+                return;
+              }
+              if (stop === CLAUDE_CODE_LIMIT || stop?.startsWith(`${CLAUDE_CODE_LIMIT}:`)) {
+                uncertain();
+                failed(describeClaudeCodeLimit(model.provider, stop.slice(CLAUDE_CODE_LIMIT.length + 1) || undefined));
+                return;
+              }
             }
             if (!isClaudeCodeModel(model) && event.reason !== 'aborted' && interrupted(errorMessage)) return;
             uncertain();
