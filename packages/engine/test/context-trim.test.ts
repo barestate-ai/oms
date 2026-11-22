@@ -114,9 +114,24 @@ test('a web_fetch stub is left as it is, so it still names the URL to fetch agai
   );
 });
 
-test('the newest results are kept even when they alone exceed the cap', () => {
-  const sent = createContextTrimmer(() => CAP_TOKENS)(transcript(2, 80_000));
-  for (const n of [0, 1]) assert.match(JSON.stringify(sent), new RegExp(`result-${n}-body`));
+test('the newest results are stubbed too when they alone exceed the cap, keeping their call ids', () => {
+  const messages = transcript(2, 140_000);
+  assert.ok(size(messages) > CAP * CONTEXT_TRIM_START);
+  const sent = createContextTrimmer(() => CAP_TOKENS)(messages) as typeof messages;
+  assert.equal(sent.length, messages.length, 'no message is dropped, so every tool call keeps its result');
+  for (const [m, id] of [
+    [sent[2]!, 'c0'],
+    [sent[4]!, 'c1'],
+  ] as const) {
+    assert.equal((m as { toolCallId?: string }).toolCallId, id, 'the stub keeps its call id for a smaller re-read');
+    assert.match(JSON.stringify(m.content), /removed to fit the context limit; run the tool again on a smaller range/);
+  }
+  assert.doesNotMatch(JSON.stringify(sent), /result-\d-body/);
+});
+
+test('the newest results are kept in full while they fit the budget', () => {
+  const messages = transcript(2, 30_000);
+  assert.equal(createContextTrimmer(() => CAP_TOKENS)(messages), messages);
 });
 
 test('the cap is a token count converted once: the same context that trims at a window of N tokens is left alone at a window 3x larger', () => {
@@ -155,7 +170,9 @@ test(
         ...f.options,
         modelRuntime: f.modelRuntime,
         model: f.model,
-        maxInputTokens: CAP_TOKENS,
+        // The cap is enforced on serialized bytes (one byte can be one token), so CAP bytes of
+        // message budget asks for CAP input tokens; the measured prompt and fixed overhead share it.
+        maxInputTokens: CAP,
         caps: { ...f.caps, tokens: 2_000_000 },
       });
       let sent = '';

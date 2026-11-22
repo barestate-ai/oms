@@ -185,10 +185,16 @@ test('S3: an admitted helper leaves the parent room to answer its real result', 
   transcript.push(toolResult('c1', 'agent', result.content));
   // Dispatch through the real metered path — admission measures the transcript and the
   // payload guard holds the serialized body inside that bound before the request is sent.
+  // The fetch runs through the metered transport, which only accepts it after onPayload passes.
   const metered = createMeteredStream({
     streamFunction: async (selected, _context, options) => {
       const body = { model: selected.id, messages: transcript, max_tokens: 1 };
-      await options?.onPayload?.(body, selected);
+      const encoded = await options?.onPayload?.(body, selected);
+      const response = await options?.fetch?.('https://provider.invalid/request', {
+        method: 'POST',
+        body: JSON.stringify(encoded),
+      });
+      assert.equal((response as Response).status, 200);
       const out = createAssistantMessageEventStream();
       out.push({
         type: 'done',
@@ -220,7 +226,9 @@ test('S3: an admitted helper leaves the parent room to answer its real result', 
     logicalTurnId: () => 'follow-up',
     executionMode: 'bounded',
   });
-  const source = await metered(f.model, normalizeContext({ messages: transcript as never }), {});
+  const source = await metered(f.model, normalizeContext({ messages: transcript as never }), {
+    fetch: async () => new Response('provider response'),
+  });
   const followUp = await source.result();
   assert.equal(
     followUp.stopReason,

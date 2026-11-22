@@ -11,6 +11,7 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { createBudgetLedger, type BudgetLedgerEvent } from '@oms/core';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 import { modelReservationBound } from '@oms/core/usage';
+import { BYTES_PER_TOKEN, createContextTrimmer } from '../src/runtime/context-trim.ts';
 import {
   createMeteredStream,
   modelReadiness,
@@ -356,6 +357,91 @@ test('the input cap is enforced on serialized bytes: one byte can be one token, 
   );
   assert.equal(payloadWithinInputCap(payload(cap), cap), false, 'no room left for the request envelope');
   assert.equal(payloadWithinInputCap(payload(cap * 4), cap), false);
+});
+
+test('the default headless cap stubs oversized recent reads so the follow-up still dispatches', async () => {
+  // Default --input-tokens is 65,536: two 28 KiB reads (57,344 bytes) leave no room for the
+  // prompt, schemas and envelope, so the trimmer stubs even the newest results and the guarded
+  // follow-up still dispatches instead of stalling.
+  const big = 'x'.repeat(28 * 1024);
+  const transcript = [
+    { role: 'user', timestamp: 1, content: 'read both files' },
+    {
+      role: 'assistant',
+      timestamp: 2,
+      api: opus.api,
+      provider: opus.provider,
+      model: opus.id,
+      stopReason: 'toolUse',
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      content: [
+        { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'a.rs' } },
+        { type: 'toolCall', id: 'c2', name: 'read', arguments: { path: 'b.rs' } },
+      ],
+    },
+    {
+      role: 'toolResult',
+      timestamp: 3,
+      toolCallId: 'c1',
+      toolName: 'read',
+      isError: false,
+      content: [{ type: 'text', text: big }],
+    },
+    {
+      role: 'toolResult',
+      timestamp: 4,
+      toolCallId: 'c2',
+      toolName: 'read',
+      isError: false,
+      content: [{ type: 'text', text: big }],
+    },
+  ];
+  const trimmed = createContextTrimmer(
+    () => Math.ceil(65_536 / BYTES_PER_TOKEN),
+    // The measured prompt plus the schema/envelope allowance leave under 28 KiB per result.
+    () => 40_000,
+  )(transcript as never);
+  const results = trimmed.filter((m) => m.role === 'toolResult');
+  assert.deepEqual(
+    results.map((m) => (m as { toolCallId?: string }).toolCallId),
+    ['c1', 'c2'],
+    'stubs keep their call ids for a smaller re-read',
+  );
+  for (const m of results)
+    assert.match(JSON.stringify(m), /removed to fit the context limit; run the tool again on a smaller range/);
+  const subject = harness({
+    maxInputTokens: 65_536,
+    countProvider: true,
+    streamFunction: async (selected, context, streamOptions) => {
+      const body = { model: selected.id, messages: context.messages, max_tokens: 1 };
+      await streamOptions?.onPayload?.(body, selected);
+      const out = createAssistantMessageEventStream();
+      out.push({
+        type: 'done',
+        reason: 'stop',
+        message: doneMessage(selected, {
+          input: 12,
+          output: 4,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 16,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        }),
+      });
+      out.end();
+      return out;
+    },
+  });
+  const { result } = await consume(subject, opus, trimmed as never);
+  assert.equal(result.stopReason, 'stop', result.errorMessage);
+  assert.equal(subject.calls(), 1);
 });
 
 test('a default-sized output cap is lowered to a smaller model maximum and stays ready; a larger model keeps the cap', async () => {
