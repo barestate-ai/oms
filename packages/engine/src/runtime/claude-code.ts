@@ -363,6 +363,13 @@ function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet
     .filter(Boolean)
     .slice(-2);
   const pending = items.filter((m) => m.role === 'toolResult' && pendingIds.has(m.toolCallId!));
+  const callFor = (id: string | undefined) =>
+    items
+      .flatMap((m) => (m.role === 'assistant' && Array.isArray(m.content) ? m.content : []))
+      .find(
+        (block) =>
+          (block as { type?: string; id?: string }).type === 'toolCall' && (block as { id?: string }).id === id,
+      ) as { name?: string; arguments?: unknown } | undefined;
   const results = items
     .flatMap((m) =>
       m.role === 'toolResult' && !pendingIds.has(m.toolCallId!)
@@ -386,7 +393,11 @@ function compactionSummary(messages: readonly unknown[], pendingIds: ReadonlySet
     section(
       'PENDING TOOL RESULTS',
       pending
-        .map((m) => `${m.toolName ?? 'tool'} [${m.toolCallId}]:\n${clip(textOf(m.content), budget(16_000))}`)
+        .map((m) => {
+          const call = callFor(m.toolCallId);
+          const args = call?.arguments === undefined ? '' : `(${clip(JSON.stringify(call.arguments), budget(400))})`;
+          return `${call?.name ?? m.toolName ?? 'tool'}${args} [${m.toolCallId}]:\n${clip(textOf(m.content), budget(16_000))}`;
+        })
         .join('\n\n') || 'none — no tool batch was in flight',
     ) +
     section('RECENT WORK', replies.join('\n')) +

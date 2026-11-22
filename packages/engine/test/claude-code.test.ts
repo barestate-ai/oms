@@ -326,7 +326,7 @@ test('compaction during a tool batch carries the pending result into the summary
       const input = rows(join(directory, 'input'));
       assert.equal(input.length, 2, 'the tool result rides the compaction summary, not a tool_result block');
       assert.match(input[1]!.message.content, /compacted by OMS/);
-      assert.match(input[1]!.message.content, /PENDING TOOL RESULTS[\s\S]*REAL/);
+      assert.match(input[1]!.message.content, /PENDING TOOL RESULTS[\s\S]*src\/main\.ts[\s\S]*REAL/);
       assert.match(input[1]!.message.content, /## TASK[\s\S]*probe/);
     } finally {
       await native.close();
