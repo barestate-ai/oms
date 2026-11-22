@@ -696,20 +696,20 @@ export class ClaudeCodeSession implements NativeChatControls {
     this.transportReady = false;
     this.active?.reject(new Error('Native conversation disconnected'));
     this.handshake?.reject(new Error('Native conversation disconnected'));
+    // Buffered stdout and MCP input during teardown are not protocol data: the stream
+    // is being abandoned deliberately, so they must not reach event()/fail().
+    for (const socket of this.sockets) {
+      socket.removeAllListeners('data');
+      socket.destroy();
+    }
+    this.sockets.clear();
     if (this.child) {
-      // Events buffered on stdout during teardown are not protocol input: the stream
-      // is being abandoned deliberately, so they must not reach event()/fail().
       this.child.stdout.removeAllListeners('data');
       this.kill('SIGTERM');
       const timer = setTimeout(() => this.kill('SIGKILL'), 500);
       await this.exited;
       clearTimeout(timer);
     }
-    for (const socket of this.sockets) {
-      socket.removeAllListeners('data');
-      socket.destroy();
-    }
-    this.sockets.clear();
     this.waiting = [];
     this.results.clear();
     this.delivered.clear();
@@ -723,6 +723,10 @@ export class ClaudeCodeSession implements NativeChatControls {
     if (this.temporaryWork) await rm(this.temporaryWork, { recursive: true, force: true });
   }
   private fail(error: unknown): void {
+    // The first failure owns the classification and any blocked marker; a second
+    // error during the same teardown (drained lines, dying MCP peers) must not
+    // overwrite it or newly block the session.
+    if (this.failure !== undefined) return;
     this.failure =
       error instanceof SyntaxError
         ? 'Native returned malformed structured data'
@@ -764,18 +768,27 @@ export class ClaudeCodeSession implements NativeChatControls {
       this.state.pending.every((call) => this.delivered.has(call.id))
     );
   }
-  /** The window this login effectively gets: the subscription bound lowered by any smaller
-   * limit the native receipts have reported. Never raised back up by a larger receipt.
+  /** The limits the native session was admitted under: the catalog bound lowered by any
+   * smaller limit the receipts reported. Usage verification uses these real limits —
+   * the subscription baseline and test overrides only steer compaction decisions. */
+  private admittedWindowFor(model: Model<Api>): number {
+    return Math.min(model.contextWindow, this.state.nativeWindow ?? model.contextWindow);
+  }
+  private admittedOutputFor(model: Model<Api>): number {
+    return Math.min(model.maxTokens, this.state.nativeMaxOutput ?? model.maxTokens);
+  }
+  /** The window this login effectively gets: the admitted bound lowered to the
+   * subscription window, never raised back up by a larger receipt.
    * `OMS_CLAUDE_CODE_CONTEXT_WINDOW` forces the bound in forced-low test runs. */
   private windowFor(model: Model<Api>): number {
     const forced = Number(process.env.OMS_CLAUDE_CODE_CONTEXT_WINDOW);
     const subscription = Number.isSafeInteger(forced) && forced > 0 ? forced : CLAUDE_CODE_SUBSCRIPTION_WINDOW;
-    return Math.min(model.contextWindow, subscription, this.state.nativeWindow ?? Infinity);
+    return Math.min(this.admittedWindowFor(model), subscription);
   }
   private outputFor(model: Model<Api>): number {
     const forced = Number(process.env.OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS);
     const forcedOutput = Number.isSafeInteger(forced) && forced > 0 ? forced : Infinity;
-    return Math.min(model.maxTokens, forcedOutput, this.state.nativeMaxOutput ?? Infinity);
+    return Math.min(this.admittedOutputFor(model), forcedOutput);
   }
   /** Replace the native conversation with a fresh session seeded by an OMS-written summary
    * of the OMS transcript (which keeps every turn). The next send carries the summary in
@@ -1037,8 +1050,8 @@ export class ClaudeCodeSession implements NativeChatControls {
     Object.assign(current.message.usage, usage);
     current.message.usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
     if (
-      usage.output > this.outputFor(current.model) ||
-      usage.input + usage.cacheRead + usage.cacheWrite > this.windowFor(current.model)
+      usage.output > this.admittedOutputFor(current.model) ||
+      usage.input + usage.cacheRead + usage.cacheWrite > this.admittedWindowFor(current.model)
     )
       throw new Error('Native usage exceeds the admitted model limits');
     calculateCost(current.model, current.message.usage);
