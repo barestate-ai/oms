@@ -138,15 +138,9 @@ export function createCoreApi(parts: SessionApiParts): SessionCore {
         model.modelRuntime.isUsingSubscription(m.provider),
         false,
         undefined,
-        // A conservative preflight bound over the raw transcript (system prompt, tool
-        // declarations, entries); metered dispatch re-checks the exact serialized body.
-        measuredInputBound(m, {
-          messages: [
-            { role: 'system', content: session.agent.state.systemPrompt },
-            { role: 'system', content: JSON.stringify(session.agent.state.tools) },
-            ...(session.agent.state.messages as readonly unknown[]),
-          ],
-        }),
+        // A preflight bound over the raw transcript (its leading system message carries
+        // the prompt and tool declarations); metered dispatch re-checks the exact body.
+        measuredInputBound(m, { messages: session.agent.state.messages as readonly unknown[] }),
       ),
   });
   const runCommand = (command: string, signal?: AbortSignal): Promise<SandboxResult> =>

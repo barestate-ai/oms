@@ -11,7 +11,6 @@ import {
   type HarnessSessionOptions,
   type RunRecord,
 } from '@oms/engine';
-import { normalizeContext } from '@earendil-works/pi-ai';
 import { openHarnessWithOwnership } from './ownership.ts';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -144,16 +143,12 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
       }
       firstTurn = buildFirstTurn({ status: state.ok ? state.value : undefined, brief: briefText, primer: primerText });
       // Readiness must compare the allowance against what dispatch will actually reserve —
-      // the measured provider-visible transcript plus the pending instruction — not the
-      // catalog window, or a run stops early while a real request would still fit.
+      // the converted transcript (its leading system message included) plus the pending
+      // instruction — not the catalog window, or a run stops early while a real request fits.
       const inputBound = async (pending: string) =>
         measuredInputBound(current.session.model!, {
           messages: [
-            ...normalizeContext({
-              systemPrompt: current.session.agent.state.systemPrompt,
-              tools: current.session.agent.state.tools,
-              messages: await current.session.agent.convertToLlm(current.session.agent.state.messages),
-            }).messages,
+            ...(await current.session.agent.convertToLlm(current.session.agent.state.messages)),
             { role: 'user', content: pending, timestamp: Date.now() },
           ],
         });
@@ -182,6 +177,7 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           reason = 'model-unavailable';
           break;
         }
+        const bound = await inputBound(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         const ready = modelReadiness(
           model,
           current.budget,
@@ -192,13 +188,15 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           false,
           false,
           undefined,
-          await inputBound(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION),
+          bound,
         );
         if (!ready.ready) {
           // Holds are bounded and cannot be admitted if the remaining allowance cannot cover one more call.
           status = 'capped';
           cap =
-            budget.remaining.tokens < (options.maxInputTokens ?? model.contextWindow) + options.maxOutputTokens
+            budget.remaining.tokens <
+            Math.min(bound ?? model.contextWindow, options.maxInputTokens ?? model.contextWindow) +
+              options.maxOutputTokens
               ? 'tokens'
               : 'usd';
           reason = `capped:${cap}`;
