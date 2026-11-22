@@ -276,6 +276,31 @@ test('classified Claude Code refusals get named outcomes instead of the broke-of
       'unknown',
       1_100,
     ],
+    ['claude-code-rate-limit', 'Claude Code is rate limiting requests. Wait a moment and try again.', 'known', 1_100],
+    [
+      'claude-code-auth|pending',
+      "Claude Code's Claude subscription sign-in is no longer valid. Run claude auth login in a terminal and check the connection in /connect before sending your message again. It is counted at its maximum cost. An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.",
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-limit|pending:at 3:00 PM (UTC)',
+      "Claude Code's usage limit was reached. It resets at 3:00 PM (UTC). It is counted at its maximum cost. Send your message again after the limit resets. An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.",
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-rate-limit|pending',
+      'Claude Code rate limited the request. Wait a short while and send your message again. It is counted at its maximum cost. An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.',
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-not-dispatched:Interrupted native tool batch: review OMS tool results',
+      'Claude Code did not start a native request: Interrupted native tool batch: review OMS tool results. No provider request was sent.',
+      'known',
+      0,
+    ],
   ] as const) {
     const ledger = createBudgetLedger({ caps, clock: Date.now, persist() {} });
     const stream = createMeteredStream({

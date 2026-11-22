@@ -27,6 +27,8 @@ export const CLAUDE_CODE_EMPTY_RESPONSE = 'claude-code-empty-response';
 export const CLAUDE_CODE_SIGNIN = 'claude-code-signin';
 export const CLAUDE_CODE_AUTH = 'claude-code-auth';
 export const CLAUDE_CODE_LIMIT = 'claude-code-limit';
+export const CLAUDE_CODE_RATE_LIMIT = 'claude-code-rate-limit';
+export const CLAUDE_CODE_NOT_DISPATCHED = 'claude-code-not-dispatched';
 export const CLAUDE_CODE_EMPTY_CONTINUATION =
   'Your previous reply came back empty. Continue the task from where you stopped; the earlier tool results are already in this conversation.';
 const CLAUDE_CODE_BASE_URL = 'claude-code://local';
@@ -45,15 +47,19 @@ class NativeLimitError extends NativeRefusalError {
     this.reset = reset;
   }
 }
+/** A bare throttle (429) refused a native turn without quota evidence: back-pressure, not plan exhaustion. */
+class NativeRateLimitError extends NativeRefusalError {}
 /** Native receipts that report the Claude plan's usage limit rather than a transport failure. */
 const NATIVE_LIMIT_REASON =
-  /usage.?limit|rate.?limit|hit (?:the |your )?limit|limit reached|quota|billing|payment|credit|insufficient|too many requests|\b429\b/i;
+  /usage.?limit|hit (?:the |your )?limit|limit reached|quota|billing|payment|credit|insufficient/i;
 /** Native receipts carrying a real sign-in signal: a status code, an auth word or a login phrase — not prose like "account". */
 const NATIVE_AUTH_REASON =
   /auth|log(?:ged)?.?in|sign.?in|api.?key|subscription|\b(?:401|403|unauthorized|forbidden)\b/i;
+/** Native receipts reporting request throttling without a quota reason; a bare 429 says nothing about plan state. */
+const NATIVE_RATE_LIMIT_REASON = /rate.?limit|too many requests|\b429\b/i;
 /** Every sign-in or limit-shaped reason: the union of the classifiers plus the broad terms the empty-retry gate already excluded. */
 const NATIVE_ACCOUNT_REASON = new RegExp(
-  `${NATIVE_LIMIT_REASON.source}|${NATIVE_AUTH_REASON.source}|limit|account|credential`,
+  `${NATIVE_LIMIT_REASON.source}|${NATIVE_AUTH_REASON.source}|${NATIVE_RATE_LIMIT_REASON.source}|limit|account|credential`,
   'i',
 );
 export interface ClaudeCodeStatus {
@@ -315,12 +321,15 @@ function classifyNativeReceipt(event: Record<string, unknown>): Error {
     if (NATIVE_LIMIT_REASON.test(reason))
       return new NativeLimitError('Claude plan usage limit reached', nativeResetHint(reason));
     if (NATIVE_AUTH_REASON.test(reason)) return new NativeAuthError('Claude subscription sign-in was rejected');
+    if (NATIVE_RATE_LIMIT_REASON.test(reason)) return new NativeRateLimitError('Claude rate limited the request');
   }
   return new Error('Unexpected or failed native receipt');
 }
 /** The reset hint a native limit message gives, e.g. "at 3:00 PM (UTC)": short, single-line and provider-owned. */
 function nativeResetHint(reason: string): string | undefined {
-  const hint = /\bresets?\s+((?:at|in|on|by|after)\s+[^.,;\n"'\]}\[{]{1,48})/i.exec(reason)?.[1];
+  // The reason arrives JSON-escaped: \n inside a string is a literal backslash-n, not a line break.
+  const text = reason.replace(/\\[nrt]/g, ' ');
+  const hint = /\bresets?\s+((?:at|in|on|by|after)\s+[^.,;|\n"'\]}\[{\\]{1,48})/i.exec(text)?.[1];
   return hint?.replace(/\s+/g, ' ').trim() || undefined;
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -1043,6 +1052,9 @@ export class ClaudeCodeSession implements NativeChatControls {
       let abort: (() => void) | undefined;
       let timer: NodeJS.Timeout | undefined;
       let requestFinished = false;
+      // Flips only once user input or tool results reach the native transport: before that,
+      // a rejection proves no provider request exists and the reservation must be released.
+      let nativeDispatched = false;
       try {
         options?.signal?.throwIfAborted();
         this.options.signal?.throwIfAborted();
@@ -1128,6 +1140,7 @@ export class ClaudeCodeSession implements NativeChatControls {
               throw new Error('Native tool results currently support text only');
             this.results.set(call.id, { content: result.content, isError: result.isError });
           }
+          nativeDispatched = true;
           this.flushResults();
           // Native owns the exact tool_result history; do not send a duplicate user message.
         } else {
@@ -1152,6 +1165,7 @@ export class ClaudeCodeSession implements NativeChatControls {
               session_id: this.state.sessionId,
             }) + '\n',
           );
+          nativeDispatched = true;
         }
         await completion;
       } catch (error) {
@@ -1167,10 +1181,18 @@ export class ClaudeCodeSession implements NativeChatControls {
           this.state.emitted = emptyUsage();
           this.save();
         } else if (message.stopReason === 'error') {
+          const interruptedMark = this.state.pending.length ? '|pending' : '';
           if (error instanceof ClaudeCodeSignInError) message.rawStopReason = CLAUDE_CODE_SIGNIN;
-          else if (error instanceof NativeAuthError) message.rawStopReason = CLAUDE_CODE_AUTH;
+          else if (!nativeDispatched) message.rawStopReason = `${CLAUDE_CODE_NOT_DISPATCHED}:${this.failure}`;
+          else if (error instanceof NativeAuthError) message.rawStopReason = `${CLAUDE_CODE_AUTH}${interruptedMark}`;
+          else if (error instanceof NativeRateLimitError)
+            message.rawStopReason = `${CLAUDE_CODE_RATE_LIMIT}${interruptedMark}`;
           else if (error instanceof NativeLimitError)
-            message.rawStopReason = error.reset ? `${CLAUDE_CODE_LIMIT}:${error.reset}` : CLAUDE_CODE_LIMIT;
+            message.rawStopReason = `${CLAUDE_CODE_LIMIT}${interruptedMark}${error.reset ? `:${error.reset}` : ''}`;
+          // A refused turn admits the same user message again once its cause is fixed; a
+          // still-pending tool batch keeps blocking new sends because replay cannot be proven safe.
+          if (error instanceof NativeRefusalError && this.state.lastUser && !this.state.pending.length)
+            this.retryUser = this.state.lastUser;
         }
         message.errorMessage = `Claude Code native chat stopped: ${this.failure}. No API-key fallback was used.`;
         // Error completion is not visible until the owned CLI/MCP process group

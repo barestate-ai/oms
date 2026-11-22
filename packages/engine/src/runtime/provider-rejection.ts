@@ -88,15 +88,29 @@ export function describeClaudeCodeSignIn(provider: string): string {
   return `${providerName(provider)} needs its Claude subscription sign-in before it can answer. Run claude auth login in a terminal, then check the connection in /connect and send your message again. No provider request was sent.`;
 }
 
+/** Recovery for a native turn refused with a tool batch still in flight; replay cannot be proven safe. */
+const INTERRUPTED_NATIVE_BATCH =
+  'An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.';
+
 /** An in-flight Claude Code turn was refused because the Claude subscription sign-in lapsed. */
-export function describeClaudeCodeAuth(provider: string): string {
-  return `${providerName(provider)}'s Claude subscription sign-in is no longer valid. Run claude auth login in a terminal and check the connection in /connect before sending your message again. It is counted at its maximum cost.`;
+export function describeClaudeCodeAuth(provider: string, interruptedBatch = false): string {
+  return `${providerName(provider)}'s Claude subscription sign-in is no longer valid. Run claude auth login in a terminal and check the connection in /connect before sending your message again. It is counted at its maximum cost.${interruptedBatch ? ` ${INTERRUPTED_NATIVE_BATCH}` : ''}`;
 }
 
 /** The provider refused a Claude Code turn when the Claude plan usage limit was reached; reset is its own hint, if given. */
-export function describeClaudeCodeLimit(provider: string, reset?: string): string {
+export function describeClaudeCodeLimit(provider: string, reset?: string, interruptedBatch = false): string {
   const when = reset ? ` It resets ${reset}.` : '';
-  return `${providerName(provider)}'s usage limit was reached.${when} It is counted at its maximum cost. Send your message again after the limit resets.`;
+  return `${providerName(provider)}'s usage limit was reached.${when} It is counted at its maximum cost. Send your message again after the limit resets.${interruptedBatch ? ` ${INTERRUPTED_NATIVE_BATCH}` : ''}`;
+}
+
+/** A bare throttle refused a Claude Code turn that kept a tool batch in flight; nothing proves plan exhaustion. */
+export function describeClaudeCodeRateLimit(provider: string, interruptedBatch = false): string {
+  return `${providerName(provider)} rate limited the request. Wait a short while and send your message again. It is counted at its maximum cost.${interruptedBatch ? ` ${INTERRUPTED_NATIVE_BATCH}` : ''}`;
+}
+
+/** Claude Code rejected the turn before any native model request existed; the rejection itself carries the recovery step. */
+export function describeClaudeCodeNotDispatched(provider: string, detail?: string): string {
+  return `${providerName(provider)} did not start a native request: ${detail ?? 'the session is not safe to resume'}. No provider request was sent.`;
 }
 
 function plain(text: string | undefined): string {

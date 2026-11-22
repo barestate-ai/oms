@@ -39,6 +39,8 @@ import { BYTES_PER_TOKEN } from './context-trim.ts';
 import {
   describeClaudeCodeAuth,
   describeClaudeCodeLimit,
+  describeClaudeCodeNotDispatched,
+  describeClaudeCodeRateLimit,
   describeClaudeCodeSignIn,
   describeFailure,
   describeRejection,
@@ -54,7 +56,14 @@ import {
   isClaudeCodeModel,
 } from '@oms/core/usage';
 import type { DispatchAllocator } from '@oms/core/dispatch';
-import { CLAUDE_CODE_AUTH, CLAUDE_CODE_EMPTY_RESPONSE, CLAUDE_CODE_LIMIT, CLAUDE_CODE_SIGNIN } from './claude-code.ts';
+import {
+  CLAUDE_CODE_AUTH,
+  CLAUDE_CODE_EMPTY_RESPONSE,
+  CLAUDE_CODE_LIMIT,
+  CLAUDE_CODE_NOT_DISPATCHED,
+  CLAUDE_CODE_RATE_LIMIT,
+  CLAUDE_CODE_SIGNIN,
+} from './claude-code.ts';
 
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -368,8 +377,9 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       failed('Serialized text payload exceeds the local input cap. No provider request sent.');
       return true;
     };
-    // Claude Code's local sign-in check runs before any native process exists: like a 4xx refusal, nothing was sent.
-    const releaseClaudeSignIn = (): boolean => {
+    // Claude Code's sign-in check and startup guards run before any native model request exists:
+    // like a 4xx refusal, nothing was sent.
+    const releaseNotDispatched = (text: string): boolean => {
       if (!dispatchId || settled) return false;
       const released = config.ledger.settle({
         dispatchId,
@@ -380,9 +390,10 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       });
       if (!released.ok) return false;
       settled = true;
-      failed(describeClaudeCodeSignIn(model.provider));
+      failed(text);
       return true;
     };
+    const releaseClaudeSignIn = (): boolean => releaseNotDispatched(describeClaudeCodeSignIn(model.provider));
     const run = async (): Promise<void> => {
       let onAbort: (() => void) | undefined;
       try {
@@ -647,17 +658,37 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               return;
             }
             // Refusals the native transport already classified get their own outcomes, not the generic broke-off text.
+            // rawStopReason carries the kind, a |pending flag for an interrupted tool batch, then :detail (reset/step).
             if (isClaudeCodeModel(model) && event.reason !== 'aborted' && !controller.signal.aborted) {
               const stop = event.error.rawStopReason;
-              if (stop === CLAUDE_CODE_SIGNIN && releaseClaudeSignIn()) return;
-              if (stop === CLAUDE_CODE_AUTH) {
+              const colon = stop?.indexOf(':') ?? -1;
+              const parts = (colon < 0 ? (stop ?? '') : stop!.slice(0, colon)).split('|');
+              const detail = colon < 0 ? undefined : stop!.slice(colon + 1);
+              const base = parts[0] ?? '';
+              const interruptedBatch = parts.includes('pending');
+              if (base === CLAUDE_CODE_SIGNIN && releaseClaudeSignIn()) return;
+              if (
+                base === CLAUDE_CODE_NOT_DISPATCHED &&
+                releaseNotDispatched(describeClaudeCodeNotDispatched(model.provider, detail))
+              )
+                return;
+              if (base === CLAUDE_CODE_AUTH) {
                 uncertain();
-                failed(describeClaudeCodeAuth(model.provider));
+                failed(describeClaudeCodeAuth(model.provider, interruptedBatch));
                 return;
               }
-              if (stop === CLAUDE_CODE_LIMIT || stop?.startsWith(`${CLAUDE_CODE_LIMIT}:`)) {
+              // A bare 429 is back-pressure, not plan exhaustion: settle at the bound and let Pi retry after backoff.
+              if (base === CLAUDE_CODE_RATE_LIMIT && !interruptedBatch && settleAtBound()) {
+                failed(describeTransient(model.provider, 'rate limit'));
+                return;
+              }
+              if (base === CLAUDE_CODE_LIMIT || base === CLAUDE_CODE_RATE_LIMIT) {
                 uncertain();
-                failed(describeClaudeCodeLimit(model.provider, stop.slice(CLAUDE_CODE_LIMIT.length + 1) || undefined));
+                failed(
+                  base === CLAUDE_CODE_LIMIT
+                    ? describeClaudeCodeLimit(model.provider, detail, interruptedBatch)
+                    : describeClaudeCodeRateLimit(model.provider, interruptedBatch),
+                );
                 return;
               }
             }

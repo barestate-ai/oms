@@ -8,7 +8,7 @@ import { Server } from 'node:net';
 import { Duplex } from 'node:stream';
 import { Agent } from '@earendil-works/pi-agent-core';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { InMemoryCredentialStore, normalizeContext, Type } from '@earendil-works/pi-ai';
+import { InMemoryCredentialStore, isRetryableAssistantError, normalizeContext, Type } from '@earendil-works/pi-ai';
 import { createBudgetLedger } from '@oms/core';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 import { createMeteredStream } from '../src/runtime/usage.ts';
@@ -72,12 +72,12 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(mode==='exit-empty'){process.stdout.write('',()=>process.exit(1));return;}
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
- const refusalError={'limit-429':'API Error: 429','insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
- if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'){
-  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:refusalError?[refusalError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:[]});return;
+ const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':history.length===1?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
+ if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'||mode==='usage-limit-reset-multiline'){
+  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:refusalError?[refusalError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:mode==='usage-limit-reset-multiline'?["You've hit your usage limit. Your limit resets at 3pm PT.\\nDo not keep sending."]:[]});return;
  }
- if(mode==='empty-after-tool'){
-  if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:[]});}
+ if(mode==='empty-after-tool'||mode==='auth-after-tool'){
+  if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:mode==='auth-after-tool'?['API Error: 401']:[]});}
   else{assistant({type:'text',text:'reply after tool'});receipt(1);}return;
  }
  if(mode==='active-turn'||mode==='active-then-idle'){
@@ -135,18 +135,21 @@ async function modelAndSession(
   return { model, native, runtime };
 }
 
-function meteredNative(native: ClaudeCodeSession, tokens = 6_000_000, wallClockMs = 60_000) {
+function meteredNative(native: ClaudeCodeSession, tokens = 6_000_000, wallClockMs = 60_000, interactive = false) {
   const ledger = createBudgetLedger({
     caps: { tokens, spendMicroUsd: 1_000_000, wallClockMs },
     clock: Date.now,
     persist: () => {},
+    ...(interactive ? { executionMode: 'interactive' as const } : {}),
   });
+  if (interactive) assert.equal(ledger.beginOperation('native-chat').ok, true);
   const stream = createMeteredStream({
     streamFunction: createClaudeCodeStream(native),
     ledger,
     allocate: createDispatchAllocator(),
     maxOutputTokens: 1024,
     logicalTurnId: () => 'native-retry-turn',
+    executionMode: interactive ? 'interactive' : undefined,
   });
   return { ledger, stream };
 }
@@ -206,7 +209,7 @@ for (const mode of [
   'auth-failure',
   'usage-limit',
   'usage-limit-reset',
-  'limit-429',
+  'usage-limit-reset-multiline',
   'insufficient-quota',
   'auth-401',
   'auth-403',
@@ -224,27 +227,82 @@ for (const mode of [
         assert.equal(rows(join(directory, 'input')).length, 1);
         assert.equal(ledger.reservations().length, 1);
         assert.equal(ledger.snapshot().accounting, 'unknown');
-        if (['usage-limit', 'usage-limit-reset', 'limit-429', 'insufficient-quota'].includes(mode))
+        if (['usage-limit', 'usage-limit-reset', 'usage-limit-reset-multiline', 'insufficient-quota'].includes(mode))
           assert.match(response.errorMessage!, /Claude Code's usage limit was reached/);
         else assert.match(response.errorMessage!, /Claude subscription sign-in is no longer valid/);
         if (mode === 'usage-limit-reset') assert.match(response.errorMessage!, /It resets at 3:00 PM \(UTC\)\./);
+        if (mode === 'usage-limit-reset-multiline') {
+          assert.match(response.errorMessage!, /It resets at 3pm PT\./);
+          assert.ok(!/Do not keep sending/.test(response.errorMessage!), 'the escaped next line is not reset text');
+        }
         assert.ok(!/broke off|API key/i.test(response.errorMessage!));
       } finally {
         await native.close();
       }
     }));
 
-test('a transient receipt whose text only mentions an account stays a generic failure', async (t) =>
-  toolFreeFixture(t, 'account-network', async (directory) => {
+test('a bare 429 is temporary throttling, not plan exhaustion or an empty response', async (t) =>
+  toolFreeFixture(t, 'limit-429', async (directory) => {
     const { native, model } = await modelAndSession();
     const { ledger, stream } = meteredNative(native);
     try {
       const response = await (await stream(model, toolFreeContext())).result();
       assert.equal(response.stopReason, 'error');
+      assert.equal(rows(join(directory, 'input')).length, 1, 'no in-band retry of a throttled turn');
+      assert.equal(ledger.reservations().length, 1);
+      assert.match(response.errorMessage!, /rate limiting requests/);
+      assert.ok(isRetryableAssistantError(response), 'Pi retries the throttled turn after backoff');
+      assert.ok(!/usage limit|broke off/i.test(response.errorMessage!));
+      assert.equal(ledger.snapshot().accounting, 'known');
+      assert.equal(ledger.snapshot().used.tokens, 1_128_000);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a throttled turn resends into the same native session once the limit clears', async (t) =>
+  toolFreeFixture(t, 'rate-limit-then-good', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    const transcript = toolFreeContext();
+    try {
+      const first = await (await stream(model, transcript)).result();
+      assert.equal(first.stopReason, 'error');
+      const second = await (await stream(model, transcript)).result();
+      assert.equal(second.stopReason, 'stop', second.errorMessage);
+      assert.equal(ledger.snapshot().accounting, 'known');
+      const input = rows(join(directory, 'input'));
+      assert.equal(input.length, 2);
+      assert.deepEqual(input.at(-1).message, input.at(-2).message, 'the throttled input is retried unchanged');
+      const launches = rows(join(directory, 'launch'));
+      assert.equal(launches.length, 2);
+      assert.equal(launches[1].args[launches[1].args.indexOf('--resume') + 1], native.status().sessionId);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a transient receipt whose text only mentions an account stays a generic failure, then its resend proves nothing was dispatched', async (t) =>
+  toolFreeFixture(t, 'account-network', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native, 6_000_000, 60_000, true);
+    const transcript = toolFreeContext();
+    try {
+      const response = await (await stream(model, transcript)).result();
+      assert.equal(response.stopReason, 'error');
       assert.equal(rows(join(directory, 'input')).length, 1);
       assert.equal(ledger.snapshot().accounting, 'unknown');
       assert.match(response.errorMessage!, /broke off/);
       assert.ok(!/sign-in|usage limit/i.test(response.errorMessage!));
+      transcript.messages.push({ role: 'user', content: 'again', timestamp: 2 });
+      const resend = await (await stream(model, transcript)).result();
+      assert.equal(resend.stopReason, 'error');
+      assert.match(resend.errorMessage!, /did not start a native request: Native protocol failed verification/);
+      assert.match(resend.errorMessage!, /\/clear/);
+      assert.match(resend.errorMessage!, /No provider request was sent/);
+      assert.equal(ledger.receipts().at(-1)!.outcome, 'not_dispatched');
+      assert.equal(ledger.snapshot().used.tokens, 1_128_000, 'the resend released its reservation');
+      assert.equal(rows(join(directory, 'input')).length, 1, 'the resend never reached the native chat');
     } finally {
       await native.close();
     }
@@ -386,6 +444,55 @@ test('an empty continuation resumes after the delivered tool result without repl
       const launches = rows(join(directory, 'launch'));
       assert.equal(launches.length, 2);
       assert.equal(launches[1].args[launches[1].args.indexOf('--resume') + 1], native.status().sessionId);
+    } finally {
+      await native.close();
+    }
+  });
+});
+
+test('a refusal during tool continuation names its cause, keeps the unsafe batch guard, and the next send proves nothing dispatched', async (t) => {
+  await fixture('auth-after-tool', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native, 6_000_000, 60_000, true);
+    let executed = 0;
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: 'Use read',
+        model,
+        tools: [
+          {
+            name: 'read',
+            label: 'Read',
+            description: 'Read',
+            parameters: Type.Object({ path: Type.String() }),
+            async execute() {
+              executed++;
+              return { content: [{ type: 'text', text: 'REAL' }], details: undefined };
+            },
+          },
+        ],
+      },
+      streamFn: (selectedModel, transcript, options) => stream(selectedModel, transcript, options),
+    });
+    const lastAssistant = () => agent.state.messages.filter((message) => message.role === 'assistant').at(-1)!;
+    try {
+      await agent.prompt('probe');
+      const first = lastAssistant();
+      assert.equal(first.stopReason, 'error');
+      assert.match(first.errorMessage!, /Claude subscription sign-in is no longer valid/);
+      assert.match(first.errorMessage!, /interrupted native tool batch was not replayed/);
+      assert.match(first.errorMessage!, /\/clear/);
+      assert.equal(executed, 1);
+      await agent.prompt('again');
+      const second = lastAssistant();
+      assert.equal(second.stopReason, 'error');
+      assert.match(second.errorMessage!, /did not start a native request: Interrupted native tool batch/);
+      assert.match(second.errorMessage!, /\/clear/);
+      assert.match(second.errorMessage!, /No provider request was sent/);
+      assert.equal(ledger.reservations().length, 3, 'user turn, tool continuation, refused resend');
+      assert.equal(ledger.receipts().at(-1)!.outcome, 'not_dispatched');
+      assert.equal(rows(join(directory, 'launch')).length, 1, 'the refused batch is never replayed');
+      assert.equal(rows(join(directory, 'input')).length, 1);
     } finally {
       await native.close();
     }
