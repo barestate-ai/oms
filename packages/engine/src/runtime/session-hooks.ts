@@ -53,6 +53,9 @@ export function createSessionHooks(
       // The absolute overhead budget guards the byte-provable local cap; the window path keeps the
       // proportional margin (the measured-bound payload hook is the hard gate there).
       options.maxInputTokens === undefined ? 0 : promptBytes + CONTEXT_FIXED_OVERHEAD,
+    // A result a native tool batch is still owed reaches its MCP socket verbatim; a stub makes the
+    // model re-issue the call and stubs the next result too. Read per call so an in-flight batch is seen.
+    () => life.nativeSession?.pendingCallIds(),
   );
   const promptFor = (config: KnowledgeConfig | undefined) =>
     (env.contract ? omsSystemPrompt : omsChatPrompt)(

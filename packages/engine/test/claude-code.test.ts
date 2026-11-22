@@ -13,6 +13,7 @@ import { createBudgetLedger } from '@oms/core';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 import { createChatFixture } from '../test-support/chat-fixture.ts';
 import { createChatSession } from '../src/runtime/chat-session.ts';
+import { createContextTrimmer } from '../src/runtime/context-trim.ts';
 import { createMeteredStream } from '../src/runtime/usage.ts';
 import {
   ClaudeCodeSession,
@@ -82,8 +83,12 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(emptySuccess()){assistant({type:'text',text:''});receipt(1);return;}
  const authError={'auth-401':'API Error: 401','auth-403':'API Error: 403','auth-403-forbidden':'API Error: 403 Forbidden','auth-unauthorized':'Unauthorized','auth-forbidden':'Forbidden'}[mode];
  const compacted=typeof x.message.content==='string'&&x.message.content.includes('compacted by OMS');
- if(mode==='prompt-too-long-always'||mode.split(' ').includes('prompt-too-long')&&!compacted){
-  emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:['Prompt is too long']});return;
+ if(mode==='prompt-too-long-always'||mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'||mode==='prompt-too-long-silent-then-usage'||mode.split(' ').includes('prompt-too-long')&&!compacted){
+  const launches=readFileSync(root+'/launch','utf8').trim().split('\\n').length,u={input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0};
+  if(mode==='prompt-too-long-always-with-usage'||mode==='prompt-too-long-usage-then-silent'&&launches===1||mode==='prompt-too-long-silent-then-usage'&&launches>1){u.input_tokens=20*launches;u.output_tokens=10*launches;u.cache_read_input_tokens=30*launches;u.cache_creation_input_tokens=40*launches;}
+  if(mode==='prompt-too-long dup'){u.input_tokens=20;u.output_tokens=10;u.cache_read_input_tokens=30;u.cache_creation_input_tokens=40;}
+  if(mode==='prompt-too-long-usage-then-silent'&&launches>1||mode==='prompt-too-long-silent-then-usage'&&launches===1)emit({type:'stream_event',event:{type:'message_start',message:{id:'msg_'+ ++n,model:'claude-haiku-5-5',usage}}});
+  const r={type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:u,modelUsage:{},errors:['Prompt is too long']};emit(r);if(mode==='prompt-too-long dup')emit(r);return;
  }
  const refusalError={'limit-429':'API Error: 429','rate-limit-then-good':throttled?'API Error: 429':undefined,'insufficient-quota':'insufficient_quota: quota exceeded','account-network':'network stream to account service disconnected'}[mode];
  if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'||mode==='usage-limit-reset-multiline'){
@@ -215,8 +220,84 @@ test('native prompt-too-long exhaustion ends as named context-overflow with know
       assert.doesNotMatch(response.errorMessage!, /broke off/);
       assert.equal(rows(join(directory, 'launch')).length, 3, 'one initial attempt plus two compaction retries');
       assert.equal(ledger.reservations().length, 1);
-      assert.equal(ledger.snapshot().accounting, 'known', 'settled at the bound, never usage-unknown');
+      // Every overflow receipt reported zero usage: each attempt settles at what it observed.
+      assert.equal(ledger.snapshot().accounting, 'known', 'settled at the receipt usage, never usage-unknown');
+      assert.equal(ledger.snapshot().used.tokens, 0);
+      assert.match(response.errorMessage!, /usage the provider reported was counted/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a resend after a usage-carrying overflow banks each session’s provable usage', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long-always-with-usage', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(response.rawStopReason, 'claude-code-context-overflow');
+      assert.equal(rows(join(directory, 'launch')).length, 3, 'one initial attempt plus two compaction retries');
+      assert.equal(ledger.reservations().length, 1);
+      assert.equal(ledger.snapshot().accounting, 'known');
+      // Each fresh session's receipt reports only its own attempt: 100, 200 and 300 are banked
+      // across the resends instead of the last publish replacing the superseded attempts' spend.
+      assert.equal(ledger.snapshot().used.tokens, 600);
+      assert.match(response.errorMessage!, /usage the provider reported was counted/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a resend after an unprovable attempt keeps the bound even when later receipts report usage', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long-silent-then-usage', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(response.rawStopReason, 'claude-code-context-overflow');
+      assert.equal(rows(join(directory, 'launch')).length, 3);
+      // The first attempt streamed usage its receipt could not prove; the later sessions' provable
+      // deltas still cannot account for it, so the dispatch settles at the reservation bound.
+      assert.equal(ledger.snapshot().accounting, 'known');
       assert.equal(ledger.snapshot().used.tokens, 1_128_000);
+      assert.match(response.errorMessage!, /charged at its reserved maximum/);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a duplicated overflow receipt banks its usage once before the resend', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long dup', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'stop', response.errorMessage);
+      assert.equal(rows(join(directory, 'launch')).length, 2, 'one overflow plus a successful compacted resend');
+      // The first attempt emitted two identical usage-carrying receipts in one batch; its 100 is
+      // banked once, and the resend's own 100 settles the dispatch at 200, not 300.
+      assert.equal(ledger.snapshot().used.tokens, 200);
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a resend after a partial-usage attempt keeps the bound when later receipts cannot prove usage', async (t) =>
+  toolFreeFixture(t, 'prompt-too-long-usage-then-silent', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'error');
+      assert.equal(response.rawStopReason, 'claude-code-context-overflow');
+      assert.equal(rows(join(directory, 'launch')).length, 3);
+      // The first attempt published real usage; the reset drops its marker, so the attempts whose
+      // receipts disprove their own usage fail closed at the bound instead of settling at a stale 0.
+      assert.equal(ledger.snapshot().accounting, 'known');
+      assert.equal(ledger.snapshot().used.tokens, 1_128_000);
+      assert.match(response.errorMessage!, /charged at its reserved maximum/);
     } finally {
       await native.close();
     }
@@ -361,6 +442,87 @@ test('compaction during a tool batch carries the pending result into the summary
       assert.equal(executed, 1, 'the carried result is enough; the tool is not re-executed');
       const responses = agent.state.messages.filter((message) => message.role === 'assistant');
       assert.equal(responses.at(-1)!.stopReason, 'stop', 'the compacted session finishes the turn');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('a pending result larger than the usable budget reaches the native socket intact', async () =>
+  fixture('fine', async (directory) => {
+    const { model, native } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    // The context hook's production wiring: the trimmer sees the transcript first, and the results
+    // the native batch is still owed are exempt from stubs.
+    const trim = createContextTrimmer(
+      () => model.contextWindow,
+      () => 0,
+      () => native.pendingCallIds(),
+    );
+    const real = `REAL_${'r'.repeat(4_000)}`;
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: 'Use read',
+        model,
+        tools: [
+          {
+            name: 'read',
+            label: 'Read',
+            description: 'Read',
+            parameters: Type.Object({ path: Type.String() }),
+            async execute() {
+              return { content: [{ type: 'text', text: real }], details: undefined };
+            },
+          },
+        ],
+      },
+      streamFn: (m, c, o) => stream(m, { ...c, messages: trim(c.messages) }, o),
+    });
+    try {
+      // A transcript already past the usable budget: the pending result is the newest tool
+      // result, and untrimmable messages keep the total over the cap even after every stub.
+      await agent.prompt(`probe ${'x'.repeat(3_200_000)}`);
+      const results = rows(join(directory, 'results'));
+      assert.equal(results.length, 1, 'the result is delivered once; the model is not asked to re-issue');
+      assert.equal(results[0].content[0].text, real, 'the socket gets the real result, not a re-issue stub');
+      const responses = agent.state.messages.filter((message) => message.role === 'assistant');
+      assert.equal(responses.at(-1)!.stopReason, 'stop');
+    } finally {
+      await native.close();
+    }
+  }));
+
+test('compaction during a tool batch clips the real pending result, not a stub', async () =>
+  fixture('big-prompt', async (directory) => {
+    const { model, native } = await modelAndSession();
+    const { stream } = meteredNative(native);
+    const trim = createContextTrimmer(
+      () => model.contextWindow,
+      () => 0,
+      () => native.pendingCallIds(),
+    );
+    const agent = new Agent({
+      initialState: {
+        systemPrompt: 'Use read',
+        model,
+        tools: [
+          {
+            name: 'read',
+            label: 'Read',
+            description: 'Read',
+            parameters: Type.Object({ path: Type.String() }),
+            async execute() {
+              return { content: [{ type: 'text', text: `REAL${'r'.repeat(3_200_000)}` }], details: undefined };
+            },
+          },
+        ],
+      },
+      streamFn: (m, c, o) => stream(m, { ...c, messages: trim(c.messages) }, o),
+    });
+    try {
+      await agent.prompt('probe');
+      const summary = rows(join(directory, 'input'))[1]!.message.content;
+      assert.match(summary, /PENDING TOOL RESULTS[\s\S]*REALr+… \[\d+ chars cut\]/);
+      assert.doesNotMatch(summary, /removed to fit the context limit/);
     } finally {
       await native.close();
     }

@@ -593,6 +593,13 @@ export class ClaudeCodeSession implements NativeChatControls {
   private waiting: { socket: Socket; name: string; args: unknown }[] = [];
   private delivered = new Set<string>();
   private results = new Map<string, { content: unknown; isError: boolean }>();
+  /** Provable usage deltas banked across compaction resends: each fresh CLI session's receipts
+   * restart from zero, so a superseded attempt's validated usage is kept here keyed by the
+   * dispatch's shared assistant message. */
+  private bankedUsage = new WeakMap<AssistantMessage, NativeUsage>();
+  /** An overflow attempt whose receipt could not prove its usage poisons the dispatch: a later
+   * receipt only ever accounts for its own session, so settlement must stay fail-closed. */
+  private unprovableAttempts = new WeakSet<AssistantMessage>();
   private readonly options: ClaudeCodeSessionOptions;
   constructor(options: ClaudeCodeSessionOptions = {}) {
     claudeCodeEffort(options.effort);
@@ -676,6 +683,11 @@ export class ClaudeCodeSession implements NativeChatControls {
   }
   configure(model: Model<Api>, context: TranscriptContext, maxTokens: number): void {
     this.configuration = { model, context, maxTokens, effort: claudeCodeEffort(this.options.effort) };
+  }
+  /** The tool calls whose OMS results this native batch is still owed; their results reach the MCP
+   * socket verbatim, so the context trimmer must never replace them with re-issue stubs. */
+  pendingCallIds(): ReadonlySet<string> {
+    return new Set(this.state.pending.map((call) => call.id));
   }
   async reconnect(): Promise<void> {
     if (this.active) throw new Error('Wait for the native turn to finish');
@@ -843,28 +855,38 @@ export class ClaudeCodeSession implements NativeChatControls {
       return result;
     }));
   }
-  /** A native result carries the turn's cumulative usage; the part not already emitted by earlier
-   * calls in the turn is what the failed attempt's provider reported. Publishing it lets admission
-   * settle the attempt at that observed usage instead of retaining its reservation bound. */
-  private publishObservedUsage(current: Completion, eventUsage: unknown): void {
+  /** A native result carries the CLI session's cumulative usage; the part not already emitted by
+   * earlier calls in the turn is what the failed attempt's provider reported. That delta is banked
+   * so a compacted resend's own receipt accumulates onto, rather than replaces, the attempts it
+   * superseded. Publishing lets admission settle the dispatch at observed usage instead of
+   * retaining its reservation bound. */
+  private publishObservedUsage(current: Completion, eventUsage: unknown): boolean {
     try {
+      // One publish per attempt: the stdout drain keeps feeding lines after a receipt already
+      // failed or finished the completion, and an identical receipt must not bank its delta twice.
+      if (current.failed || current.finishing || current.settled || this.unprovableAttempts.has(current.message))
+        return false;
       const aggregate = nativeUsage(eventUsage);
       const streamed = current.rawUsage === undefined ? undefined : nativeUsage(current.rawUsage);
-      // A turn-cumulative receipt must cover both earlier calls (`emitted`) and the usage the
+      // A session-cumulative receipt must cover both earlier calls (`emitted`) and the usage the
       // live stream already showed for this response — a smaller count is a contradictory
       // receipt, not proof the attempt was cheap, so it stays fail-closed.
-      for (const key of usageKeys) if (aggregate[key] < this.state.emitted[key] + (streamed?.[key] ?? 0)) return;
+      for (const key of usageKeys) if (aggregate[key] < this.state.emitted[key] + (streamed?.[key] ?? 0)) return false;
       const usage = current.message.usage;
+      let banked = this.bankedUsage.get(current.message);
+      if (!banked) this.bankedUsage.set(current.message, (banked = emptyUsage()));
       let total = 0;
       for (const key of usageKeys) {
-        const delta = Math.max(0, aggregate[key] - this.state.emitted[key]);
-        usage[key] = delta;
-        if (key !== 'cacheWrite1h') total += delta;
+        banked[key] += Math.max(0, aggregate[key] - this.state.emitted[key]);
+        usage[key] = banked[key];
+        if (key !== 'cacheWrite1h') total += banked[key];
       }
       usage.totalTokens = total;
       (current.message as AssistantMessage & ObservedUsage).observedUsage = usage;
+      return true;
     } catch {
       // A failed receipt without provable usage stays fail-closed.
+      return false;
     }
   }
   private async start(signal?: AbortSignal): Promise<void> {
@@ -1084,7 +1106,14 @@ export class ClaudeCodeSession implements NativeChatControls {
   private finish(usage: NativeUsage, reason: 'toolUse' | 'stop' | 'length'): void {
     const current = this.active!;
     Object.assign(current.message.usage, usage);
-    current.message.usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+    // Usage banked from attempts a compaction resend superseded is still real spend for this dispatch.
+    const banked = this.bankedUsage.get(current.message);
+    if (banked) for (const key of usageKeys) current.message.usage[key] += banked[key];
+    current.message.usage.totalTokens =
+      current.message.usage.input +
+      current.message.usage.output +
+      current.message.usage.cacheRead +
+      current.message.usage.cacheWrite;
     if (
       usage.output > this.admittedOutputFor(current.model) ||
       usage.input + usage.cacheRead + usage.cacheWrite > this.admittedWindowFor(current.model)
@@ -1273,8 +1302,21 @@ export class ClaudeCodeSession implements NativeChatControls {
       if (
         (event.is_error === true && PROMPT_TOO_LONG.test(receiptText)) ||
         (event.is_error !== true && PROMPT_TOO_LONG_ONLY.test(String(event.result ?? '')))
-      )
+      ) {
+        // An overflow receipt can still report the attempt's usage: publish it so the turn settles
+        // at observed usage — an all-zero receipt settles at 0 — not at the reservation bound. A
+        // receipt that cannot prove its attempt's usage poisons the dispatch: later receipts only
+        // account for their own session, so the bound stays.
+        if (
+          current &&
+          !current.failed &&
+          !current.finishing &&
+          !current.settled &&
+          !this.publishObservedUsage(current, event.usage)
+        )
+          this.unprovableAttempts.add(current.message);
         throw new NativeContextOverflowError('Native prompt is too long');
+      }
       if (current && event.is_error === true && event.subtype === 'error_during_execution' && this.emptyResponse()) {
         const usage = nativeUsage(event.usage);
         const reason = receiptText;
@@ -1519,7 +1561,13 @@ export class ClaudeCodeSession implements NativeChatControls {
             !this.options.signal?.aborted
           ) {
             message.content = [];
-            Object.assign(message.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
+            // observedUsage aliases this usage object; left set, it would settle the resend at a
+            // superseded attempt's now-zeroed receipt instead of its own provable usage. The
+            // banked spend from superseded attempts stays visible while the marker is re-earned.
+            delete (message as AssistantMessage & ObservedUsage).observedUsage;
+            const banked = this.bankedUsage.get(message) ?? emptyUsage();
+            for (const key of usageKeys) message.usage[key] = banked[key];
+            message.usage.totalTokens = banked.input + banked.output + banked.cacheRead + banked.cacheWrite;
             message.timestamp = Date.now();
             try {
               await this.beginCompaction(context.messages, compacted + 1);

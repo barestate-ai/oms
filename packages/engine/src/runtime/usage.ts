@@ -780,12 +780,15 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               !controller.signal.aborted
             ) {
               // The request was dispatched; compaction retried and it still did not fit.
-              // Usage stays charged at its bound (a known outcome), and the reason is named
-              // so interactive and headless callers can report context overflow, not
-              // 'broke off' or unknown usage.
+              // Usage settles at what the receipts reported (zero when they showed none), else
+              // at its bound — a known outcome either way — and the reason is named so
+              // interactive and headless callers can report context overflow, not 'broke off'
+              // or unknown usage.
               settleAtBound();
               failed(
-                'Claude Code ran out of context window: the conversation was compacted and resent and still did not fit. Usage is charged at its reserved maximum.',
+                observedSettled
+                  ? 'Claude Code ran out of context window: the conversation was compacted and resent and still did not fit. The usage the provider reported was counted.'
+                  : 'Claude Code ran out of context window: the conversation was compacted and resent and still did not fit. Usage is charged at its reserved maximum.',
                 false,
                 CLAUDE_CODE_CONTEXT_OVERFLOW,
               );
