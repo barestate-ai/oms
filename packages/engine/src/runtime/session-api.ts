@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { AgentSessionRuntime } from '@earendil-works/pi-coding-agent';
 import type { SandboxResult } from '@oms/sandbox';
 import { createChainControls } from './chain.ts';
+import { getClaudeCodeStatus } from './claude-code.ts';
 import { backendFor } from './execution-backend.ts';
 import { remoteDecodeError } from './knowledge-service.ts';
 import type { OmsAccountControls } from './oms-account.ts';
@@ -118,6 +119,11 @@ export function createCoreApi(parts: SessionApiParts): SessionCore {
     signal: life.controller.signal,
     withUserOperation: life.withUserOperation,
     checkAuthFile: model.checkAuthFile,
+    // `/connect` and `/model` inspection reuse the session's probe, not a fresh `claude auth status`.
+    claudeCodeAccess: {
+      status: getClaudeCodeStatus,
+      inspect: (signal) => life.nativeSession!.verifyAccess(signal),
+    },
     loginOptions: { agentName: 'OMS', getDeviceId: () => model.settingsManager.getOrCreateDeviceId() },
     flushSettings: () => flushHarnessSettings(model.settingsManager),
     inferencePreferencesPath: join(env.root.agentRoot, 'inference.json'),

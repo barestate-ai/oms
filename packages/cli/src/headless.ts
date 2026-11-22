@@ -55,6 +55,9 @@ function itemStates(harness: HarnessSession | undefined): RunRecord['items'] {
   }));
 }
 
+/** Consecutive turns that may end without any task item changing state before the run ends as 'no-verified-progress'. */
+export const MAX_NO_PROGRESS_TURNS = 3;
+
 export const HEADLESS_INSTRUCTION =
   'Complete the active trusted task item: implement the change and call propose_done. Only offline verifier evidence can close it.';
 
@@ -89,6 +92,8 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
   let injection: RunRecord['injection'];
   let injectionFallback: string | undefined;
   let knowledgeBuilt: string | undefined;
+  let noProgressTurns = 0;
+  let noProgressContinuations = 0;
   const knowledgeCalls: Record<string, number> = {};
   try {
     harness = await openHarnessWithOwnership(
@@ -185,6 +190,7 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           break;
         }
         const before = JSON.stringify(items);
+        if (noProgressTurns > 0) noProgressContinuations++;
         await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         observe();
         const last = [...current.session.messages].reverse().find((message) => message.role === 'assistant') as
@@ -195,9 +201,14 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
           reason = 'context-overflow';
           break;
         }
+        if (JSON.stringify(itemStates(current)) !== before) {
+          noProgressTurns = 0;
+          continue;
+        }
         // A narration-only response is not a completion proof, nor a reason to spend indefinitely.
+        // Budget and deadline checks at the top of the loop still run before every continuation turn.
         if (
-          JSON.stringify(itemStates(current)) === before &&
+          ++noProgressTurns >= MAX_NO_PROGRESS_TURNS &&
           modelReadiness(
             model,
             current.budget,
@@ -271,6 +282,7 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
       ...(knowledgeBuilt ? { knowledgeBuilt } : {}),
       ...(harness?.knowledge.config() ? { knowledgeCalls } : {}),
       ...(harness?.edgeCheck ? { edgeCheck: harness.edgeCheck.summary() } : {}),
+      noProgressContinuations,
     };
     try {
       await harness?.close();

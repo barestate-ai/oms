@@ -27,6 +27,11 @@ import {
 export const CLAUDE_CODE_PROVIDER = 'claude-code';
 export const CLAUDE_CODE_EMPTY_RESPONSE = 'claude-code-empty-response';
 export const CLAUDE_CODE_CONTEXT_OVERFLOW = 'claude-code-context-overflow';
+export const CLAUDE_CODE_SIGNIN = 'claude-code-signin';
+export const CLAUDE_CODE_AUTH = 'claude-code-auth';
+export const CLAUDE_CODE_LIMIT = 'claude-code-limit';
+export const CLAUDE_CODE_RATE_LIMIT = 'claude-code-rate-limit';
+export const CLAUDE_CODE_NOT_DISPATCHED = 'claude-code-not-dispatched';
 export const CLAUDE_CODE_EMPTY_CONTINUATION =
   'Your previous reply came back empty. Continue the task from where you stopped; the earlier tool results are already in this conversation.';
 const CLAUDE_CODE_BASE_URL = 'claude-code://local';
@@ -46,14 +51,46 @@ const CLAUDE_CODE_COMPACT_AT = 0.8;
 const CLAUDE_CODE_MAX_COMPACTIONS = 2;
 const PROMPT_TOO_LONG = /\bprompt is too long\b/i;
 const PROMPT_TOO_LONG_ONLY = /^\s*prompt is too long[\s.!?…]*$/i;
+/** A provider or local sign-in refusal, not a protocol breach: the native session stays usable once the cause is fixed. */
+class NativeRefusalError extends Error {}
+/** The local Claude sign-in check failed before any native process started, so no model request exists. */
+class ClaudeCodeSignInError extends NativeRefusalError {}
+/** An in-flight native turn was refused as unauthorized: the Claude subscription sign-in lapsed. */
+class NativeAuthError extends NativeRefusalError {}
+/** The Claude plan usage limit refused a native turn; carries the provider's own reset hint when it gives one. */
+class NativeLimitError extends NativeRefusalError {
+  readonly reset?: string;
+  constructor(message: string, reset?: string) {
+    super(message);
+    this.reset = reset;
+  }
+}
+/** A bare throttle (429) refused a native turn without quota evidence: back-pressure, not plan exhaustion. */
+class NativeRateLimitError extends NativeRefusalError {}
+/** Native receipts that report the Claude plan's usage limit rather than a transport failure. */
+const NATIVE_LIMIT_REASON =
+  /usage.?limit|hit (?:the |your )?limit|limit reached|quota|billing|payment|credit|insufficient/i;
+/** Native receipts carrying a real sign-in signal: a status code, an auth word or a login phrase — not prose like "account". */
+const NATIVE_AUTH_REASON =
+  /auth|log(?:ged)?.?in|sign.?in|api.?key|subscription|\b(?:401|403|unauthorized|forbidden)\b/i;
+/** Native receipts reporting request throttling without a quota reason; a bare 429 says nothing about plan state. */
+const NATIVE_RATE_LIMIT_REASON = /rate.?limit|too many requests|\b429\b/i;
+/** Every sign-in or limit-shaped reason: the union of the classifiers plus the broad terms the empty-retry gate already excluded. */
+const NATIVE_ACCOUNT_REASON = new RegExp(
+  `${NATIVE_LIMIT_REASON.source}|${NATIVE_AUTH_REASON.source}|${NATIVE_RATE_LIMIT_REASON.source}|limit|account|credential`,
+  'i',
+);
 export interface ClaudeCodeStatus {
   installed: boolean;
   configured: boolean;
+  /** False until the first `claude auth status` probe settles; not the same as a failed check. */
+  checked: boolean;
   detail: string;
 }
 let status: ClaudeCodeStatus = {
   installed: false,
   configured: false,
+  checked: false,
   detail: 'Run claude auth login, then check the local Claude Code connection in /connect.',
 };
 export function getClaudeCodeStatus(): ClaudeCodeStatus {
@@ -130,7 +167,7 @@ function executable(): string {
 }
 /** Own the process group, including the descriptor MCP child. No stderr or native
  * diagnostics are projected into model history or the UI. */
-function runClaudeCode(
+export function runClaudeCode(
   args: readonly string[],
   options: {
     cwd: string;
@@ -165,14 +202,16 @@ function runClaudeCode(
         /* already stopped */
       }
     };
-    const abort = () => {
-      failure ??= new Error('Claude Code request cancelled');
+    const abort = (cause = new Error('Claude Code request cancelled')) => {
+      failure ??= cause;
       kill('SIGTERM');
       killTimer ??= setTimeout(() => kill('SIGKILL'), 500);
     };
-    const deadline = setTimeout(abort, options.timeoutMs ?? 120_000);
-    options.signal?.addEventListener('abort', abort, { once: true });
-    if (options.signal?.aborted) abort();
+    const cancel = () => abort();
+    const timedOut = () => Object.assign(new Error('Claude Code request timed out'), { code: 'ETIMEDOUT' });
+    const deadline = setTimeout(() => abort(timedOut()), options.timeoutMs ?? 120_000);
+    options.signal?.addEventListener('abort', cancel, { once: true });
+    if (options.signal?.aborted) cancel();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (part: string) => {
       if (failure) return;
@@ -209,7 +248,7 @@ function runClaudeCode(
     child.on('close', (code) => {
       clearTimeout(deadline);
       clearTimeout(killTimer);
-      options.signal?.removeEventListener('abort', abort);
+      options.signal?.removeEventListener('abort', cancel);
       // Native CLI may finish before its MCP transport; reap the complete group.
       kill('SIGKILL');
       if (failure) reject(failure);
@@ -219,13 +258,13 @@ function runClaudeCode(
 }
 
 /** Checks native auth without reading, importing or storing native credentials. */
-export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCodeStatus> {
+export async function inspectClaudeCode(signal?: AbortSignal, timeoutMs = 15_000): Promise<ClaudeCodeStatus> {
   try {
     const result = await runClaudeCode(['auth', 'status'], {
       cwd: tmpdir(),
       signal,
       maxBytes: 65_536,
-      timeoutMs: 15_000,
+      timeoutMs,
     });
     const auth = JSON.parse(result.stdout) as Record<string, unknown>;
     const configured =
@@ -236,18 +275,26 @@ export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCod
     status = {
       installed: true,
       configured,
+      checked: true,
       detail: configured
         ? 'Local Claude Code subscription is connected; Claude plan limits apply.'
         : 'Sign in to Claude Code with your Claude subscription using claude auth login. API-key and third-party Claude Code accounts are not used by this connector.',
     };
   } catch (error) {
+    // A cancelled probe proved nothing about the login: keep the earlier status so the model is not
+    // left checked-and-unconfigured, which would block resending until an explicit re-check.
+    if (signal?.aborted) return getClaudeCodeStatus();
     const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT';
+    const timedOut = !!error && typeof error === 'object' && 'code' in error && error.code === 'ETIMEDOUT';
     status = {
       installed: !missing,
       configured: false,
+      checked: true,
       detail: missing
         ? 'Install Claude Code, run claude auth login, then check the connection again.'
-        : 'Claude Code login could not be checked. Run claude auth status in a terminal, then check the connection again.',
+        : timedOut
+          ? 'The Claude Code login check timed out. Run claude auth status in a terminal, then check the connection again.'
+          : 'Claude Code login could not be checked. Run claude auth status in a terminal, then check the connection again.',
     };
   }
   return getClaudeCodeStatus();
@@ -303,6 +350,23 @@ function nativeUsage(value: unknown): NativeUsage {
   };
 }
 const usageKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h'] as const;
+/** A failed native receipt names the refusal when the provider reported a sign-in or limit cause we understand. */
+function classifyNativeReceipt(event: Record<string, unknown>): Error {
+  if (event.is_error === true) {
+    const reason = JSON.stringify([event.errors, event.error, event.result]);
+    if (NATIVE_LIMIT_REASON.test(reason))
+      return new NativeLimitError('Claude plan usage limit reached', nativeResetHint(reason));
+    if (NATIVE_AUTH_REASON.test(reason)) return new NativeAuthError('Claude subscription sign-in was rejected');
+    if (NATIVE_RATE_LIMIT_REASON.test(reason)) return new NativeRateLimitError('Claude rate limited the request');
+  }
+  return new Error('Unexpected or failed native receipt');
+}
+/** The reset hint a native limit message gives, e.g. "at 3:00 PM (UTC)": short, single-line and provider-owned. */
+function nativeResetHint(reason: string): string | undefined {
+  // A JSON-escaped line break is a literal backslash-n here; the backslash ends the capture like a real break.
+  const hint = /\bresets?\s+((?:at|in|on|by|after)\s+[^.,;|\n"'\]}\[{\\]{1,48})/i.exec(reason)?.[1];
+  return hint?.replace(/\s+/g, ' ').trim() || undefined;
+}
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const byteSize = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const canonical = (value: unknown): string =>
@@ -509,6 +573,8 @@ export class ClaudeCodeSession implements NativeChatControls {
   private configurationKey?: string;
   private active?: Completion;
   private failure?: string;
+  /** The auth probe this session verified; a failed check is not kept, so the next start retries. */
+  private authCheck?: Promise<ClaudeCodeStatus>;
   private retryUser?: string;
   private compactionMessage?: string;
   private toolResultDelivered = false;
@@ -631,12 +697,18 @@ export class ClaudeCodeSession implements NativeChatControls {
     this.active?.reject(new Error('Native conversation disconnected'));
     this.handshake?.reject(new Error('Native conversation disconnected'));
     if (this.child) {
+      // Events buffered on stdout during teardown are not protocol input: the stream
+      // is being abandoned deliberately, so they must not reach event()/fail().
+      this.child.stdout.removeAllListeners('data');
       this.kill('SIGTERM');
       const timer = setTimeout(() => this.kill('SIGKILL'), 500);
       await this.exited;
       clearTimeout(timer);
     }
-    for (const socket of this.sockets) socket.destroy();
+    for (const socket of this.sockets) {
+      socket.removeAllListeners('data');
+      socket.destroy();
+    }
     this.sockets.clear();
     this.waiting = [];
     this.results.clear();
@@ -657,7 +729,11 @@ export class ClaudeCodeSession implements NativeChatControls {
         : error instanceof Error
           ? error.message
           : 'Invalid native protocol';
-    if (!(error instanceof NativeEmptyResponseError) && !(error instanceof NativeContextOverflowError))
+    if (
+      !(error instanceof NativeEmptyResponseError) &&
+      !(error instanceof NativeContextOverflowError) &&
+      !(error instanceof NativeRefusalError)
+    )
       this.state.blocked =
         'Native protocol failed verification; review the OMS transcript, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view; task files and verification are retained';
     this.save();
@@ -665,7 +741,9 @@ export class ClaudeCodeSession implements NativeChatControls {
     if (this.active) {
       this.active.failed = true;
       this.active.reject(
-        error instanceof NativeEmptyResponseError || error instanceof NativeContextOverflowError
+        error instanceof NativeEmptyResponseError ||
+          error instanceof NativeContextOverflowError ||
+          error instanceof NativeRefusalError
           ? error
           : new Error(this.failure),
       );
@@ -687,12 +765,17 @@ export class ClaudeCodeSession implements NativeChatControls {
     );
   }
   /** The window this login effectively gets: the subscription bound lowered by any smaller
-   * limit the native receipts have reported. Never raised back up by a larger receipt. */
+   * limit the native receipts have reported. Never raised back up by a larger receipt.
+   * `OMS_CLAUDE_CODE_CONTEXT_WINDOW` forces the bound in forced-low test runs. */
   private windowFor(model: Model<Api>): number {
-    return Math.min(model.contextWindow, this.state.nativeWindow ?? model.contextWindow);
+    const forced = Number(process.env.OMS_CLAUDE_CODE_CONTEXT_WINDOW);
+    const subscription = Number.isSafeInteger(forced) && forced > 0 ? forced : CLAUDE_CODE_SUBSCRIPTION_WINDOW;
+    return Math.min(model.contextWindow, subscription, this.state.nativeWindow ?? Infinity);
   }
   private outputFor(model: Model<Api>): number {
-    return Math.min(model.maxTokens, this.state.nativeMaxOutput ?? model.maxTokens);
+    const forced = Number(process.env.OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS);
+    const forcedOutput = Number.isSafeInteger(forced) && forced > 0 ? forced : Infinity;
+    return Math.min(model.maxTokens, forcedOutput, this.state.nativeMaxOutput ?? Infinity);
   }
   /** Replace the native conversation with a fresh session seeded by an OMS-written summary
    * of the OMS transcript (which keeps every turn). The next send carries the summary in
@@ -703,6 +786,8 @@ export class ClaudeCodeSession implements NativeChatControls {
     // the fresh session cannot receive them as tool_result blocks, only as text.
     const summary = compactionSummary(messages, this.state.pending, scale);
     await this.disconnect();
+    // A compacted chat is a new native session: re-verify the login before its first start.
+    this.authCheck = undefined;
     this.state.sessionId = randomUUID();
     this.state.started = false;
     this.state.pending = [];
@@ -721,6 +806,18 @@ export class ClaudeCodeSession implements NativeChatControls {
     const observed = this.state.observedPrompt ?? Math.ceil(byteSize(messages) / BYTES_PER_TOKEN);
     return observed + Math.ceil(byteSize(added) / BYTES_PER_TOKEN) >= this.windowFor(model) * CLAUDE_CODE_COMPACT_AT;
   }
+  /**
+   * Probes the ambient login once for this session and shares the result with the prompt gate and
+   * model selection. A failed or cancelled check is not kept, so the next start retries.
+   */
+  verifyAccess(signal?: AbortSignal): Promise<ClaudeCodeStatus> {
+    const probeSignal =
+      signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
+    return (this.authCheck ??= inspectClaudeCode(probeSignal).then((result) => {
+      if (!result.configured || probeSignal?.aborted) this.authCheck = undefined;
+      return result;
+    }));
+  }
   private async start(signal?: AbortSignal): Promise<void> {
     if (this.child) return;
     if (!this.configuration) throw new Error('No native session configuration');
@@ -731,9 +828,11 @@ export class ClaudeCodeSession implements NativeChatControls {
       );
     const startupSignal =
       signal && this.options.signal ? AbortSignal.any([signal, this.options.signal]) : (signal ?? this.options.signal);
-    const auth = await inspectClaudeCode(startupSignal);
+    // A verified login is reused by this session's own starts only: each new session re-verifies so a
+    // billing change (subscription to Console) is detected before any call it would leave unmetered.
+    const auth = await this.verifyAccess(startupSignal);
     startupSignal?.throwIfAborted();
-    if (!auth.configured) throw new Error(auth.detail);
+    if (!auth.configured) throw new ClaudeCodeSignInError(auth.detail);
     const { model, context, maxTokens, effort } = this.configuration;
     const tools = getCurrentTools(context.messages);
     const names = new Set(tools.map((tool) => `mcp__oms__${tool.name}`));
@@ -834,7 +933,7 @@ export class ClaudeCodeSession implements NativeChatControls {
     ];
     if (names.size) args.push('--allowedTools', ...names);
     const environment = claudeCodeEnvironment();
-    environment.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.min(maxTokens, this.state.nativeMaxOutput ?? maxTokens));
+    environment.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.min(maxTokens, this.outputFor(model)));
     const child = spawn(executable(), args, {
       cwd: work,
       env: environment,
@@ -1133,9 +1232,7 @@ export class ClaudeCodeSession implements NativeChatControls {
         if (
           (usageKeys.every((key) => usage[key] === 0) ||
             usageKeys.every((key) => usage[key] === this.state.emitted[key])) &&
-          !/auth|log(?:ged)?.?in|sign.?in|credential|api.?key|subscription|limit|quota|billing|payment|credit|account|\b(?:401|403|unauthorized|forbidden)\b/i.test(
-            reason,
-          )
+          !NATIVE_ACCOUNT_REASON.test(reason)
         )
           throw new NativeEmptyResponseError('Unexpected or failed native receipt');
       }
@@ -1147,7 +1244,7 @@ export class ClaudeCodeSession implements NativeChatControls {
         event.subtype !== 'success' ||
         current.message.content.some((block) => block.type === 'toolCall')
       )
-        throw new Error('Unexpected or failed native receipt');
+        throw classifyNativeReceipt(event);
       const models = object(event.modelUsage),
         nativeModel = NATIVE_MODELS[current.model.id as NativeAlias];
       if (Object.keys(models).length !== 1 || !Object.hasOwn(models, nativeModel))
@@ -1209,6 +1306,9 @@ export class ClaudeCodeSession implements NativeChatControls {
       },
     };
     void (async () => {
+      // Flips only once user input or tool results reach the native transport: before that,
+      // a rejection proves no provider request exists and the reservation must be released.
+      let nativeDispatched = false;
       for (let compacted = 0; ; compacted++) {
         let abort: (() => void) | undefined;
         let timer: NodeJS.Timeout | undefined;
@@ -1317,6 +1417,7 @@ export class ClaudeCodeSession implements NativeChatControls {
                 throw new Error('Native tool results currently support text only');
               this.results.set(call.id, { content: result.content, isError: result.isError });
             }
+            nativeDispatched = true;
             this.flushResults();
             // Native owns the exact tool_result history; do not send a duplicate user message.
           } else {
@@ -1345,6 +1446,7 @@ export class ClaudeCodeSession implements NativeChatControls {
                 session_id: this.state.sessionId,
               }) + '\n',
             );
+            nativeDispatched = true;
           }
           await completion;
           return;
@@ -1381,9 +1483,21 @@ export class ClaudeCodeSession implements NativeChatControls {
             this.state.pending = [];
             this.state.emitted = emptyUsage();
             this.save();
+          } else if (message.stopReason === 'error') {
+            const interruptedMark = this.state.pending.length ? '|pending' : '';
+            if (error instanceof ClaudeCodeSignInError) message.rawStopReason = CLAUDE_CODE_SIGNIN;
+            else if (error instanceof NativeContextOverflowError) message.rawStopReason = CLAUDE_CODE_CONTEXT_OVERFLOW;
+            else if (!nativeDispatched) message.rawStopReason = `${CLAUDE_CODE_NOT_DISPATCHED}:${this.failure}`;
+            else if (error instanceof NativeAuthError) message.rawStopReason = `${CLAUDE_CODE_AUTH}${interruptedMark}`;
+            else if (error instanceof NativeRateLimitError)
+              message.rawStopReason = `${CLAUDE_CODE_RATE_LIMIT}${interruptedMark}`;
+            else if (error instanceof NativeLimitError)
+              message.rawStopReason = `${CLAUDE_CODE_LIMIT}${interruptedMark}${error.reset ? `:${error.reset}` : ''}`;
+            // A refused turn admits the same user message again once its cause is fixed; a
+            // still-pending tool batch keeps blocking new sends because replay cannot be proven safe.
+            if (error instanceof NativeRefusalError && this.state.lastUser && !this.state.pending.length)
+              this.retryUser = this.state.lastUser;
           }
-          if (error instanceof NativeContextOverflowError && message.stopReason === 'error')
-            message.rawStopReason = CLAUDE_CODE_CONTEXT_OVERFLOW;
           message.errorMessage =
             error instanceof NativeContextOverflowError
               ? `Claude Code ran out of context window: OMS compacted the native session and resent the request ${CLAUDE_CODE_MAX_COMPACTIONS} times and it still did not fit. No API-key fallback was used. Start a new chat or /clear the native session to continue.`
@@ -1418,13 +1532,13 @@ export async function createClaudeCodeProvider(
   runtime: ModelRuntime,
   options?: ClaudeCodeSessionOptions,
 ): Promise<ClaudeCodeSession> {
-  await inspectClaudeCode();
-  // Test-only overrides for the subscription limits (forced-low compaction checks).
-  const forcedWindow = process.env.OMS_CLAUDE_CODE_CONTEXT_WINDOW;
-  const forcedOutput = process.env.OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+  // `claude auth status` is deferred to the first native use (start) or an explicit
+  // /connect + /model inspection so unrelated sessions never spawn the CLI.
+  // Test-only overrides consumed by the session's windowFor/outputFor (forced-low
+  // compaction checks); the registered catalog limits stay intact for metering.
   for (const [name, value] of [
-    ['OMS_CLAUDE_CODE_CONTEXT_WINDOW', forcedWindow],
-    ['OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS', forcedOutput],
+    ['OMS_CLAUDE_CODE_CONTEXT_WINDOW', process.env.OMS_CLAUDE_CODE_CONTEXT_WINDOW],
+    ['OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS', process.env.OMS_CLAUDE_CODE_MAX_OUTPUT_TOKENS],
   ])
     if (value !== undefined && (!isCount(Number(value)) || !Number(value)))
       throw new Error(`${name} must be a positive token count`);
@@ -1439,8 +1553,6 @@ export async function createClaudeCodeProvider(
             provider: CLAUDE_CODE_PROVIDER,
             api: CLAUDE_CODE_PROVIDER,
             baseUrl: CLAUDE_CODE_BASE_URL,
-            contextWindow: forcedWindow === undefined ? CLAUDE_CODE_SUBSCRIPTION_WINDOW : Number(forcedWindow),
-            maxTokens: forcedOutput === undefined ? original.maxTokens : Number(forcedOutput),
             input: ['text'] as 'text'[],
             reasoning: false,
           },

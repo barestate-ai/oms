@@ -12,7 +12,12 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { assertPrivate, isMissing } from '../workspace/storage.ts';
 import { registerOmsCatalog } from './catalog.ts';
-import { claudeCodeEffort, createClaudeCodeProvider, type NativeChatControls } from './claude-code.ts';
+import {
+  CLAUDE_CODE_PROVIDER,
+  claudeCodeEffort,
+  createClaudeCodeProvider,
+  type NativeChatControls,
+} from './claude-code.ts';
 import { AGENT_TOOL } from './helpers/agents.ts';
 import { KNOWLEDGE_TOOL_NAMES } from './knowledge-service.ts';
 import { PROGRAM_REFERENCE_TOOL } from './program-reference.ts';
@@ -143,8 +148,23 @@ export async function createSessionModel(
   session.abort = async () => {
     await Promise.all([originalAbort(), native.disconnect()]);
   };
+  // `claude auth status` is lazy: the first real use of a native selection verifies the ambient login
+  // on demand, so an unchecked status can never read as an unconfigured provider. Each session verifies
+  // once for itself, so a billing change between sessions can never ride on a stale subscription check.
+  // The probe shares the session's authCheck with native startup, so a fresh session spawns the CLI once.
+  let nativeVerified = false;
+  const verifyNativeAccess = async (signal: AbortSignal = controller.signal) => {
+    if (!nativeVerified) {
+      const auth = await native.verifyAccess(signal);
+      signal.throwIfAborted();
+      if (!auth.configured) throw new Error(auth.detail);
+      nativeVerified = true;
+    }
+    signal.throwIfAborted();
+  };
   const originalSetModel = session.setModel.bind(session);
   session.setModel = async (...args: Parameters<AgentSession['setModel']>) => {
+    if (args[0].provider === CLAUDE_CODE_PROVIDER) await verifyNativeAccess();
     if (session.model?.provider === 'claude-code') await native.disconnect();
     return originalSetModel(...args);
   };
@@ -198,13 +218,22 @@ export async function createSessionModel(
     return directStream(model, context, { ...streamOptions, signal });
   };
   const originalPrompt = session.prompt.bind(session);
-  if (env.executionMode === 'interactive') {
-    session.prompt = (...args: Parameters<AgentSession['prompt']>) =>
-      life.withUserOperation(() => {
+  const gatedPrompt = (...args: Parameters<AgentSession['prompt']>) => {
+    const use = async (signal: AbortSignal) => {
+      // The turn signal, not the session lifetime, bounds verification and the SDK call it unlocks.
+      if (session.model?.provider === CLAUDE_CODE_PROVIDER) await verifyNativeAccess(signal);
+      else signal.throwIfAborted();
+      return originalPrompt(...args);
+    };
+    if (env.executionMode === 'interactive') {
+      return life.withUserOperation(() => {
         hooks.turn.id = randomUUID();
-        return env.withExecution(hooks.turn.id, () => originalPrompt(...args));
+        return env.withExecution(hooks.turn.id, use);
       });
-  }
+    }
+    return use(controller.signal);
+  };
+  session.prompt = gatedPrompt;
   await session.bindExtensions({});
   // Registered for a later sign-in, but not declared to the model while no credential exists.
   if (!initiallyKnown)

@@ -250,6 +250,91 @@ test('native Claude missing usage or cancellation retains the full token reserva
   }
 });
 
+test('classified Claude Code refusals get named outcomes instead of the broke-off text', async () => {
+  for (const [rawStopReason, expected, accounting, tokens] of [
+    [
+      'claude-code-signin',
+      'Claude Code needs its Claude subscription sign-in before it can answer. Run claude auth login in a terminal, then check the connection in /connect and send your message again. No provider request was sent.',
+      'known',
+      0,
+    ],
+    [
+      'claude-code-auth',
+      "Claude Code's Claude subscription sign-in is no longer valid. Run claude auth login in a terminal and check the connection in /connect before sending your message again. It is counted at its maximum cost.",
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-limit',
+      "Claude Code's usage limit was reached. It is counted at its maximum cost. Send your message again after the limit resets.",
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-limit:at 3:00 PM (UTC)',
+      "Claude Code's usage limit was reached. It resets at 3:00 PM (UTC). It is counted at its maximum cost. Send your message again after the limit resets.",
+      'unknown',
+      1_100,
+    ],
+    ['claude-code-rate-limit', 'Claude Code is rate limiting requests. Wait a moment and try again.', 'known', 1_100],
+    [
+      'claude-code-auth|pending',
+      "Claude Code's Claude subscription sign-in is no longer valid. Run claude auth login in a terminal and check the connection in /connect before sending your message again. It is counted at its maximum cost. An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.",
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-limit|pending:at 3:00 PM (UTC)',
+      "Claude Code's usage limit was reached. It resets at 3:00 PM (UTC). It is counted at its maximum cost. Send your message again after the limit resets. An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.",
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-rate-limit|pending',
+      'Claude Code rate limited the request. Wait a short while and send your message again. It is counted at its maximum cost. An interrupted native tool batch was not replayed; review OMS tool results, select Claude Code in /model, then use /clear to start a fresh native chat and clear the OMS conversation view. Task files and verification are retained.',
+      'unknown',
+      1_100,
+    ],
+    [
+      'claude-code-not-dispatched:Interrupted native tool batch: review OMS tool results',
+      'Claude Code did not start a native request: Interrupted native tool batch: review OMS tool results. No provider request was sent.',
+      'known',
+      0,
+    ],
+  ] as const) {
+    const ledger = createBudgetLedger({ caps, clock: Date.now, persist() {} });
+    const stream = createMeteredStream({
+      ledger,
+      allocate: createDispatchAllocator(),
+      maxOutputTokens: 5,
+      logicalTurnId: () => `native-${rawStopReason}`,
+      streamFunction: () => {
+        const source = createAssistantMessageEventStream();
+        source.push({
+          type: 'error',
+          reason: 'error',
+          error: {
+            ...message(),
+            provider: 'claude-code',
+            api: 'claude-code',
+            stopReason: 'error',
+            errorMessage: 'Claude Code native chat stopped: synthetic refusal. No API-key fallback was used.',
+            rawStopReason,
+          },
+        });
+        source.end();
+        return source;
+      },
+    });
+    const result = (await consume(stream, nativeClaude)).result;
+    assert.equal(result.stopReason, 'error');
+    assert.equal(result.errorMessage, expected);
+    assert.ok(!/broke off/.test(result.errorMessage!));
+    assert.equal(ledger.snapshot().accounting, accounting, rawStopReason);
+    assert.equal(ledger.snapshot().used.tokens, tokens, rawStopReason);
+  }
+});
+
 test('custom native Claude identities never gain the subscription transport exemption', async () => {
   const f = fixture();
   for (const candidate of [
