@@ -158,6 +158,33 @@ test('an oversized result is stubbed without discarding a short result that alre
   );
 });
 
+test('a short result among oversized ones stays intact through the remembered prefix replay', () => {
+  const small = {
+    role: 'toolResult',
+    toolName: 'read',
+    toolCallId: 'c0',
+    isError: false,
+    content: [{ type: 'text', text: 'MODE=test' }],
+  };
+  const messages = [
+    { role: 'user', content: 'go' },
+    call(0),
+    small,
+    ...Array.from({ length: 4 }, (_, n) => [call(n + 1), result(n + 1, 30_000)]).flat(),
+  ];
+  const trim = createContextTrimmer(() => CAP_TOKENS);
+  const first = trim(messages) as typeof messages;
+  // The old short result is a trim candidate, but its stub saves nothing, so its text stays.
+  assert.match(JSON.stringify(first), /MODE=test/);
+  assert.doesNotMatch(JSON.stringify(first), /result-1-body/);
+  // A later call replays the remembered stubs — and still never stubs the short result.
+  const later = [...messages, call(5), result(5, 10_000)];
+  const next = trim(later) as typeof messages;
+  assert.ok(size(next) < CAP * CONTEXT_TRIM_START);
+  assert.match(JSON.stringify(next), /MODE=test/);
+  assert.deepEqual(next.slice(0, first.length), first);
+});
+
 test('the newest results are kept in full while they fit the budget', () => {
   const messages = transcript(2, 30_000);
   assert.equal(createContextTrimmer(() => CAP_TOKENS)(messages), messages);
