@@ -20,6 +20,7 @@ import {
   type StreamOptions,
   type TranscriptContext,
   type ToolCall,
+  type Usage,
 } from '@earendil-works/pi-ai';
 
 export const CLAUDE_CODE_PROVIDER = 'claude-code';
@@ -29,6 +30,11 @@ export const CLAUDE_CODE_AUTH = 'claude-code-auth';
 export const CLAUDE_CODE_LIMIT = 'claude-code-limit';
 export const CLAUDE_CODE_RATE_LIMIT = 'claude-code-rate-limit';
 export const CLAUDE_CODE_NOT_DISPATCHED = 'claude-code-not-dispatched';
+/** Usage a native provider receipt established for an attempt that still ended in an error.
+ * Absent means the attempt's usage is unproven and must stay fail-closed. */
+export interface ObservedUsage {
+  observedUsage?: Usage;
+}
 export const CLAUDE_CODE_EMPTY_CONTINUATION =
   'Your previous reply came back empty. Continue the task from where you stopped; the earlier tool results are already in this conversation.';
 const CLAUDE_CODE_BASE_URL = 'claude-code://local';
@@ -610,6 +616,25 @@ export class ClaudeCodeSession implements NativeChatControls {
       return result;
     }));
   }
+  /** A native result carries the turn's cumulative usage; the part not already emitted by earlier
+   * calls in the turn is what the failed attempt's provider reported. Publishing it lets admission
+   * settle the attempt at that observed usage instead of retaining its reservation bound. */
+  private publishObservedUsage(current: Completion, eventUsage: unknown): void {
+    try {
+      const aggregate = nativeUsage(eventUsage);
+      const usage = current.message.usage;
+      let total = 0;
+      for (const key of usageKeys) {
+        const delta = Math.max(0, aggregate[key] - this.state.emitted[key]);
+        usage[key] = delta;
+        if (key !== 'cacheWrite1h') total += delta;
+      }
+      usage.totalTokens = total;
+      (current.message as AssistantMessage & ObservedUsage).observedUsage = usage;
+    } catch {
+      // A failed receipt without provable usage stays fail-closed.
+    }
+  }
   private async start(signal?: AbortSignal): Promise<void> {
     if (this.child) return;
     if (!this.configuration) throw new Error('No native session configuration');
@@ -1013,8 +1038,10 @@ export class ClaudeCodeSession implements NativeChatControls {
           (usageKeys.every((key) => usage[key] === 0) ||
             usageKeys.every((key) => usage[key] === this.state.emitted[key])) &&
           !NATIVE_ACCOUNT_REASON.test(reason)
-        )
+        ) {
+          this.publishObservedUsage(current, event.usage);
           throw new NativeEmptyResponseError('Unexpected or failed native receipt');
+        }
       }
       if (
         !current ||
@@ -1023,8 +1050,12 @@ export class ClaudeCodeSession implements NativeChatControls {
         event.is_error ||
         event.subtype !== 'success' ||
         current.message.content.some((block) => block.type === 'toolCall')
-      )
+      ) {
+        // A failed result that carries usage is a provider receipt (refusal, limit, execution
+        // error): publish its delta so the attempt settles at observed usage, not its bound.
+        if (current && (event.is_error || event.subtype !== 'success')) this.publishObservedUsage(current, event.usage);
         throw classifyNativeReceipt(event);
+      }
       const models = object(event.modelUsage),
         nativeModel = NATIVE_MODELS[current.model.id as NativeAlias];
       if (Object.keys(models).length !== 1 || !Object.hasOwn(models, nativeModel))

@@ -63,6 +63,7 @@ import {
   CLAUDE_CODE_NOT_DISPATCHED,
   CLAUDE_CODE_RATE_LIMIT,
   CLAUDE_CODE_SIGNIN,
+  type ObservedUsage,
 } from './claude-code.ts';
 
 function count(value: unknown): value is number {
@@ -128,11 +129,12 @@ export function requestBound(
   maxInputTokens?: number,
   exempt = false,
   subscribed = false,
+  inputBound?: number,
 ) {
   // Claude Code adds its own native prompt and protocol overhead outside OMS's payload hook.
-  if (isClaudeCodeModel(model) && maxInputTokens !== undefined) return null;
+  if (isClaudeCodeModel(model) && (maxInputTokens !== undefined || inputBound !== undefined)) return null;
   const priced = maxInputTokens === undefined ? model : { ...model, contextWindow: maxInputTokens };
-  const bound = modelReservationBound(priced, maxOutputTokens);
+  const bound = modelReservationBound(priced, maxOutputTokens, inputBound);
   if (bound && subscriptionUsage(model, mode, exempt, subscribed)) bound.spendMicroUsd = 0;
   return bound;
 }
@@ -173,6 +175,44 @@ export function payloadWithinInputCap(payload: unknown, maxInputTokens: number):
     return false;
   }
   return bytes + PROTOCOL_ALLOWANCE_BYTES <= maxInputTokens * BYTES_PER_TOKEN;
+}
+
+/** Slack over serialized-transcript bytes a provider adapter may add re-encoding it (field
+ * names, request wrapper, tool conversion): the larger of 32 KB or a quarter of the transcript. */
+const WRAPPER_SLACK_BYTES = 32 * 1024;
+
+/** The serialized body must stay inside a measured input bound — whose slack is already priced
+ * in, unlike `payloadWithinInputCap`'s separate protocol allowance for a user-configured cap. */
+function payloadWithinMeasuredBound(payload: unknown, inputBound: number): boolean {
+  if (unboundedInput(payload)) return false;
+  try {
+    return Buffer.byteLength(JSON.stringify(payload)) <= inputBound * BYTES_PER_TOKEN;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The input side of a request's reservation measured from the transcript the provider will
+ * receive, or undefined when that input cannot be byte-bounded: Claude Code's native prompt
+ * is invisible to OMS, and media/remote-file content has no byte-proportional token count.
+ * The catalog window is only a worst case — reserving `window + output` for a 30 KB
+ * transcript leaves a failed request holding a bound it could never reach. The payload hook
+ * below holds the serialized body inside this bound, so it stays a provable bound.
+ */
+function measuredInputBound(model: Model<Api>, context: Parameters<StreamFn>[1]): number | undefined {
+  if (isClaudeCodeModel(model)) return undefined;
+  // Tool-result `details` (pi's read truncation copy, edit diffs) are never sent to providers.
+  const sent = context.messages.map((message) => ({ ...(message as object), details: undefined }));
+  if (unboundedInput(sent)) return undefined;
+  let bytes: number;
+  try {
+    bytes = Buffer.byteLength(JSON.stringify(sent));
+  } catch {
+    return undefined;
+  }
+  const bound = Math.ceil((bytes + Math.max(WRAPPER_SLACK_BYTES, bytes >> 2)) / BYTES_PER_TOKEN);
+  return Math.min(model.contextWindow, bound);
 }
 
 function readinessForBound(
@@ -239,8 +279,9 @@ export function modelReadiness(
   subscribed = false,
   concurrent = false,
   headroom?: { tokens: number; spendMicroUsd: number },
+  inputBound?: number,
 ): { ready: boolean; detail: string } {
-  if (isClaudeCodeModel(model) && maxInputTokens !== undefined)
+  if (isClaudeCodeModel(model) && (maxInputTokens !== undefined || inputBound !== undefined))
     return {
       ready: false,
       detail: 'Claude Code cannot enforce a local input cap. Omit the input cap or choose a direct API model.',
@@ -248,7 +289,7 @@ export function modelReadiness(
   return readinessForBound(
     model,
     ledger,
-    requestBound(model, maxOutputTokens, executionMode, maxInputTokens, subscriptionExempt, subscribed),
+    requestBound(model, maxOutputTokens, executionMode, maxInputTokens, subscriptionExempt, subscribed, inputBound),
     executionMode,
     subscriptionExempt,
     subscribed,
@@ -306,12 +347,16 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
     const uncertain = (): void => {
       if (!dispatchId || settled) return;
       settled = true;
+      // A failure before the single metered request proves nothing reached an API provider,
+      // so that reservation is released rather than retained as unknown usage. Claude Code's
+      // native channel is outside this counter, so its failures stay fail-closed.
+      const sent = dispatched && reachedProvider();
       config.ledger.settle({
         dispatchId,
         receiptId: randomUUID(),
-        outcome: dispatched ? 'uncertain' : 'not_dispatched',
-        tokens: dispatched ? null : 0,
-        spendMicroUsd: dispatched ? null : 0,
+        outcome: sent ? 'uncertain' : 'not_dispatched',
+        tokens: sent ? null : 0,
+        spendMicroUsd: sent ? null : 0,
       });
     };
     // A transport-level failure (dropped stream, 5xx, overload) proves nothing about usage but cannot exceed what admission
@@ -337,12 +382,75 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       settled = true;
       return true;
     };
-    const interrupted = (cause: string | undefined): boolean => {
-      if (!transient(cause) || !settleAtBound()) return false;
-      failed(describeTransient(model.provider, cause));
+    // A failed attempt whose adapter could publish provider-reported usage (`observedUsage`)
+    // settles at that usage instead of its reservation bound: zero when the receipt showed no
+    // new tokens, otherwise the normalized amount. Usage no receipt establishes stays fail-closed.
+    const settleObserved = (error: AssistantMessage): boolean => {
+      if (!dispatchId || settled || !reserved) return false;
+      const observed = (error as AssistantMessage & ObservedUsage).observedUsage;
+      const usage = observed === undefined ? null : normalizePiUsage(model, observed);
+      const zero =
+        observed !== undefined &&
+        count(observed.input) &&
+        count(observed.output) &&
+        count(observed.cacheRead) &&
+        count(observed.cacheWrite) &&
+        observed.totalTokens === 0 &&
+        observed.input + observed.output + observed.cacheRead + observed.cacheWrite === 0;
+      if (usage === null && !zero) return false;
+      const receipt = config.ledger.settle({
+        dispatchId,
+        receiptId: randomUUID(),
+        outcome: 'known',
+        tokens: usage?.tokens ?? 0,
+        spendMicroUsd: subscriptionUsage(
+          model,
+          config.executionMode,
+          config.subscriptionExempt,
+          config.subscribed?.(model.provider) ?? false,
+        )
+          ? 0
+          : (usage?.spendMicroUsd ?? 0),
+        ...(usage && observed
+          ? {
+              usage: {
+                inputTokens: observed.input,
+                outputTokens: observed.output,
+                cacheReadTokens: observed.cacheRead,
+                cacheWriteTokens: observed.cacheWrite,
+              },
+            }
+          : {}),
+      });
+      if (!receipt.ok) return false;
+      settled = true;
       return true;
     };
     let httpRequests = 0;
+    // Under `transport: 'sse'` an API provider can only be reached through the single metered
+    // request below; a failure with zero issued requests provably sent nothing, so it settles
+    // `not_dispatched` and frees the reservation. Claude Code's native channel is not metered
+    // here, so it always counts as possibly sent.
+    const reachedProvider = (): boolean => isClaudeCodeModel(model) || httpRequests > 0;
+    const releaseUndispatched = (): boolean => {
+      if (!dispatchId || settled) return false;
+      const released = config.ledger.settle({
+        dispatchId,
+        receiptId: randomUUID(),
+        outcome: 'not_dispatched',
+        tokens: 0,
+        spendMicroUsd: 0,
+      });
+      if (!released.ok) return false;
+      settled = true;
+      return true;
+    };
+    const interrupted = (cause: string | undefined): boolean => {
+      if (!transient(cause)) return false;
+      if (!(reachedProvider() ? settleAtBound() : releaseUndispatched())) return false;
+      failed(describeTransient(model.provider, cause));
+      return true;
+    };
     let capRefused = false;
     // The provider answered 4xx before streaming anything: it did no work, so nothing was charged.
     let rejection: string | undefined;
@@ -407,6 +515,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           return;
         }
         const subscribed = config.subscribed?.(model.provider) ?? false;
+        const inputBound = measuredInputBound(model, context);
         const bound = requestBound(
           model,
           config.maxOutputTokens,
@@ -414,6 +523,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           config.maxInputTokens,
           config.subscriptionExempt,
           subscribed,
+          inputBound,
         );
         const readiness = modelReadiness(
           model,
@@ -425,6 +535,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           subscribed,
           config.concurrent,
           config.headroom?.(),
+          inputBound,
         );
         if (!bound || !readiness.ready) {
           failed(`${readiness.detail} No provider request sent.`);
@@ -436,7 +547,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           );
           return;
         }
-        let payloadAccepted = config.maxInputTokens === undefined;
+        let payloadAccepted = inputBound === undefined && config.maxInputTokens === undefined;
         const modelCap = modelOutputCap(model, config.maxOutputTokens);
         const outputCap =
           model.api === 'anthropic-messages' ? clampMaxTokensToContext(model, context, modelCap) : modelCap;
@@ -554,7 +665,10 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           onPayload: async (payload: unknown, payloadModel: Model<Api>): Promise<unknown> => {
             if (controller.signal.aborted || ++payloads !== 1 || payloadModel.id !== model.id)
               throw new Error('metered payload refused');
-            if (config.maxInputTokens !== undefined && !payloadWithinInputCap(payload, config.maxInputTokens)) {
+            if (
+              (inputBound !== undefined && !payloadWithinMeasuredBound(payload, inputBound)) ||
+              (config.maxInputTokens !== undefined && !payloadWithinInputCap(payload, config.maxInputTokens))
+            ) {
               capRefused = true;
               throw new Error('serialized payload exceeds the local input cap');
             }
@@ -637,15 +751,18 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
                 JSON.stringify({ reason: event.reason, message: errorMessage }).slice(0, 600),
               );
             if (releaseUnsent() || releaseRejected()) return;
+            // A failed attempt that carries provider-reported usage settles at that usage.
+            const observedSettled = settleObserved(event.error);
             if (
               isClaudeCodeModel(model) &&
               event.error.rawStopReason === CLAUDE_CODE_EMPTY_RESPONSE &&
               event.reason !== 'aborted' &&
               !controller.signal.aborted &&
               retries > 0 &&
-              settleAtBound()
+              (observedSettled || settleAtBound())
             ) {
-              // Charge the failed attempt at its full bound, then admit the retry against the remaining budget.
+              // Charge the failed attempt at the usage its provider reported — or its full bound
+              // when no receipt exists — then admit the retry against the remaining budget.
               await delay(3_000, undefined, { signal: controller.signal });
               const retry = streamAttempt(
                 selectedModel,
@@ -693,8 +810,13 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               }
             }
             if (!isClaudeCodeModel(model) && event.reason !== 'aborted' && interrupted(errorMessage)) return;
-            uncertain();
-            failed(describeFailure(model.provider), event.reason === 'aborted');
+            if (!observedSettled) uncertain();
+            failed(
+              observedSettled
+                ? 'The provider request failed after reporting its usage; that usage was counted.'
+                : describeFailure(model.provider),
+              event.reason === 'aborted',
+            );
             return;
           }
           if (event.type === 'done') {
@@ -745,7 +867,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
         );
       } catch (error) {
         if (controller.signal.aborted && settled) {
-          failed('Request cancelled during retry backoff; usage was counted at its maximum cost.', true);
+          failed('Request cancelled during retry backoff; the failed attempt was counted at its settled usage.', true);
           return;
         }
         if (releaseUnsent() || releaseRejected()) return;

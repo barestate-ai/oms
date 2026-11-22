@@ -82,6 +82,8 @@ const input=createInterface({input:process.stdin});input.on('line',async line=>{
  if(authError||refusalError||mode==='empty'||mode==='empty-then-good'&&history.length===1||mode==='empty-second-then-good'&&history.length===2||mode==='auth-failure'||mode==='usage-limit'||mode==='usage-limit-reset'||mode==='usage-limit-reset-multiline'){
   emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:authError?[authError]:refusalError?[refusalError]:mode==='auth-failure'?['authentication failed after stream error']:mode==='usage-limit'?["You've hit your limit after a server error"]:mode==='usage-limit-reset'?["You've hit your usage limit. Your limit resets at 3:00 PM (UTC)"]:mode==='usage-limit-reset-multiline'?["You've hit your usage limit. Your limit resets at 3pm PT\\nDo not keep sending."]:[]});return;
  }
+ if(mode==='refuse-then-good'&&!existsSync(root+'/refused')){writeFileSync(root+'/refused','');emit({type:'result',subtype:'error_during_execution',is_error:true,result:'',usage,modelUsage:{},errors:['Request was refused']});return;}
+ if(mode==='refuse-unsent'&&!existsSync(root+'/refused')){writeFileSync(root+'/refused','');emit({type:'result',subtype:'error_max_turns',is_error:true,result:'',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},modelUsage:{},errors:['Request was refused']});return;}
  if(mode==='empty-after-tool'||mode==='auth-after-tool'){
   if(history.length===1){assistant({type:'tool_use',id:'call_'+id,name:'mcp__oms__read',input:{path:'src/main.ts'}},'tool_use');const result=await mcp();appendFileSync(root+'/results',JSON.stringify(result)+'\\n');emit({type:'result',subtype:'error_during_execution',is_error:true,usage,errors:mode==='auth-after-tool'?['API Error: 401']:[]});}
   else{assistant({type:'text',text:'reply after tool'});receipt(1);}return;
@@ -189,13 +191,22 @@ for (const mode of [
         const input = rows(join(directory, 'input'));
         assert.equal(input.length, mode === 'empty-second-then-good' ? 3 : 2);
         assert.deepEqual(input.at(-1).message, input.at(-2).message, 'the original input is retried unchanged');
-        assert.ok(ledger.snapshot().used.tokens >= 1_128_000, 'the failed attempt retains its full bound');
+        if (mode.startsWith('empty-success')) {
+          // A success-marked empty receipt carries no provable failed usage: the bound stays.
+          assert.ok(ledger.snapshot().used.tokens >= 1_128_000, 'a receipt-free empty response retains its bound');
+        } else {
+          assert.ok(
+            ledger.receipts().some((receipt) => receipt.outcome === 'known' && receipt.tokens === 0),
+            'the failed attempt settles at the usage its provider reported',
+          );
+          assert.ok(ledger.snapshot().used.tokens < 1_128_000);
+        }
       } finally {
         await native.close();
       }
     }));
 
-test('three empty native failures stop with unknown usage', async (t) =>
+test('three empty native failures stop after reporting zero usage each', async (t) =>
   toolFreeFixture(t, 'empty', async (directory) => {
     const { native, model } = await modelAndSession();
     const { ledger, stream } = meteredNative(native);
@@ -204,8 +215,10 @@ test('three empty native failures stop with unknown usage', async (t) =>
       assert.equal(response.stopReason, 'error');
       assert.equal(rows(join(directory, 'input')).length, 3);
       assert.equal(ledger.reservations().length, 3);
-      assert.equal(ledger.snapshot().accounting, 'unknown');
-      assert.match(response.errorMessage!, /counted at its maximum cost/);
+      // Every attempt's receipt established zero usage: each settles observed, not at its bound.
+      assert.equal(ledger.snapshot().accounting, 'known');
+      assert.equal(ledger.snapshot().used.tokens, 0);
+      assert.match(response.errorMessage!, /usage was counted/);
     } finally {
       await native.close();
     }
@@ -232,7 +245,9 @@ for (const mode of [
         assert.equal(response.stopReason, 'error');
         assert.equal(rows(join(directory, 'input')).length, 1);
         assert.equal(ledger.reservations().length, 1);
-        assert.equal(ledger.snapshot().accounting, 'unknown');
+        // The refusal receipt reports zero usage: the attempt settles observed at 0.
+        assert.equal(ledger.snapshot().accounting, 'known');
+        assert.equal(ledger.snapshot().used.tokens, 0);
         if (['usage-limit', 'usage-limit-reset', 'usage-limit-reset-multiline', 'insufficient-quota'].includes(mode))
           assert.match(response.errorMessage!, /Claude Code's usage limit was reached/);
         else assert.match(response.errorMessage!, /Claude subscription sign-in is no longer valid/);
@@ -259,8 +274,9 @@ test('a bare 429 is temporary throttling, not plan exhaustion or an empty respon
       assert.match(response.errorMessage!, /rate limiting requests/);
       assert.ok(isRetryableAssistantError(response), 'Pi retries the throttled turn after backoff');
       assert.ok(!/usage limit|broke off/i.test(response.errorMessage!));
+      // The throttled receipt reported zero usage: the attempt settles observed at 0.
       assert.equal(ledger.snapshot().accounting, 'known');
-      assert.equal(ledger.snapshot().used.tokens, 1_128_000);
+      assert.equal(ledger.snapshot().used.tokens, 0);
     } finally {
       await native.close();
     }
@@ -303,8 +319,9 @@ test('a transient receipt whose text only mentions an account stays a generic fa
       const response = await (await stream(model, transcript)).result();
       assert.equal(response.stopReason, 'error');
       assert.equal(rows(join(directory, 'input')).length, 1);
-      assert.equal(ledger.snapshot().accounting, 'unknown');
-      assert.match(response.errorMessage!, /broke off/);
+      // The failed receipt reported zero usage: the attempt settles observed at 0, not uncertain.
+      assert.equal(ledger.snapshot().accounting, 'known');
+      assert.match(response.errorMessage!, /usage was counted/);
       assert.ok(!/sign-in|usage limit/i.test(response.errorMessage!));
       transcript.messages.push({ role: 'user', content: 'again', timestamp: 2 });
       const resend = await (await stream(model, transcript)).result();
@@ -313,7 +330,7 @@ test('a transient receipt whose text only mentions an account stays a generic fa
       assert.match(resend.errorMessage!, /\/clear/);
       assert.match(resend.errorMessage!, /No provider request was sent/);
       assert.equal(ledger.receipts().at(-1)!.outcome, 'not_dispatched');
-      assert.equal(ledger.snapshot().used.tokens, 1_128_000, 'the resend released its reservation');
+      assert.equal(ledger.snapshot().used.tokens, 0, 'the resend released its reservation');
       assert.equal(rows(join(directory, 'input')).length, 1, 'the resend never reached the native chat');
     } finally {
       await native.close();
@@ -357,7 +374,8 @@ for (const mode of ['hang', 'exit-empty'])
 
 for (const limit of ['cancel', 'time', 'tokens'])
   test(`${limit} stops an empty native retry before another dispatch`, async (t) =>
-    toolFreeFixture(t, 'empty', async (directory) => {
+    // A hang has no receipt to settle at observed usage, so the cap variant uses it to keep the bound.
+    toolFreeFixture(t, limit === 'tokens' ? 'hang' : 'empty', async (directory) => {
       const { native, model } = await modelAndSession();
       const { ledger, stream } = meteredNative(
         native,
@@ -369,6 +387,7 @@ for (const limit of ['cancel', 'time', 'tokens'])
         const response = await (
           await stream(model, toolFreeContext(), {
             signal: controller.signal,
+            ...(limit === 'tokens' ? { timeoutMs: 150 } : {}),
             onPayload: () => {
               if (limit === 'cancel') setTimeout(() => controller.abort(), 150);
             },
@@ -380,12 +399,50 @@ for (const limit of ['cancel', 'time', 'tokens'])
         if (limit === 'cancel') {
           assert.equal(
             response.errorMessage,
-            'Request cancelled during retry backoff; usage was counted at its maximum cost.',
+            'Request cancelled during retry backoff; the failed attempt was counted at its settled usage.',
           );
           assert.equal(ledger.snapshot().accounting, 'known');
           assert.deepEqual(ledger.snapshot().pendingDispatchIds, []);
-          assert.equal(ledger.snapshot().used.tokens, 1_128_000);
+          // The empty attempt's receipt reported zero usage.
+          assert.equal(ledger.snapshot().used.tokens, 0);
         }
+      } finally {
+        await native.close();
+      }
+    }));
+
+test('an empty native retry is admitted under the default session token cap', async (t) =>
+  toolFreeFixture(t, 'empty-then-good', async (directory) => {
+    const { native, model } = await modelAndSession();
+    const { ledger, stream } = meteredNative(native, 2_000_000);
+    try {
+      const response = await (await stream(model, toolFreeContext())).result();
+      assert.equal(response.stopReason, 'stop', response.errorMessage);
+      assert.equal(rows(join(directory, 'input')).length, 2);
+      assert.equal(ledger.reservations().length, 2);
+      assert.equal(ledger.snapshot().accounting, 'known');
+    } finally {
+      await native.close();
+    }
+  }));
+
+for (const mode of ['refuse-then-good', 'refuse-unsent'])
+  test(`${mode} settles the refusal at its reported usage so bounded admission resumes`, async (t) =>
+    toolFreeFixture(t, mode, async (directory) => {
+      const { native, model } = await modelAndSession();
+      const { ledger, stream } = meteredNative(native, 2_000_000);
+      try {
+        const transcript = toolFreeContext();
+        const refused = await (await stream(model, transcript)).result();
+        assert.equal(refused.stopReason, 'error');
+        // The refusal receipt establishes usage: observed tokens, never an unknown charge.
+        assert.equal(ledger.snapshot().accounting, 'known');
+        assert.equal(ledger.snapshot().used.tokens, mode === 'refuse-then-good' ? 100 : 0);
+        // Native refusal recovery still requires the documented /clear; the budget no longer does.
+        await native.reset();
+        transcript.messages.push(refused, { role: 'user', content: 'again', timestamp: 2 });
+        const response = await (await stream(model, transcript)).result();
+        assert.equal(response.stopReason, 'stop', response.errorMessage);
       } finally {
         await native.close();
       }

@@ -107,6 +107,7 @@ export const modelOutputCap = (model: Model<Api>, maxOutputTokens: number): numb
 export function modelReservationBound(
   model: Model<Api>,
   sessionMaxOutputTokens: number,
+  inputBound?: number,
 ): { tokens: number; spendMicroUsd: number } | null {
   if (
     !count(sessionMaxOutputTokens) ||
@@ -127,11 +128,16 @@ export function modelReservationBound(
   const outputTokens =
     model.api === 'openai-codex-responses' || isClaudeCodeModel(model) ? model.maxTokens : maxOutputTokens;
   if (outputTokens === 0 || outputTokens > model.contextWindow) return null;
+  // `inputBound` is the caller-proven upper bound on provider-visible input (e.g. the
+  // measured transcript the payload hook holds the serialized request to). It may be lower
+  // than the model window but never replaces it as the provider limit.
+  const inputTokens = inputBound === undefined ? model.contextWindow : Math.min(inputBound, model.contextWindow);
+  if (!count(inputTokens) || inputTokens === 0) return null;
   // Full context capacity, not a tokenizer guess. This includes long-cache writes.
   const inputRate = Math.max(...rates.flatMap((rate) => [rate.input, rate.cacheRead, rate.cacheWrite, rate.input * 2]));
   const outputRate = Math.max(...rates.map((rate) => rate.output));
-  const tokens = model.contextWindow + outputTokens;
-  const spendMicroUsd = Math.ceil(model.contextWindow * inputRate + outputTokens * outputRate);
+  const tokens = inputTokens + outputTokens;
+  const spendMicroUsd = Math.ceil(inputTokens * inputRate + outputTokens * outputRate);
   return count(tokens) && count(spendMicroUsd) ? { tokens, spendMicroUsd } : null;
 }
 
