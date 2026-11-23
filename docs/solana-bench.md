@@ -27,7 +27,7 @@ Only subscription logins are used. The staged login files have their refresh tok
 - Docker, with a running daemon (every cell runs in a container on an internal network).
 - The Surfpool 0.10.4 binary, whose SHA-256 the runner checks (`3c4a22f4376d007141cc6ac709f60c766a678af24c5224c26ddb78df3566ffd9`). Point `SOLBENCH_HARNESS_SURFPOOL` at it; the default is `.tmp/solbench-harness/surfpool-0.10.4`.
 - A login for each cell you run: `codex login` (ChatGPT sign-in) for the Codex and OMS cells, `claude` login for both Claude Code cells. Credentials are read from `~/.codex/auth.json` and `~/.claude/.credentials.json`.
-- For the OMS cell: `OMS_SEARCH_URL` (https, or loopback) and `OMS_SEARCH_TOKEN` for an oms-search service. No other search key may be set, because the cell's label names oms-search only. Optional: `OMS_KNOWLEDGE_TOKEN` gives the cell the reference service with injection; `OMS_KNOWLEDGE_URL` defaults to `https://knowledge.barestate.xyz/mcp`.
+- For the OMS cell: `OMS_SEARCH_URL` (https, or loopback) and `OMS_SEARCH_TOKEN` for an oms-search service. Unset `EXA_API_KEY`, `TINYFISH_API_KEY`, and `FIRECRAWL_API_KEY` before running the cell so web searches and page fetching use the hosted service. Optional: `OMS_KNOWLEDGE_TOKEN` gives the cell the reference service with injection; `OMS_KNOWLEDGE_URL` defaults to `https://knowledge.barestate.xyz/mcp`.
 - A workspace SDK set, installed once and mounted read-only into every cell:
 
 ```sh
