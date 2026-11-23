@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
-import type { AgentCallDetails } from '@oms/engine';
+import { knowledgeTopic, KNOWLEDGE_TOOL_NAMES, type AgentCallDetails } from '@oms/engine';
 import {
   countLines,
   describe,
@@ -355,6 +355,22 @@ function plain(ctx: RowContext, call: ToolCall, described: Described): Rendered 
 
 /** One tool call as rows; a call cut off before it finished says so under its name. */
 export function renderTool(call: ToolCall, ctx: RowContext): Rendered {
+  if (KNOWLEDGE_TOOL_NAMES.includes(call.name)) {
+    const label =
+      call.state === 'done'
+        ? 'fetched Solana knowledge'
+        : call.state === 'error'
+          ? 'Solana knowledge unavailable'
+          : call.state === 'interrupted'
+            ? 'Solana knowledge lookup interrupted'
+            : 'fetching Solana knowledge';
+    const line = truncateToWidth(header(ctx, call.state, `${label}: ${knowledgeTopic(call.args)}`, ''), ctx.width, '…');
+    const error =
+      call.state === 'error' && call.text.startsWith('Solana knowledge rate limit reached.')
+        ? arm(ctx, [call.text], 'error')
+        : [];
+    return { lines: [line, ...error], collapsed: false, volatile: running(call.state) };
+  }
   const described = describe(call, ctx.cwd);
   let drawn: Rendered;
   switch (described.kind) {
@@ -380,7 +396,12 @@ export function renderTool(call: ToolCall, ctx: RowContext): Rendered {
 
 /** Whether a call may join an 'Explored' group: read-only, and finished or still going well. */
 export function groupable(call: ToolCall, cwd?: string): boolean {
-  return !!describe(call, cwd).group && call.state !== 'error' && call.state !== 'interrupted';
+  return (
+    !KNOWLEDGE_TOOL_NAMES.includes(call.name) &&
+    !!describe(call, cwd).group &&
+    call.state !== 'error' &&
+    call.state !== 'interrupted'
+  );
 }
 
 const SUBLINE: Record<Group, string> = { files: 'Read', searches: 'Searched', pages: 'Opened' };

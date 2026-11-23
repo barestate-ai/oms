@@ -27,6 +27,7 @@ import { taskRoot, type SessionRoot } from './session-root.ts';
 import { verifierBackendOptions } from './task-definition.ts';
 import { taskContext, type TaskContext } from './task-context.ts';
 import { openBudgetJournal } from './usage.ts';
+import { hideKnowledgeInSession } from './knowledge-service.ts';
 import { createVerifierBackend } from './verifier-backend.ts';
 
 /** The pinned requirements and their independent checks; only a pinned task session has them. */
@@ -120,7 +121,7 @@ export function openConversation(
   const executionMode = options.executionMode ?? 'bounded';
   privateDirectory(dirname(root.sessionsDir));
   privateDirectory(root.sessionsDir);
-  const manager = openSessionManager(options, root);
+  const manager = hideKnowledgeInSession(openSessionManager(options, root));
   const sessionId = manager.getSessionId();
   const budgetJournal = (life.budgetJournal = openBudgetJournal({
     path: join(root.sessionsDir, `${sessionId}.budget.jsonl`),

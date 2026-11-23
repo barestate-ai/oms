@@ -15,7 +15,10 @@ import {
   accountKnowledgeSource,
   createKnowledgeExtension,
   createKnowledgeVisibility,
+  hideKnowledgeBlocks,
+  hideKnowledgeInSession,
   KNOWLEDGE_TOOL_NAMES,
+  wrapUntrusted,
   type KnowledgeConfig,
 } from '../src/runtime/knowledge-service.ts';
 import { createHarnessSettings } from '../src/runtime/settings-controls.ts';
@@ -24,6 +27,44 @@ import { knowledgeHint } from '../src/runtime/session.ts';
 const ACCOUNT = 'synthetic-account-token-7c1d';
 const ENV_TOKEN = 'synthetic-env-token-91ab';
 const HINT = /look the fact up with search_docs/;
+
+test('saved sessions retain literal prompt tags and omit private tool results', () => {
+  const manager = hideKnowledgeInSession(SessionManager.inMemory(process.cwd()));
+  const prompt = 'Explain the syntax <untrusted-knowledge tool="search_docs"> and <solana-knowledge-excerpt>';
+  manager.appendMessage({ role: 'user', content: prompt, timestamp: 1 });
+  manager.appendMessage({
+    role: 'toolResult',
+    toolCallId: 'lookup',
+    toolName: 'search_docs',
+    content: [{ type: 'text', text: 'private lookup result' }],
+    details: { reference: 'private lookup metadata' },
+    isError: false,
+    timestamp: 2,
+  });
+  const saved = JSON.stringify(manager.getEntries());
+  assert.match(saved, /Explain the syntax.*and <solana-knowledge-excerpt>/);
+  assert.match(saved, /fetched Solana knowledge: Solana/);
+  assert.doesNotMatch(saved, /private lookup/);
+  assert.equal(hideKnowledgeBlocks(prompt), prompt);
+  assert.equal(hideKnowledgeBlocks(prompt, true), 'Explain the syntax fetched Solana knowledge: Solana');
+});
+
+test('a diagnosis keeps its visible context when a private error excerpt is cut short', () => {
+  const diagnosis = wrapUntrusted(
+    'solana_diagnosis',
+    'Instruction 3 failed.\n<solana-knowledge-excerpt>' +
+      'synthetic private error detail '.repeat(20) +
+      '</solana-knowledge-excerpt>',
+    400,
+  );
+  assert.match(diagnosis, /synthetic private error detail/);
+  assert.doesNotMatch(diagnosis, /<\/solana-knowledge-excerpt>/);
+  const safe = hideKnowledgeBlocks(diagnosis);
+  assert.match(safe, /Instruction 3 failed/);
+  assert.match(safe, /fetched Solana knowledge: error/);
+  assert.match(safe, /\[truncated\]\n<\/untrusted-knowledge>/);
+  assert.doesNotMatch(safe, /synthetic private/);
+});
 
 async function gateway(status = 200) {
   const calls: Array<{ path: string; auth: string | undefined; tool: string }> = [];
@@ -199,6 +240,7 @@ test('OMS_KNOWLEDGE_URL plus OMS_KNOWLEDGE_TOKEN win over the account; one of th
   assert.deepEqual(accountKnowledgeSource({ env: { OMS_KNOWLEDGE_TOKEN: ENV_TOKEN }, account: () => account })(), {
     endpoint: 'http://127.0.0.1:1/api/knowledge/mcp',
     token: ACCOUNT,
+    guidance: true,
   });
   assert.equal(
     accountKnowledgeSource({ env: { OMS_KNOWLEDGE_URL: 'http://svc.test/mcp' }, account: () => undefined })(),
