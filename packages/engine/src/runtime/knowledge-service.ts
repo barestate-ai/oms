@@ -143,6 +143,8 @@ export function hideKnowledgeBlocks(text: string, includeUnclosed = false): stri
 }
 
 const activePrimers = new WeakMap<SessionManager, string>();
+type ReferenceMessage = Extract<Parameters<SessionManager['appendMessage']>[0], { role: 'user' | 'toolResult' }>;
+const liveReferences = new WeakMap<SessionManager, WeakMap<object, ReferenceMessage>>();
 
 /** Keep the injected primer private without treating user-authored markup as reference data. */
 export async function promptWithKnowledge(
@@ -158,14 +160,34 @@ export async function promptWithKnowledge(
   }
 }
 
-/** Persist a safe copy and let the running model keep its reference context. */
+/** Pi builds each request from history, so restore references only on the provider request. */
+export function attachKnowledgeContext({ agent, sessionManager }: AgentSession): void {
+  const references = liveReferences.get(sessionManager);
+  if (!references) return;
+  const prepare = agent.prepareRequest;
+  agent.prepareRequest = async (request, signal) => {
+    const prepared = await prepare?.call(agent, request, signal);
+    const context = prepared?.context ?? request.context;
+    const messages = context.messages.map((message) => references.get(message) ?? message);
+    return { ...prepared, context: { ...context, messages } };
+  };
+}
+
+/** Persist a safe copy and keep lookup text in memory while its history entry is live. */
 export function hideKnowledgeInSession(manager: SessionManager): SessionManager {
   const append = manager.appendMessage.bind(manager);
+  const references = new WeakMap<object, ReferenceMessage>();
+  liveReferences.set(manager, references);
+  const appendReference = (safe: ReferenceMessage, original: ReferenceMessage) => {
+    const id = append(safe);
+    references.set(safe, original);
+    return id;
+  };
   manager.appendMessage = (message) => {
     if (message.role === 'toolResult' && KNOWLEDGE_TOOL_NAMES.includes(message.toolName)) {
       const { details: _details, ...safe } = message;
       const text = message.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge: Solana';
-      return append({ ...safe, content: [{ type: 'text', text }] });
+      return appendReference({ ...safe, content: [{ type: 'text', text }] }, safe);
     }
     if (message.role === 'user') {
       const primer = activePrimers.get(manager);
@@ -176,7 +198,7 @@ export function hideKnowledgeInSession(manager: SessionManager): SessionManager 
         typeof message.content === 'string'
           ? redact(message.content)
           : message.content.map((part) => (part.type === 'text' ? { ...part, text: redact(part.text) } : part));
-      return append({ ...message, content });
+      return appendReference({ ...message, content }, message);
     }
     if (message.role !== 'assistant' && message.role !== 'toolResult') {
       return append(message);
@@ -184,6 +206,14 @@ export function hideKnowledgeInSession(manager: SessionManager): SessionManager 
     const content = message.content.map((part) =>
       part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text, message.role === 'assistant') } : part,
     );
+    if (message.role === 'toolResult') {
+      const safe = { ...message, content } as typeof message;
+      const changed = content.some((part, index) => {
+        const original = message.content[index];
+        return part.type === 'text' && original?.type === 'text' && part.text !== original.text;
+      });
+      return changed ? appendReference(safe, message) : append(message);
+    }
     return append({ ...message, content } as typeof message);
   };
   return manager;

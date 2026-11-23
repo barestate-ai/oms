@@ -19,7 +19,7 @@ import {
   type NativeChatControls,
 } from './claude-code.ts';
 import { AGENT_TOOL } from './helpers/agents.ts';
-import { KNOWLEDGE_TOOL_NAMES } from './knowledge-service.ts';
+import { attachKnowledgeContext, KNOWLEDGE_TOOL_NAMES } from './knowledge-service.ts';
 import { PROGRAM_REFERENCE_TOOL } from './program-reference.ts';
 import type { RuntimeEnvironment } from './session-environment.ts';
 import type { SessionHooks } from './session-hooks.ts';
@@ -172,6 +172,7 @@ export async function createSessionModel(
     ],
   });
   const { session } = created;
+  attachKnowledgeContext(session);
   life.liveSession = session;
   const originalAbort = session.abort.bind(session);
   session.abort = async () => {

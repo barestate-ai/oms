@@ -13,6 +13,7 @@ import {
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import {
   accountKnowledgeSource,
+  attachKnowledgeContext,
   createKnowledgeExtension,
   createKnowledgeVisibility,
   hideKnowledgeBlocks,
@@ -174,10 +175,11 @@ async function rig(inputs: {
     model: runtime.getModel('oms-knowledge', 'm')!,
     settingsManager,
     resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager: hideKnowledgeInSession(SessionManager.inMemory(cwd)),
     noTools: 'builtin',
     tools: KNOWLEDGE_TOOL_NAMES,
   });
+  attachKnowledgeContext(session);
   await session.bindExtensions({});
   const turn = async (reply = fauxAssistantMessage('ok')) => {
     faux.setResponses([
@@ -204,6 +206,30 @@ async function rig(inputs: {
     },
   };
 }
+
+test('the real agent sends the primer and persists only the redacted prompt', async () => {
+  const r = await rig({ account: () => undefined });
+  try {
+    const literal = '<untrusted-knowledge tool="search_docs">quoted example</untrusted-knowledge>';
+    const primer = wrapUntrusted('search_docs', 'private primer text');
+    let wire = '';
+    r.faux.setResponses([
+      (context) => {
+        wire = JSON.stringify(context.messages);
+        return fauxAssistantMessage('ok');
+      },
+    ]);
+    await promptWithKnowledge(r.session, `${literal}\n\n${primer}`, primer);
+    assert.match(wire, /private primer text/);
+    assert.match(wire, /quoted example/);
+    const entries = JSON.stringify(r.session.sessionManager.getEntries());
+    assert.doesNotMatch(entries, /private primer text/);
+    assert.match(entries, /quoted example/);
+    assert.match(entries, /fetched Solana knowledge: Solana/);
+  } finally {
+    r.cleanup();
+  }
+});
 
 test('signed out: the model sees no knowledge tools and no look-it-up rules', async () => {
   const r = await rig({ account: () => undefined });
@@ -238,9 +264,10 @@ test('signed in: the tools call <origin>/api/knowledge/mcp with the account bear
     );
     assert.match(shown.prompt, HINT);
     assert.match(shown.wire, /look the fact up with search_docs/, 'the rules reach the provider request');
-    await r.turn();
+    const followup = await r.turn();
     assert.deepEqual(gw.calls, [{ path: '/api/knowledge/mcp', auth: `Bearer ${ACCOUNT}`, tool: 'search_docs' }]);
-    assert.match(JSON.stringify(r.session.messages), /Untrusted reference data/);
+    assert.match(followup.wire, /doc text/);
+    assert.doesNotMatch(JSON.stringify(r.session.sessionManager.getEntries()), /doc text/);
     assert.ok(!JSON.stringify(r.session.messages).includes(ACCOUNT));
   } finally {
     r.cleanup();
