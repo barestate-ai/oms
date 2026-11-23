@@ -18,6 +18,7 @@ import {
   hideKnowledgeBlocks,
   hideKnowledgeInSession,
   KNOWLEDGE_TOOL_NAMES,
+  promptWithKnowledge,
   wrapUntrusted,
   type KnowledgeConfig,
 } from '../src/runtime/knowledge-service.ts';
@@ -28,10 +29,25 @@ const ACCOUNT = 'synthetic-account-token-7c1d';
 const ENV_TOKEN = 'synthetic-env-token-91ab';
 const HINT = /look the fact up with search_docs/;
 
-test('saved sessions retain literal prompt tags and omit private tool results', () => {
+test('saved sessions retain literal prompt tags and omit injected primers and private tool results', async () => {
   const manager = hideKnowledgeInSession(SessionManager.inMemory(process.cwd()));
   const prompt = 'Explain the syntax <untrusted-knowledge tool="search_docs"> and <solana-knowledge-excerpt>';
-  manager.appendMessage({ role: 'user', content: prompt, timestamp: 1 });
+  const literal = '<untrusted-knowledge tool="search_docs">literal example</untrusted-knowledge>';
+  const submitted = `${prompt}\n${literal}`;
+  manager.appendMessage({ role: 'user', content: submitted, timestamp: 1 });
+  const primer = wrapUntrusted('search_docs', 'private injected primer');
+  const firstTurn = `${submitted}\n\n${primer}`;
+  await promptWithKnowledge(
+    {
+      sessionManager: manager,
+      async prompt(text) {
+        assert.equal(text, firstTurn);
+        manager.appendMessage({ role: 'user', content: [{ type: 'text', text }], timestamp: 2 });
+      },
+    },
+    firstTurn,
+    primer,
+  );
   manager.appendMessage({
     role: 'toolResult',
     toolCallId: 'lookup',
@@ -43,6 +59,8 @@ test('saved sessions retain literal prompt tags and omit private tool results', 
   });
   const saved = JSON.stringify(manager.getEntries());
   assert.match(saved, /Explain the syntax.*and <solana-knowledge-excerpt>/);
+  assert.equal(saved.match(/literal example/g)?.length, 2);
+  assert.doesNotMatch(saved, /private injected primer/);
   assert.match(saved, /fetched Solana knowledge: Solana/);
   assert.doesNotMatch(saved, /private lookup/);
   assert.equal(hideKnowledgeBlocks(prompt), prompt);
