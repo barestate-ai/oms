@@ -8,7 +8,7 @@
  *        node bench/src/run.ts egress [--log <file>]   (the open-HTTPS tunnel the online cells need; keep it running)
  * Environment: SOLBENCH_HARNESS_SURFPOOL (Surfpool 0.10.4 binary), SOLBENCH_HARNESS_DEPS (workspace SDK dependencies),
  *   OMS_SEARCH_URL / OMS_SEARCH_TOKEN (hosted search for the OMS cell), OMS_KNOWLEDGE_TOKEN (optional; OMS_KNOWLEDGE_URL defaults to
- *   https://knowledge.barestate.xyz/mcp), SOLBENCH_HARNESS_EGRESS_LOG (optional egress log to slice per run). See docs/solana-bench.md.
+ *   https://barestate.xyz/oms/api/knowledge/mcp), SOLBENCH_HARNESS_EGRESS_LOG (optional egress log to slice per run). See docs/solana-bench.md.
  */
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
