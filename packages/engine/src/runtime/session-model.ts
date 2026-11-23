@@ -76,7 +76,6 @@ export async function createSessionModel(
   extensions: ExtensionFactory[],
   initiallyKnown: boolean,
   injectedTools: readonly string[] = [],
-  telemetryCredential?: () => { origin: string; token: string } | undefined,
 ): Promise<SessionModel> {
   const { environment } = options;
   const { controller } = life;
@@ -200,33 +199,8 @@ export async function createSessionModel(
   };
   session.agent.toolExecution = 'parallel';
   const originalSdkStream: StreamFn = session.agent.streamFunction;
-  const shareUsage: StreamFn = async (model, context, streamOptions) => {
-    const credential = telemetryCredential?.();
-    const stream = await originalSdkStream(model, context, streamOptions);
-    if (credential?.origin === 'https://barestate.xyz/oms') {
-      void stream
-        .result()
-        .then((message) => {
-          if (message.stopReason === 'aborted') return;
-          return fetch(credential.origin + '/api/telemetry/model', {
-            method: 'POST',
-            redirect: 'error',
-            credentials: 'omit',
-            signal: AbortSignal.timeout(2_000),
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.token}` },
-            body: JSON.stringify({
-              provider: model.provider,
-              model: model.id,
-              outcome: message.stopReason === 'error' ? 'error' : 'ok',
-            }),
-          }).then((response) => response.body?.cancel());
-        })
-        .catch(() => {});
-    }
-    return stream;
-  };
   const directStream = createMeteredStream({
-    streamFunction: process.env.OMS_SHARE_MODEL_USAGE === '1' ? shareUsage : originalSdkStream,
+    streamFunction: originalSdkStream,
     ledger: env.budget,
     allocate: env.allocate,
     executionMode: env.executionMode,
