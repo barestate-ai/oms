@@ -39,7 +39,7 @@ for (const source of ['benchmark gateway', 'signed-in custom origin'] as const) 
               token: TOKEN,
               fetch: (_url: unknown, init?: RequestInit) => fetch(mock.endpoint, init),
             }
-          : { endpoint: mock.endpoint, token: TOKEN, guidance: true };
+          : { endpoint: mock.endpoint, token: TOKEN, guidance: true as const };
       const primer = await knowledgePrimer(config, '/nonexistent', 'Create an ATA');
       assert.deepEqual(calls, ['search_docs']);
       assert.match(primer.text, /Use the token program that owns the mint/);
