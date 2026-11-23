@@ -7,12 +7,15 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { privateDirectory } from '@oms/engine';
 
@@ -21,6 +24,27 @@ const run = promisify(execFile);
 export interface SurfpoolArchive {
   url: string;
   sha256: string;
+}
+
+function installPath(target: string): string {
+  for (let depth = 0; depth < 40; depth++) {
+    try {
+      return realpathSync.native(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const parent = realpathSync.native(dirname(target));
+    const path = join(parent, basename(target));
+    try {
+      // A fresh target may itself be a link whose executable has yet to be installed.
+      const link = readlinkSync(path);
+      target = isAbsolute(link) ? link : parent + sep + link;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return path;
+      throw error;
+    }
+  }
+  throw new Error('Too many symbolic links in the Surfpool install path');
 }
 
 /** Download a Surfpool archive, refuse it unless its SHA-256 matches, and put the `surfpool` executable at `target`. */
@@ -52,8 +76,16 @@ export async function installSurfpool(
     const found = findFile(work, 'surfpool');
     if (!found) throw new Error('The archive contains no `surfpool` executable');
     mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(found, target);
-    chmodSync(target, 0o755);
+    const destination = installPath(target);
+    const stage = mkdtempSync(join(dirname(destination), '.surfpool-install-'));
+    try {
+      const executable = join(stage, 'surfpool');
+      copyFileSync(found, executable);
+      chmodSync(executable, 0o755);
+      renameSync(executable, destination);
+    } finally {
+      rmSync(stage, { recursive: true, force: true });
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

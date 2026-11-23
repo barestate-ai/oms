@@ -10,6 +10,8 @@ import {
   existsSync,
   chmodSync,
   symlinkSync,
+  linkSync,
+  readlinkSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -49,6 +51,40 @@ test('installs the executable when the SHA-256 matches', async () => {
     await installSurfpool({ url: `${base}/surfpool.tar.gz`, sha256 }, target);
     assert.equal(readFileSync(target, 'utf8').includes('surfpool 1.7.0'), true);
     assert.ok(statSync(target).mode & 0o100);
+  });
+});
+
+test('replaces the pinned executable without changing the previous inode', async () => {
+  await withServer(async (base) => {
+    const target = join(dir, 'upgrade', 'surfpool');
+    const previous = join(dir, 'upgrade', 'previous');
+    mkdirSync(join(dir, 'upgrade'));
+    writeFileSync(target, 'previous executable', { mode: 0o755 });
+    linkSync(target, previous);
+    await installSurfpool({ url: `${base}/surfpool.tar.gz`, sha256 }, target);
+    assert.equal(readFileSync(previous, 'utf8'), 'previous executable');
+    assert.match(readFileSync(target, 'utf8'), /surfpool 1\.7\.0/);
+    assert.equal(statSync(target).mode & 0o777, 0o755);
+  });
+});
+
+test('follows a custom install symlink whether or not its executable already exists', async () => {
+  await withServer(async (base) => {
+    const target = join(dir, 'surfpool-link');
+    const other = join(dir, 'linked-surfpool');
+    const executable = join(dir, 'real', 'linked-surfpool');
+    const link = 'shortcut/../linked-surfpool';
+    mkdirSync(join(dir, 'real', 'nested'), { recursive: true });
+    writeFileSync(other, 'unrelated file');
+    symlinkSync('real/nested', join(dir, 'shortcut'));
+    symlinkSync(link, target);
+    for (const existing of [false, true]) {
+      if (existing) writeFileSync(executable, 'previous executable');
+      await installSurfpool({ url: `${base}/surfpool.tar.gz`, sha256 }, target);
+      assert.equal(readlinkSync(target), link);
+      assert.match(readFileSync(executable, 'utf8'), /surfpool 1\.7\.0/);
+      assert.equal(readFileSync(other, 'utf8'), 'unrelated file');
+    }
   });
 });
 
