@@ -810,18 +810,6 @@ export async function runOmsInterface(
     setup?.dispose();
     const close = returnToWelcome ? () => openSetup('welcome') : closeSetup;
     const webSearch = harness.web?.search;
-    const hostedLogin =
-      mode === 'search' && webSearch && harness.account && harness.account.snapshot().state !== 'signed-in'
-        ? () =>
-            openAccount('login', undefined, close, () => {
-              try {
-                webSearch.select('oms');
-                return 'Web search: OMS hosted';
-              } catch {
-                return 'Could not save search settings. Check the permissions on your OMS state directory.';
-              }
-            })
-        : undefined;
     const shared = {
       theme: () => theme!,
       rows: () => terminal.rows,
@@ -839,7 +827,6 @@ export async function runOmsInterface(
             mode,
             query,
             webSearch,
-            hostedLogin,
             ...(mode === 'welcome'
               ? {
                   welcome: {
@@ -856,12 +843,7 @@ export async function runOmsInterface(
     notice = '';
     showPanel(pane);
   }
-  function openAccount(
-    mode: 'login' | 'logout' | 'account',
-    draft?: string,
-    close = closeSetup,
-    onSignedIn?: () => string,
-  ): void {
+  function openAccount(mode: 'login' | 'logout' | 'account', draft?: string): void {
     if (closing) return;
     if (mode === 'login' && busy()) {
       setNotice('Wait for the current turn to finish');
@@ -873,8 +855,7 @@ export async function runOmsInterface(
       mode,
       theme: () => theme!,
       render: requestRender,
-      close,
-      onSignedIn,
+      close: closeSetup,
       bodyRows: () => setupPanel.bodyRows(),
       tip: () => connectorTip('login'),
     });

@@ -379,7 +379,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'login',
     group: 'Setup',
-    description: 'Sign in to OMS for hosted search',
+    description: 'Sign in to OMS for Solana knowledge',
     whileBusy: 'accepted',
     run: uiCommands.login,
   },

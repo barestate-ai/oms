@@ -33,7 +33,6 @@ interface Choice {
 interface SetupOptions {
   mode: SetupMode;
   webSearch?: WebSearchControls;
-  hostedLogin?: () => void;
   welcome?: {
     model?: string;
     search?: string;
@@ -185,8 +184,7 @@ export class SetupPane {
         label: row.label,
         description: [
           row.current && 'Current',
-          row.id === 'auto' && 'Hosted search, then configured providers',
-          row.id === 'oms' && (this.options.hostedLogin ? 'Sign in to OMS' : 'OMS account'),
+          row.id === 'auto' && 'Use configured providers',
           row.id === 'tinyfish' && 'API key optional',
           row.keySource === 'saved' && 'Key saved',
           row.keySource === 'environment' && 'Key from environment',
@@ -209,10 +207,6 @@ export class SetupPane {
     }
     const choice = search.choices().find((row) => row.id === id);
     if (!choice) return;
-    if (id === 'oms' && this.options.hostedLogin) {
-      this.options.hostedLogin();
-      return;
-    }
     this.pending = true;
     this.message = '';
     try {

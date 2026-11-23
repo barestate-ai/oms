@@ -29,8 +29,6 @@ export interface WebConfig {
   sourcesDir?: string;
   sourceLimits?: Partial<SourceLimits>;
   solanaMcpUrl?: string;
-  /** The signed-in OMS account, if any: without OMS_SEARCH_URL/OMS_SEARCH_TOKEN the oms backend uses its gateway route. */
-  account?: () => { origin: string; token: string } | undefined;
 }
 /**
  * Call counts, plus the backend that answered each successful web_search / web_fetch. An oms-search answer is named by
@@ -260,13 +258,12 @@ async function readTinyFishEvent(response: Response): Promise<string> {
   throw new Error('Missing TinyFish search response');
 }
 
-/** Automatic selection tries hosted search first, then the providers with configured keys. */
+/** Automatic selection tries configured providers in this order. */
 export const SEARCH_BACKENDS: Array<Backend & { key: string }> = [
-  // Hosted search uses the same bearer scheme as the knowledge service.
-  // base: OMS_SEARCH_URL (https: or loopback http:), else the signed-in account's gateway route; see omsEndpoint.
+  // Explicit OMS_SEARCH_URL and OMS_SEARCH_TOKEN are used by the benchmark stack.
   {
     name: 'oms',
-    labelText: 'OMS hosted',
+    labelText: 'OMS search service',
     key: 'OMS_SEARCH_TOKEN',
     request: (key, query, count, base) => ({
       url: `${base}/search`,
@@ -766,15 +763,12 @@ export function createWeb(config: WebConfig): WebControls {
   const env = config.env ?? process.env;
   const now = config.now ?? Date.now;
   const doFetch = config.fetch ?? fetch;
-  const bench = env.OMS_SEARCH_TOKEN && omsBase(env.OMS_SEARCH_URL);
-  /** The bench stack when OMS_SEARCH_URL/OMS_SEARCH_TOKEN are set, else the gateway route of the account signed in right now. */
-  const omsEndpoint = (): { base: string; token: string } | undefined => {
-    if (bench) return { base: bench, token: env.OMS_SEARCH_TOKEN! };
-    const account = config.account?.();
-    const gateway = account && omsBase(`${account.origin}/search/v1`);
-    return gateway ? { base: gateway, token: account.token } : undefined;
-  };
-  const override = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase() || undefined;
+  const benchToken = searchKey(env.OMS_SEARCH_TOKEN);
+  const benchBase = omsBase(env.OMS_SEARCH_URL);
+  const bench = benchToken && benchBase ? { base: benchBase, token: benchToken } : undefined;
+  const availableBackends = SEARCH_BACKENDS.filter((backend) => backend.name !== 'oms' || bench);
+  const requested = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase() || undefined;
+  const override = requested === 'oms' && !bench ? undefined : requested;
   if (override && override !== 'auto' && !SEARCH_BACKENDS.some((backend) => backend.name === override))
     throw new Error(
       `OMS_SEARCH_PROVIDER must be auto or one of: ${SEARCH_BACKENDS.map((backend) => backend.name).join(', ')}`,
@@ -787,23 +781,26 @@ export function createWeb(config: WebConfig): WebControls {
     // Search settings should not block the agent. Save will surface the error and preserve the file.
     settings = readSearchPreferences();
   }
-  const current = () => override ?? settings.provider;
+  const current = () => {
+    const provider = override ?? settings.provider;
+    return provider === 'oms' && !bench ? 'auto' : provider;
+  };
   const envKey = (backend: Backend) => (backend.key ? searchKey(env[backend.key]) : undefined);
   const getKey = (backend: Backend, saved = settings) => envKey(backend) ?? saved.keys[backend.name];
   const backends = () => {
-    const selected = SEARCH_BACKENDS.find((backend) => backend.name === current());
+    const selected = availableBackends.find((backend) => backend.name === current());
     if (selected) {
       if (selected.name === 'tinyfish' && ((!override && settings.keyless) || !getKey(selected)))
         return [TINYFISH_KEYLESS];
       return [selected];
     }
-    return SEARCH_BACKENDS.filter((backend) => (backend.name === 'oms' ? bench || config.account : getKey(backend)));
+    return availableBackends.filter((backend) => (backend.name === 'oms' ? bench : getKey(backend)));
   };
   const searchControls: WebSearchControls = {
     override,
     choices: () => [
       { id: 'auto', label: 'Automatic', current: current() === 'auto', needsKey: false },
-      ...SEARCH_BACKENDS.map((backend): WebSearchChoice => {
+      ...availableBackends.map((backend): WebSearchChoice => {
         const keySource = envKey(backend) ? 'environment' : settings.keys[backend.name] ? 'saved' : undefined;
         return {
           id: backend.name,
@@ -816,7 +813,7 @@ export function createWeb(config: WebConfig): WebControls {
       }),
     ],
     select(provider, options = {}) {
-      const backend = SEARCH_BACKENDS.find((item) => item.name === provider);
+      const backend = availableBackends.find((item) => item.name === provider);
       if (!path || override || (provider !== 'auto' && !backend)) throw new Error('Cannot change search provider');
       const next = readSearchPreferences(path);
       const keyless = provider === 'tinyfish' && options.keyless === true;
@@ -854,17 +851,12 @@ export function createWeb(config: WebConfig): WebControls {
         failures.push(`${backend.name}: rate limited for ${Math.ceil((until - now()) / 1000)} s`);
         continue;
       }
-      const oms = backend.name === 'oms' ? omsEndpoint() : undefined;
-      if (backend.name === 'oms' && !oms) {
-        failures.push('oms: sign in to OMS (/login) or choose a provider with /web provider');
-        continue;
-      }
-      const key = oms?.token ?? getKey(backend);
+      const key = backend.name === 'oms' ? bench?.token : getKey(backend);
       if (backend.key && !key) {
         failures.push(`${backend.name}: set ${backend.key} before starting OMS`);
         continue;
       }
-      const { url, init } = backend.request(key ?? '', query, count, oms?.base);
+      const { url, init } = backend.request(key ?? '', query, count, bench?.base);
       let response: Response;
       try {
         response = await doFetch(url, { ...init, redirect: 'error', signal: timeout(signal) });
@@ -983,8 +975,7 @@ export function createWeb(config: WebConfig): WebControls {
       const text = key ? await firecrawlScrape(url, key, deadline) : undefined;
       return text === undefined ? undefined : { text, label: 'firecrawl' };
     };
-    const oms = omsEndpoint();
-    const scraped = (oms ? await omsFetch(url, oms.base, oms.token, deadline) : undefined) ?? (await byok());
+    const scraped = (bench ? await omsFetch(url, bench.base, bench.token, deadline) : undefined) ?? (await byok());
     const page =
       scraped !== undefined
         ? { url: url.href, text: scraped.text, truncated: false }
