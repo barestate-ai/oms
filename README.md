@@ -150,7 +150,7 @@ Agent commands start from an empty environment with a private home, so API keys 
 
 ## Web access
 
-The agent looks things up through the official Solana MCP, `web_fetch` and `web_search`. Use `/web provider` to choose a search provider. TinyFish works without a key, and you can enter your own key for TinyFish, Exa, Firecrawl, Tavily or Parallel. Automatic mode tries providers you have keys for. Use `/web off` to turn web access off.
+The agent looks things up through the official Solana MCP, `web_fetch` and `web_search`. Use `/web provider` to choose TinyFish or Exa. TinyFish works with or without your own key. Exa requires your own key. Automatic mode tries configured keys in this order: Exa, TinyFish. Use `/web off` to turn web access off.
 
 Sign in with GitHub using `/login` to access Solana knowledge.
 

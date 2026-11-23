@@ -290,46 +290,6 @@ export const SEARCH_BACKENDS: Array<Backend & { key: string }> = [
         snippet: joined(r.highlights) || (r.text ?? ''),
       })),
   },
-  {
-    name: 'firecrawl',
-    labelText: 'Firecrawl',
-    key: 'FIRECRAWL_API_KEY',
-    request: (key, query, count) => ({
-      url: 'https://api.firecrawl.dev/v2/search',
-      init: json({ authorization: `Bearer ${key}` }, { query, limit: count }),
-    }),
-    parse: (body) =>
-      (body?.data?.web ?? []).map((r: any) => ({
-        title: r.title ?? '',
-        url: r.url ?? '',
-        snippet: r.description ?? '',
-      })),
-  },
-  {
-    name: 'tavily',
-    labelText: 'Tavily',
-    key: 'TAVILY_API_KEY',
-    request: (key, query, count) => ({
-      url: 'https://api.tavily.com/search',
-      init: json({ authorization: `Bearer ${key}` }, { query, max_results: count }),
-    }),
-    parse: (body) =>
-      (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: r.content ?? '' })),
-  },
-  {
-    name: 'parallel',
-    labelText: 'Parallel',
-    key: 'PARALLEL_API_KEY',
-    request: (key, query, count) => ({
-      url: 'https://api.parallel.ai/v1/search',
-      init: json(
-        { 'x-api-key': key },
-        { objective: query, search_queries: [query], advanced_settings: { max_results: count } },
-      ),
-    }),
-    parse: (body) =>
-      (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: joined(r.excerpts) })),
-  },
   // shortcut: TinyFish has no result-count parameter (one page, ~10 results); we slice locally.
   {
     name: 'tinyfish',
@@ -353,7 +313,7 @@ export function retryAfterMs(header: string | null, now: number): number {
 }
 
 const PAYWALL_CODE = /^[A-Z_]{1,64}$/;
-const BYOK_SEARCH_KEYS = 'EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY';
+const BYOK_SEARCH_KEYS = 'EXA_API_KEY or TINYFISH_API_KEY';
 const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** `Dec 1` in UTC from an ms epoch. */
 const utcMonthDay = (ms: number) => {
@@ -408,7 +368,7 @@ async function paywallDetails(response: Response): Promise<PaywallDetails> {
  * the server's message. The advice is always the same two options: a BYOK key, or the billing page the refusal names.
  */
 function paywallText({ code, resetsAt, billing }: PaywallDetails): string {
-  const advice = `set one of ${BYOK_SEARCH_KEYS}${billing ? ` or go to ${billing}` : ''}`;
+  const advice = `set ${BYOK_SEARCH_KEYS}${billing ? ` or go to ${billing}` : ''}`;
   if (code === 'SEARCH_LIMIT_REACHED' && resetsAt !== undefined)
     return `this month's free hosted searches are used up (reset ${utcMonthDay(resetsAt)}) — ${advice} to keep searching`;
   return `hosted search is unavailable for this account — ${advice}`;
@@ -768,10 +728,8 @@ export function createWeb(config: WebConfig): WebControls {
   const bench = benchToken && benchBase ? { base: benchBase, token: benchToken } : undefined;
   const availableBackends = SEARCH_BACKENDS.filter((backend) => backend.name !== 'oms' || bench);
   const override = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase() || undefined;
-  if (override && override !== 'auto' && !SEARCH_BACKENDS.some((backend) => backend.name === override))
-    throw new Error(
-      `OMS_SEARCH_PROVIDER must be auto or one of: ${SEARCH_BACKENDS.map((backend) => backend.name).join(', ')}`,
-    );
+  const unsupportedOverride =
+    override && override !== 'auto' && !SEARCH_BACKENDS.some((backend) => backend.name === override);
   const path = config.agentRoot && join(config.agentRoot, 'web-search.json');
   let settings: SearchPreferences;
   try {
@@ -826,7 +784,7 @@ export function createWeb(config: WebConfig): WebControls {
       settings = next;
     },
   };
-  const hasSearch = !!path || backends().length > 0;
+  const hasSearch = !!path || !!unsupportedOverride || backends().length > 0;
   const blockedUntil = new Map<Backend, number>();
   const usage: WebUsage = { webSearch: 0, webFetch: 0, solanaMcp: 0, searchBy: {}, fetchBy: {} };
   const note = (tally: Record<string, number>, label: string) => {
@@ -840,6 +798,10 @@ export function createWeb(config: WebConfig): WebControls {
     signal ? AbortSignal.any([signal, AbortSignal.timeout(WEB_TIMEOUT_MS)]) : AbortSignal.timeout(WEB_TIMEOUT_MS);
 
   async function search(query: string, count: number, signal?: AbortSignal): Promise<string> {
+    if (unsupportedOverride)
+      throw new Error(
+        'Unsupported OMS_SEARCH_PROVIDER. Set it to auto, exa or tinyfish, or unset it to use /web provider.',
+      );
     if (override === 'oms' && !bench)
       throw new Error(
         'OMS_SEARCH_PROVIDER=oms requires OMS_SEARCH_URL and OMS_SEARCH_TOKEN. Unset it to use /web provider.',

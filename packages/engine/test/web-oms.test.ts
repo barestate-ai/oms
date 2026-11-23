@@ -193,11 +193,10 @@ test('the usage record names the backends oms-search says answered, BYOK and pla
   assert.ok(Value.Check(RunRecordSchema.properties.web, web.usage()), 'the run record accepts it');
 });
 
-const HOSTED_SEARCH_OUT =
-  /oms: hosted search is unavailable for this account — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY/;
+const HOSTED_SEARCH_OUT = /oms: hosted search is unavailable for this account — set EXA_API_KEY or TINYFISH_API_KEY/;
 
 const HOSTED_SEARCH_OUT_BILLING =
-  /oms: hosted search is unavailable for this account — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing/;
+  /oms: hosted search is unavailable for this account — set EXA_API_KEY or TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing/;
 
 test('oms answering 402 SEARCH_PAYMENT_REQUIRED offers the BYOK keys and the named billing page, never echoes the message, and is not rate-limited', async () => {
   const calls: string[] = [];
@@ -287,7 +286,7 @@ test('oms answering 402 SEARCH_LIMIT_REACHED names the UTC reset date and the na
     await assert.rejects(call('web_search', { query: 'q' }), (error: Error) => {
       assert.match(
         error.message,
-        /oms: this month's free hosted searches are used up \(reset Dec 1\) — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing to keep searching/,
+        /oms: this month's free hosted searches are used up \(reset Dec 1\) — set EXA_API_KEY or TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing to keep searching/,
       );
       assert.doesNotMatch(error.message, /SERVER CHOSEN TEXT/);
       return true;
