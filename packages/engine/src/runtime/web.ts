@@ -238,14 +238,16 @@ async function readBoundedText(response: Response, limit: number): Promise<strin
 /** A stateless MCP call can receive notifications before the response and leave the SSE connection open. */
 async function readTinyFishEvent(response: Response): Promise<string> {
   const decoder = new TextDecoder();
+  // An SSE line can end in CRLF, CR, or LF. Count CRLF as one line ending.
+  const blankLine = /(?:\r\n|\r(?!\n)|(?<!\r)\n){2}/;
   let buffer = '';
   for await (const chunk of readBoundedChunks(response, TINYFISH_SEARCH_BYTE_LIMIT)) {
     buffer += decoder.decode(chunk, { stream: true });
     let boundary: RegExpExecArray | null;
-    while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+    while ((boundary = blankLine.exec(buffer))) {
       const data = buffer
         .slice(0, boundary.index)
-        .split(/\r?\n/)
+        .split(/\r\n|[\r\n]/)
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.slice(5).trimStart())
         .join('\n');

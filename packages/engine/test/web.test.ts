@@ -108,8 +108,8 @@ test('a chosen TinyFish provider works without a key and uses the keyed REST API
           controller.enqueue(
             encode.encode('event: message\r\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n'),
           );
-          controller.enqueue(encode.encode(`event: message\r\ndata: ${JSON.stringify(rpc)}\r\n`));
-          controller.enqueue(encode.encode('\r\n'));
+          controller.enqueue(encode.encode(`event: message\rdata: ${JSON.stringify(rpc)}\r`));
+          controller.enqueue(encode.encode('\r'));
         },
         cancel() {
           cancelled = true;
