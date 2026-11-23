@@ -41,7 +41,7 @@ function timeoutMs(label: string): number | undefined {
   return match ? Number(match[1]) * (match[2] === 'm' ? 60_000 : 1000) : undefined;
 }
 
-/** The upstream settings list, with only live controls and two fixed rows that say what stays off. */
+/** The upstream settings list with live controls and read-only status rows. */
 export class HarnessSettingsPane {
   readonly body: Component;
   readonly input: Component & Focusable;
@@ -155,9 +155,9 @@ export class HarnessSettingsPane {
       },
       {
         id: 'telemetry',
-        label: 'Telemetry',
-        currentValue: 'off',
-        description: 'No analytics or install telemetry',
+        label: 'Local model reporting',
+        currentValue: process.env.OMS_SHARE_MODEL_USAGE === '1' ? 'on' : 'off',
+        description: 'Requires Barestate sign-in · set OMS_SHARE_MODEL_USAGE=1 when starting OMS',
       },
     ];
   }

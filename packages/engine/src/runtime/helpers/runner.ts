@@ -16,7 +16,7 @@ import { attachKnowledgeContext, hideKnowledgeInSession, KNOWLEDGE_TOOL_NAMES } 
 import type { SessionApiParts } from '../session-api.ts';
 import { createSessionHooks } from '../session-hooks.ts';
 import { readingExtensions } from '../session-tools.ts';
-import { sessionToolNames } from '../session-model.ts';
+import { modelUsageObserver, sessionToolNames } from '../session-model.ts';
 import { harnessPolicySettings } from '../settings-controls.ts';
 import { KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
 import { withToolExecutionModes } from '../tool-execution.ts';
@@ -342,6 +342,7 @@ export async function runHelper(parts: SessionApiParts, run: HelperRun): Promise
     const original: StreamFn = session.agent.streamFunction;
     const metered = createMeteredStream({
       streamFunction: original,
+      observeModelUsage: modelUsageObserver(parts.account.searchCredential),
       ledger: env.budget,
       allocate: env.allocate,
       executionMode: env.executionMode,

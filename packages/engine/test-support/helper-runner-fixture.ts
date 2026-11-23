@@ -37,6 +37,7 @@ export async function helperRunnerFixture(t: TestContext, tokens = 5_000_000) {
   });
   let closed = 0;
   const parts = {
+    account: { searchCredential: () => undefined },
     options: { maxOutputTokens: 128, hostTrust: trust, environment: { backend: 'host' } },
     life: { trace: { append: () => ({ ok: true }) }, liveSession: { model } },
     env: {

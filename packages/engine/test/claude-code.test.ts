@@ -164,15 +164,19 @@ function meteredNative(native: ClaudeCodeSession, tokens = 6_000_000, wallClockM
     ...(interactive ? { executionMode: 'interactive' as const } : {}),
   });
   if (interactive) assert.equal(ledger.beginOperation('native-chat').ok, true);
+  const outcomes: string[] = [];
   const stream = createMeteredStream({
     streamFunction: createClaudeCodeStream(native),
+    observeModelUsage: () => (outcome) => {
+      outcomes.push(outcome);
+    },
     ledger,
     allocate: createDispatchAllocator(),
     maxOutputTokens: 1024,
     logicalTurnId: () => 'native-retry-turn',
     executionMode: interactive ? 'interactive' : undefined,
   });
-  return { ledger, stream };
+  return { ledger, stream, outcomes };
 }
 
 test('Claude Code registers catalog limits; the subscription window only bounds compaction', async (t) =>
@@ -703,7 +707,7 @@ for (const mode of [
   test(`${mode} resumes the same native session with a separately admitted retry`, async (t) =>
     toolFreeFixture(t, mode, async (directory) => {
       const { native, model } = await modelAndSession();
-      const { ledger, stream } = meteredNative(native);
+      const { ledger, stream, outcomes } = meteredNative(native);
       const transcript = toolFreeContext();
       try {
         if (mode === 'empty-second-then-good') {
@@ -715,6 +719,7 @@ for (const mode of [
         assert.equal(response.stopReason, 'stop', response.errorMessage);
         assert.equal(ledger.snapshot().accounting, 'known');
         assert.equal(ledger.reservations().length, mode === 'empty-second-then-good' ? 3 : 2);
+        assert.deepEqual(outcomes, mode === 'empty-second-then-good' ? ['ok', 'error', 'ok'] : ['error', 'ok']);
         const launches = rows(join(directory, 'launch'));
         assert.equal(launches.length, 2);
         const sessionId = native.status().sessionId;
@@ -869,7 +874,7 @@ test('a transient receipt whose text only mentions an account stays a generic fa
 test('an unconfigured Claude sign-in names re-authentication and releases the reservation', async (t) =>
   toolFreeFixture(t, 'api-auth', async (directory) => {
     const { native, model } = await modelAndSession();
-    const { ledger, stream } = meteredNative(native);
+    const { ledger, stream, outcomes } = meteredNative(native);
     try {
       const response = await (await stream(model, toolFreeContext())).result();
       assert.equal(response.stopReason, 'error');
@@ -878,6 +883,7 @@ test('an unconfigured Claude sign-in names re-authentication and releases the re
         'Claude Code needs its Claude subscription sign-in before it can answer. Run claude auth login in a terminal, then check the connection in /connect and send your message again. No provider request was sent.',
       );
       assert.equal(existsSync(join(directory, 'launch')), false, 'no native model process may start');
+      assert.deepEqual(outcomes, []);
       assert.equal(ledger.snapshot().used.tokens, 0);
       assert.equal(ledger.snapshot().accounting, 'known');
     } finally {
