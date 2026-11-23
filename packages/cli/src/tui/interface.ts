@@ -269,7 +269,8 @@ export async function runOmsInterface(
     onStartupArtChange?: (mode: StartupArtMode) => void;
     /** The OMS receipt's saved running total; the receipt shows only when `onSavingsChange` keeps it. */
     savings?: SavingsState;
-    onSavingsChange?: (savings: SavingsState) => void;
+    /** False when the total could not be saved; the chat then keeps its own copy. */
+    onSavingsChange?: (savings: SavingsState) => boolean | void;
     /** The latest saved total, so chats open side by side add to it rather than overwrite it. */
     readSavings?: () => SavingsState;
     view?: 'harness' | 'workbench';
@@ -493,10 +494,11 @@ export async function runOmsInterface(
         }
       : undefined;
   let savings = options.savings ?? emptySavings();
-  const latestSavings = () => (savings = options.readSavings?.() ?? savings);
+  let savedSavings = true;
+  const latestSavings = () => (savings = (savedSavings && options.readSavings?.()) || savings);
   const keepSavings = (next: SavingsState) => {
     savings = next;
-    options.onSavingsChange?.(next);
+    if (options.onSavingsChange?.(next) === false) savedSavings = false;
   };
   const conversation = new Conversation(
     nativeChatDisplayHistory(harness),

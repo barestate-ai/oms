@@ -74,7 +74,7 @@ export function interfacePreferences(stateRoot: string) {
     onThemeChange: (theme: OmsThemeId) => void saveTuiPreferences(stateRoot, { theme }),
     onStartupArtChange: (startupArt: StartupArtMode) => void saveTuiPreferences(stateRoot, { startupArt }),
     ...(saved.savings ? { savings: saved.savings } : {}),
-    onSavingsChange: (savings: SavingsState) => void saveTuiPreferences(stateRoot, { savings }),
+    onSavingsChange: (savings: SavingsState) => saveTuiPreferences(stateRoot, { savings }),
     readSavings: () => readTuiPreferences(stateRoot).savings ?? emptySavings(),
   };
 }

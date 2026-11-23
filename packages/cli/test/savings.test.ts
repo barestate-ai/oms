@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { stripTerminalSequences } from '@earendil-works/pi-tui';
 import { emptySavings, parseSavings, recordTurn, savingsSummary, type TurnUsage } from '../src/tui/savings.ts';
+import { interfacePreferences, readTuiPreferences } from '../src/tui/preferences.ts';
 import { getTheme } from '../src/tui/theme.ts';
 import { Conversation } from '../src/tui/transcript.ts';
 
@@ -135,4 +139,16 @@ const settle = (stopReason: string, ms: number) => {
 test('a fast turn still counts, and a turn that ended on a provider error does not', () => {
   assert.equal(settle('stop', 1000).length, 1);
   assert.equal(settle('error', 60_000).length, 0);
+});
+
+test('two chats on the same state root both add to the saved total', () => {
+  const root = mkdtempSync(join(tmpdir(), 'oms-savings-'));
+  try {
+    const first = interfacePreferences(root);
+    const second = interfacePreferences(root);
+    for (const chat of [first, second]) chat.onSavingsChange(recordTurn(chat.readSavings(), [opus(100_000)]).state);
+    assert.equal(readTuiPreferences(root).savings?.tasks, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
