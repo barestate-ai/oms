@@ -809,6 +809,26 @@ export async function runOmsInterface(
     }
     setup?.dispose();
     const close = returnToWelcome ? () => openSetup('welcome') : closeSetup;
+    const webSearch = harness.web?.search;
+    const hostedLogin =
+      mode === 'search' && webSearch && harness.account && harness.account.snapshot().state !== 'signed-in'
+        ? () =>
+            openAccount('login', undefined, () => {
+              if (harness.account.snapshot().state !== 'signed-in') {
+                close();
+                return;
+              }
+              try {
+                webSearch.select('oms');
+              } catch {
+                close();
+                setNotice('Could not save search settings. Check the permissions on your OMS state directory.');
+                return;
+              }
+              close();
+              toast('Web search: OMS hosted');
+            })
+        : undefined;
     const shared = {
       theme: () => theme!,
       rows: () => terminal.rows,
@@ -825,10 +845,8 @@ export async function runOmsInterface(
             ...shared,
             mode,
             query,
-            webSearch: harness.web?.search,
-            ...(mode === 'search' && harness.account && harness.account.snapshot().state !== 'signed-in'
-              ? { hostedLogin: () => openAccount('login', undefined, close) }
-              : {}),
+            webSearch,
+            hostedLogin,
             ...(mode === 'welcome'
               ? {
                   welcome: {
@@ -2331,7 +2349,7 @@ export async function runOmsInterface(
     titleSaved = true;
     colorCursor();
     syncActivity();
-    if (chat && options.firstRun && !setupModelLabel()) openSetup('welcome');
+    if (options.firstRun && !setupModelLabel()) openSetup('welcome');
     if (options.firstRun) options.onFirstRunShown?.();
     // Running work and a bounded budget's wall clock change with time; nothing else on screen does.
     clock = setInterval(() => {

@@ -209,6 +209,10 @@ export class SetupPane {
     }
     const choice = search.choices().find((row) => row.id === id);
     if (!choice) return;
+    if (id === 'oms' && this.options.hostedLogin) {
+      this.options.hostedLogin();
+      return;
+    }
     this.pending = true;
     this.message = '';
     try {
@@ -238,10 +242,6 @@ export class SetupPane {
       }
       this.controller.signal.throwIfAborted();
       search.select(id, { key, keyless });
-      if (id === 'oms' && this.options.hostedLogin) {
-        this.options.hostedLogin();
-        return;
-      }
       this.options.notice(`Web search: ${choice.label}${keyless ? ' · no key' : key ? ' · key saved' : ''}`);
       this.options.close();
     } catch {

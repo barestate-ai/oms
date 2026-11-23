@@ -2361,12 +2361,18 @@ test('first-run setup picks a model, offers keyless search and returns to the co
   const web = createWeb({ agentRoot: root, enabled: true, env: {} });
   f.harness.web = { enabled: web.enabled, set: web.setEnabled, usage: web.usage, search: web.search };
   let signedIn = false;
+  let loginAttempts = 0;
   f.harness.account = {
     snapshot: () => ({ state: signedIn ? 'signed-in' : 'signed-out', origin: 'https://oms.barestate.xyz' }),
     searchCredential: () => undefined,
     async refresh() {},
-    async login() {
-      signedIn = true;
+    async login(_interaction, signal) {
+      loginAttempts++;
+      if (loginAttempts === 1) {
+        await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }));
+      } else {
+        signedIn = true;
+      }
     },
     async logout() {
       return { serverRevoked: false };
@@ -2385,6 +2391,15 @@ test('first-run setup picks a model, offers keyless search and returns to the co
     await terminal.until((screen) => screen.includes('local/test-model'));
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('Start chatting'));
+    terminal.send('\x1b[A');
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Choose a web search provider'));
+    terminal.send('OMS');
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Signing in…'));
+    terminal.send('\x1b');
+    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
+    assert.equal(web.search.choices().find((choice) => choice.current)?.id, 'auto');
     terminal.send('\x1b[A');
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('Choose a web search provider'));
@@ -2413,23 +2428,31 @@ test('first-run setup picks a model, offers keyless search and returns to the co
   }
 });
 
-test('first-run setup can be skipped and reopened with /setup; a ready model skips the automatic wizard', async () => {
-  const f = chatFixture();
-  f.model(false);
-  const terminal = new InterfaceTerminal();
-  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
-  try {
-    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
-    terminal.send('\x1b');
-    await terminal.until((screen) => !screen.includes('Welcome to Oh My Sol') && /no model/i.test(screen));
-    terminal.send('/setup');
-    terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
-    assert.deepEqual(f.prompts, []);
-  } finally {
-    await quit(terminal, run);
-    terminal.vt.dispose();
-  }
+for (const [mode, createFixture] of [
+  ['a folder chat', chatFixture],
+  ['an interactive task', fixture],
+] as const) {
+  test(`first-run setup in ${mode} can be skipped and reopened with /setup`, async () => {
+    const f = createFixture();
+    f.model(false);
+    const terminal = new InterfaceTerminal();
+    const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+    try {
+      await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
+      terminal.send('\x1b');
+      await terminal.until((screen) => !screen.includes('Welcome to Oh My Sol') && /no model/i.test(screen));
+      terminal.send('/setup');
+      terminal.send('\r');
+      await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
+      assert.deepEqual(f.prompts, []);
+    } finally {
+      await quit(terminal, run);
+      terminal.vt.dispose();
+    }
+  });
+}
+
+test('a ready model skips the automatic wizard on first launch', async () => {
   const ready = chatFixture();
   const direct = new InterfaceTerminal();
   const other = runOmsInterface(ready.harness, { terminal: direct, firstRun: true });

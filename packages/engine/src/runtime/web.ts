@@ -200,17 +200,20 @@ const TINYFISH_KEYLESS: Backend = {
     ),
   }),
   async readBody(response) {
-    const { text, isError } = parseMcpText(await readBoundedText(response, TINYFISH_SEARCH_BYTE_LIMIT), 'TinyFish');
+    const eventStream = response.headers.get('content-type')?.includes('text/event-stream');
+    const body = eventStream
+      ? await readTinyFishEvent(response)
+      : await readBoundedText(response, TINYFISH_SEARCH_BYTE_LIMIT);
+    const { text, isError } = parseMcpText(body, 'TinyFish');
     if (isError) throw new Error('TinyFish search failed');
     return JSON.parse(text);
   },
   parse: tinyFishHits,
 };
 
-async function readBoundedText(response: Response, limit: number): Promise<string> {
-  if (!response.body) return '';
+async function* readBoundedChunks(response: Response, limit: number): AsyncGenerator<Uint8Array> {
+  if (!response.body) return;
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     for (;;) {
@@ -218,13 +221,41 @@ async function readBoundedText(response: Response, limit: number): Promise<strin
       if (done) break;
       size += value.byteLength;
       if (size > limit) throw new Error('Search response exceeded its size limit');
-      chunks.push(value);
+      yield value;
     }
-    return Buffer.concat(chunks, size).toString('utf8');
   } finally {
     void reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+async function readBoundedText(response: Response, limit: number): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of readBoundedChunks(response, limit)) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** A stateless MCP call can receive notifications before the response and leave the SSE connection open. */
+async function readTinyFishEvent(response: Response): Promise<string> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for await (const chunk of readBoundedChunks(response, TINYFISH_SEARCH_BYTE_LIMIT)) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let boundary: RegExpExecArray | null;
+    while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+      const data = buffer
+        .slice(0, boundary.index)
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n');
+      buffer = buffer.slice(boundary.index + boundary[0].length);
+      if (!data) continue;
+      const rpc = JSON.parse(data);
+      if (rpc?.id === 1 && ('result' in rpc || 'error' in rpc)) return data;
+    }
+  }
+  throw new Error('Missing TinyFish search response');
 }
 
 /** Automatic selection tries hosted search first, then the providers with configured keys. */
@@ -801,7 +832,7 @@ export function createWeb(config: WebConfig): WebControls {
     },
   };
   const hasSearch = !!path || backends().length > 0;
-  const blockedUntil = new Map<string, number>();
+  const blockedUntil = new Map<Backend, number>();
   const usage: WebUsage = { webSearch: 0, webFetch: 0, solanaMcp: 0, searchBy: {}, fetchBy: {} };
   const note = (tally: Record<string, number>, label: string) => {
     tally[label] = (tally[label] ?? 0) + 1;
@@ -816,7 +847,7 @@ export function createWeb(config: WebConfig): WebControls {
   async function search(query: string, count: number, signal?: AbortSignal): Promise<string> {
     const failures: string[] = [];
     for (const backend of backends()) {
-      const until = blockedUntil.get(backend.name) ?? 0;
+      const until = blockedUntil.get(backend) ?? 0;
       if (until > now()) {
         failures.push(`${backend.name}: rate limited for ${Math.ceil((until - now()) / 1000)} s`);
         continue;
@@ -845,7 +876,7 @@ export function createWeb(config: WebConfig): WebControls {
         const named = await backend.refusal?.(response);
         if (named === undefined) void response.body?.cancel().catch(() => {});
         if (response.status === 429 || response.status >= 500)
-          blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
+          blockedUntil.set(backend, now() + retryAfterMs(response.headers.get('retry-after'), now()));
         failures.push(`${backend.name}: ${named ?? `HTTP ${response.status}`}`);
         continue;
       }

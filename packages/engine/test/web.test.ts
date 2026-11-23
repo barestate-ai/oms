@@ -85,6 +85,7 @@ test('BYOK selection follows Exa, Firecrawl, Tavily, Parallel, TinyFish; no key 
 
 test('a chosen TinyFish provider works without a key and uses the keyed REST API when a key is supplied', async () => {
   const seen: Array<{ url: string; init: RequestInit }> = [];
+  let cancelled = false;
   const result = {
     results: [
       { title: 'Solana docs', url: 'https://solana.com/docs', snippet: 'Program guides' },
@@ -101,7 +102,20 @@ test('a chosen TinyFish provider works without a key and uses the keyed REST API
           content: [{ type: 'text', text: JSON.stringify(result) }],
         },
       };
-      return new Response(`event: message\ndata: ${JSON.stringify(rpc)}\n\n`, {
+      const encode = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encode.encode('event: message\r\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n'),
+          );
+          controller.enqueue(encode.encode(`event: message\r\ndata: ${JSON.stringify(rpc)}\r\n`));
+          controller.enqueue(encode.encode('\r\n'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(stream, {
         headers: { 'content-type': 'text/event-stream' },
       });
     }
@@ -113,6 +127,7 @@ test('a chosen TinyFish provider works without a key and uses the keyed REST API
   const text = await keyless.call('web_search', { query: 'solana docs', max_results: 1 });
   assert.match(text, /Solana docs/);
   assert.doesNotMatch(text, /Other result/);
+  assert.equal(cancelled, true, 'search returns as soon as the matching event arrives');
   assert.deepEqual(keyless.web.usage().searchBy, { tinyfish: 1 });
 
   const [mcp] = seen.splice(0);
@@ -134,6 +149,25 @@ test('a chosen TinyFish provider works without a key and uses the keyed REST API
   assert.equal(seen.length, 1);
   assert.equal(rest!.url, 'https://api.search.tinyfish.ai?query=solana%20docs');
   assert.equal(new Headers(rest!.init.headers).get('x-api-key'), 'tinyfish-secret');
+});
+
+test('a keyless TinyFish rate limit does not block switching to a key', async (t) => {
+  const agentRoot = mkdtempSync(join(tmpdir(), 'oms-tinyfish-limit-'));
+  t.after(() => rmSync(agentRoot, { recursive: true, force: true }));
+  const hosts: string[] = [];
+  const fetch = (async (url: string) => {
+    hosts.push(new URL(url).hostname);
+    if (url.endsWith('/mcp')) return reply(429, {}, { 'retry-after': '60' });
+    return reply(200, { results: [{ title: 'Keyed result', url: 'https://example.com' }] });
+  }) as typeof globalThis.fetch;
+  const { web, call } = tools({ agentRoot, enabled: true, env: {}, fetch, now: () => 1_000_000 });
+  web.search.select('tinyfish', { keyless: true });
+  await assert.rejects(call('web_search', { query: 'q' }), /HTTP 429/);
+  web.search.select('tinyfish', { key: 'test-key' });
+  assert.match(await call('web_search', { query: 'q' }), /Keyed result/);
+  web.search.select('tinyfish', { keyless: true });
+  await assert.rejects(call('web_search', { query: 'q' }), /rate limited for 60 s/);
+  assert.deepEqual(hosts, ['agent.tinyfish.ai', 'api.search.tinyfish.ai']);
 });
 
 test('saved search preferences apply immediately and survive a new session; launch settings can override them', async (t) => {
