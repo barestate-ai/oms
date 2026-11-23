@@ -498,7 +498,7 @@ export async function runOmsInterface(
   const latestSavings = () => (savings = (savedSavings && options.readSavings?.()) || savings);
   const keepSavings = (next: SavingsState) => {
     savings = next;
-    if (options.onSavingsChange?.(next) === false) savedSavings = false;
+    savedSavings = options.onSavingsChange?.(next) !== false;
   };
   const conversation = new Conversation(
     nativeChatDisplayHistory(harness),
