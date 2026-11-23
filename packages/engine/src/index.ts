@@ -40,6 +40,7 @@ export {
   createKnowledgeExtension,
   callKnowledgeTool,
   knowledgePrimer,
+  knowledgeRequestMessages,
   promptWithKnowledge,
   wrapUntrusted,
   KNOWLEDGE_RESULT_LIMIT,

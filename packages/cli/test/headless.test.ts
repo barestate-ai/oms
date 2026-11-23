@@ -417,7 +417,7 @@ test(
       assert.notEqual(oms3.prompt, oms.prompt);
       assert.equal(oms.injection, undefined);
       assert.equal(oms3.injection, 'search-v0', 'an old Worker gets the search-only primer');
-      assert.equal(oms3.transcript.includes('topic-card-marker'), false);
+      assert.doesNotMatch(oms3.firstRequest, /topic-card-marker/);
       workerV2 = true;
       scopedTo.length = 0;
       const topics = await run(true, [
