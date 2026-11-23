@@ -56,6 +56,8 @@ export interface TurnUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** The part of `cacheWrite` kept for an hour, priced at the long-write rate. */
+  cacheWrite1h?: number;
 }
 
 /** The running total, kept across launches. */
@@ -126,10 +128,12 @@ function estimate(usage: readonly TurnUsage[]): Estimate | undefined {
       continue;
     }
     // USD per million tokens is micro-USD per token.
+    const longWrite = Math.min(count(turn.cacheWrite1h ?? 0), count(turn.cacheWrite));
     const inputCost =
       rate.input * count(turn.input) +
       rate.cacheRead * count(turn.cacheRead) +
-      (rate.cacheWrite ?? rate.input) * count(turn.cacheWrite);
+      (rate.cacheWrite ?? rate.input) * (count(turn.cacheWrite) - longWrite) +
+      (rate.cacheWriteLong ?? rate.input * 2) * longWrite;
     omsMicroUsd += inputCost + rate.output * count(turn.output);
     keptMicroUsd += inputCost * (ratio - 1);
   }
@@ -154,7 +158,13 @@ export function recordTurn(
   if (state.off) return { state: next };
   const milestone = MILESTONES.findLast((mark) => state.keptTokens < mark && next.keptTokens >= mark);
   const kind =
-    next.tasks === 1 ? 'first' : next.tasks === REPEAT_AT_TASK ? 'repeat' : milestone ? 'milestone' : undefined;
+    next.tasks === 1
+      ? 'first'
+      : next.tasks === REPEAT_AT_TASK
+        ? 'repeat'
+        : milestone && next.tasks > REPEAT_AT_TASK
+          ? 'milestone'
+          : undefined;
   if (!kind) return { state: next };
   const { bench } = found;
   return {

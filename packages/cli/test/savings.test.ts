@@ -97,3 +97,42 @@ test('the receipt draws under the footer of a turn that worked', () => {
   assert.ok(rows.some((row) => row.includes('barestate.xyz/oh-my-sol')));
   assert.ok(conversation.render(40).length > 0, 'a narrow terminal still draws it');
 });
+
+test('hour-long cache writes are priced at the long-write rate', () => {
+  const short = recordTurn(emptySavings(), [{ ...opus(0), cacheWrite: 100_000 }]).receipt!;
+  const long = recordTurn(emptySavings(), [{ ...opus(0), cacheWrite: 100_000, cacheWrite1h: 100_000 }]).receipt!;
+  assert.ok(long.omsMicroUsd! > short.omsMicroUsd!);
+});
+
+test('milestones before the fifth task wait for the fifth-task receipt', () => {
+  const early = recordTurn({ tasks: 2, keptTokens: 900_000, keptMicroUsd: 0 }, [opus(150_000)]);
+  assert.equal(early.receipt, undefined);
+  assert.equal(early.state.tasks, 3);
+});
+
+const settle = (stopReason: string, ms: number) => {
+  const clock = { now: 0 };
+  const seen: TurnUsage[][] = [];
+  const conversation = new Conversation([], undefined, {
+    now: () => clock.now,
+    receipt: (usage) => void seen.push([...usage]) as undefined,
+  });
+  const reply = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Done.' }],
+    stopReason,
+    usage: { input: 50_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 50_100, cost: {} },
+    model: 'claude-opus-5-5',
+    timestamp: 1,
+  };
+  conversation.accept({ type: 'agent_start' } as never);
+  conversation.accept({ type: 'message_end', message: reply } as never);
+  clock.now += ms;
+  conversation.accept({ type: 'agent_settled', aborted: false } as never);
+  return seen;
+};
+
+test('a fast turn still counts, and a turn that ended on a provider error does not', () => {
+  assert.equal(settle('stop', 1000).length, 1);
+  assert.equal(settle('error', 60_000).length, 0);
+});

@@ -252,7 +252,7 @@ export class Conversation {
   private toolsExpanded = false;
   /** Thinking shows as 'Thought for 3s' until Ctrl+T opens it. */
   private thinkingHidden = true;
-  private turn: { start: number; tokens: number; usage: Map<string, TurnUsage> } | undefined;
+  private turn: { start: number; tokens: number; usage: Map<string, TurnUsage>; failed: boolean } | undefined;
   private pulse: ReturnType<typeof setInterval> | undefined;
   private seen = 0;
   private chipRow: number | undefined;
@@ -524,7 +524,7 @@ export class Conversation {
   accept(event: AgentSessionEvent): void {
     switch (event.type) {
       case 'agent_start':
-        this.turn = { start: this.now(), tokens: 0, usage: new Map() };
+        this.turn = { start: this.now(), tokens: 0, usage: new Map(), failed: false };
         break;
       case 'agent_settled': {
         const { turn } = this;
@@ -543,6 +543,8 @@ export class Conversation {
             ms: this.now() - turn.start,
             tokens: turn.tokens,
           });
+        }
+        if (turn && !event.aborted && !turn.failed) {
           const receipt = this.options.receipt?.([...turn.usage.values()]);
           if (receipt) this.put({ kind: 'receipt', key: `receipt-${this.sequence++}`, rev: 0, receipt });
         }
@@ -568,6 +570,7 @@ export class Conversation {
         if (event.type === 'message_end') {
           const done = event.message as AssistantMessage;
           if (this.turn) {
+            this.turn.failed = done.stopReason === 'error';
             this.turn.tokens += Number(done.usage?.output) || 0;
             if (done.usage && typeof done.model === 'string') {
               const sum = this.turn.usage.get(done.model) ?? {
@@ -576,9 +579,10 @@ export class Conversation {
                 output: 0,
                 cacheRead: 0,
                 cacheWrite: 0,
+                cacheWrite1h: 0,
               };
-              for (const field of ['input', 'output', 'cacheRead', 'cacheWrite'] as const)
-                sum[field] += Number(done.usage[field]) || 0;
+              for (const field of ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h'] as const)
+                sum[field] = (sum[field] ?? 0) + (Number(done.usage[field]) || 0);
               this.turn.usage.set(done.model, sum);
             }
           }

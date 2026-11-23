@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { StartupArtMode } from './startup-art.ts';
-import { parseSavings, type SavingsState } from './savings.ts';
+import { emptySavings, parseSavings, type SavingsState } from './savings.ts';
 import { DEFAULT_THEME_ID, getTheme, type Backdrop, type OmsThemeId } from './theme.ts';
 
 /** Look-and-feel choices kept across launches in `<state root>/tui.json`. Nothing secret belongs here. */
@@ -75,5 +75,6 @@ export function interfacePreferences(stateRoot: string) {
     onStartupArtChange: (startupArt: StartupArtMode) => void saveTuiPreferences(stateRoot, { startupArt }),
     ...(saved.savings ? { savings: saved.savings } : {}),
     onSavingsChange: (savings: SavingsState) => void saveTuiPreferences(stateRoot, { savings }),
+    readSavings: () => readTuiPreferences(stateRoot).savings ?? emptySavings(),
   };
 }

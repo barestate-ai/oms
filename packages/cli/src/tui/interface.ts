@@ -270,6 +270,8 @@ export async function runOmsInterface(
     /** The OMS receipt's saved running total; the receipt shows only when `onSavingsChange` keeps it. */
     savings?: SavingsState;
     onSavingsChange?: (savings: SavingsState) => void;
+    /** The latest saved total, so chats open side by side add to it rather than overwrite it. */
+    readSavings?: () => SavingsState;
     view?: 'harness' | 'workbench';
     onViewChange?: (view: 'harness' | 'workbench') => void;
     /** A note shown in the conversation when the interface opens. */
@@ -491,6 +493,7 @@ export async function runOmsInterface(
         }
       : undefined;
   let savings = options.savings ?? emptySavings();
+  const latestSavings = () => (savings = options.readSavings?.() ?? savings);
   const keepSavings = (next: SavingsState) => {
     savings = next;
     options.onSavingsChange?.(next);
@@ -502,8 +505,9 @@ export async function runOmsInterface(
       ...(options.onSavingsChange
         ? {
             receipt: (usage) => {
-              const turn = recordTurn(savings, usage);
-              if (turn.state !== savings) keepSavings(turn.state);
+              const saved = latestSavings();
+              const turn = recordTurn(saved, usage);
+              if (turn.state !== saved) keepSavings(turn.state);
               return turn.receipt;
             },
           }
@@ -1355,9 +1359,9 @@ export async function runOmsInterface(
     connectors: options.connectors,
     changeTheme,
     savings: {
-      get: () => savings,
+      get: latestSavings,
       setShown(shown) {
-        const { off: _, ...rest } = savings;
+        const { off: _, ...rest } = latestSavings();
         keepSavings(shown ? rest : { ...rest, off: true });
       },
     },
