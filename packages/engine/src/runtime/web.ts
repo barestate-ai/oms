@@ -767,8 +767,7 @@ export function createWeb(config: WebConfig): WebControls {
   const benchBase = omsBase(env.OMS_SEARCH_URL);
   const bench = benchToken && benchBase ? { base: benchBase, token: benchToken } : undefined;
   const availableBackends = SEARCH_BACKENDS.filter((backend) => backend.name !== 'oms' || bench);
-  const requested = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase() || undefined;
-  const override = requested === 'oms' && !bench ? undefined : requested;
+  const override = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase() || undefined;
   if (override && override !== 'auto' && !SEARCH_BACKENDS.some((backend) => backend.name === override))
     throw new Error(
       `OMS_SEARCH_PROVIDER must be auto or one of: ${SEARCH_BACKENDS.map((backend) => backend.name).join(', ')}`,
@@ -781,14 +780,11 @@ export function createWeb(config: WebConfig): WebControls {
     // Search settings should not block the agent. Save will surface the error and preserve the file.
     settings = readSearchPreferences();
   }
-  const current = () => {
-    const provider = override ?? settings.provider;
-    return provider === 'oms' && !bench ? 'auto' : provider;
-  };
+  const current = () => override ?? (settings.provider === 'oms' && !bench ? 'auto' : settings.provider);
   const envKey = (backend: Backend) => (backend.key ? searchKey(env[backend.key]) : undefined);
   const getKey = (backend: Backend, saved = settings) => envKey(backend) ?? saved.keys[backend.name];
   const backends = () => {
-    const selected = availableBackends.find((backend) => backend.name === current());
+    const selected = SEARCH_BACKENDS.find((backend) => backend.name === current());
     if (selected) {
       if (selected.name === 'tinyfish' && ((!override && settings.keyless) || !getKey(selected)))
         return [TINYFISH_KEYLESS];
@@ -844,6 +840,10 @@ export function createWeb(config: WebConfig): WebControls {
     signal ? AbortSignal.any([signal, AbortSignal.timeout(WEB_TIMEOUT_MS)]) : AbortSignal.timeout(WEB_TIMEOUT_MS);
 
   async function search(query: string, count: number, signal?: AbortSignal): Promise<string> {
+    if (override === 'oms' && !bench)
+      throw new Error(
+        'OMS_SEARCH_PROVIDER=oms requires OMS_SEARCH_URL and OMS_SEARCH_TOKEN. Unset it to use /web provider.',
+      );
     const failures: string[] = [];
     for (const backend of backends()) {
       const until = blockedUntil.get(backend) ?? 0;

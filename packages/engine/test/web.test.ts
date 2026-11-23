@@ -239,6 +239,22 @@ test('without a search key, Automatic points to provider setup without sending a
   );
 });
 
+test('an explicit OMS search override cannot fall through to another provider', async () => {
+  const fetch = (async () => {
+    assert.fail('an unconfigured override must not send a request to another provider');
+  }) as typeof globalThis.fetch;
+  const { web, call } = tools({
+    enabled: true,
+    env: { OMS_SEARCH_PROVIDER: 'oms', EXA_API_KEY: 'exa-key' },
+    fetch,
+  });
+  assert.equal(web.search.override, 'oms');
+  await assert.rejects(
+    call('web_search', { query: 'q' }),
+    /OMS_SEARCH_PROVIDER=oms requires OMS_SEARCH_URL and OMS_SEARCH_TOKEN/,
+  );
+});
+
 test('a 429 fails over to the next backend and Retry-After keeps the limited one out until it passes (60 s default)', async () => {
   let clock = 1_000_000;
   const calls: string[] = [];
