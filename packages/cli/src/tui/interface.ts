@@ -813,20 +813,13 @@ export async function runOmsInterface(
     const hostedLogin =
       mode === 'search' && webSearch && harness.account && harness.account.snapshot().state !== 'signed-in'
         ? () =>
-            openAccount('login', undefined, () => {
-              if (harness.account.snapshot().state !== 'signed-in') {
-                close();
-                return;
-              }
+            openAccount('login', undefined, close, () => {
               try {
                 webSearch.select('oms');
+                return 'Web search: OMS hosted';
               } catch {
-                close();
-                setNotice('Could not save search settings. Check the permissions on your OMS state directory.');
-                return;
+                return 'Could not save search settings. Check the permissions on your OMS state directory.';
               }
-              close();
-              toast('Web search: OMS hosted');
             })
         : undefined;
     const shared = {
@@ -863,7 +856,12 @@ export async function runOmsInterface(
     notice = '';
     showPanel(pane);
   }
-  function openAccount(mode: 'login' | 'logout' | 'account', draft?: string, close = closeSetup): void {
+  function openAccount(
+    mode: 'login' | 'logout' | 'account',
+    draft?: string,
+    close = closeSetup,
+    onSignedIn?: () => string,
+  ): void {
     if (closing) return;
     if (mode === 'login' && busy()) {
       setNotice('Wait for the current turn to finish');
@@ -876,6 +874,7 @@ export async function runOmsInterface(
       theme: () => theme!,
       render: requestRender,
       close,
+      onSignedIn,
       bodyRows: () => setupPanel.bodyRows(),
       tip: () => connectorTip('login'),
     });

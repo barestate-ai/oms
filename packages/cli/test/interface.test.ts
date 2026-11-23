@@ -2405,10 +2405,13 @@ test('first-run setup picks a model, offers keyless search and returns to the co
     await terminal.until((screen) => screen.includes('Choose a web search provider'));
     terminal.send('OMS');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Signed in'));
-    terminal.send('\x1b');
-    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('OMS hosted'));
+    await terminal.until((screen) => screen.includes('Signed in') && screen.includes('Web search: OMS hosted'));
+    terminal.send('\x0b');
+    await terminal.until((screen) => !screen.includes('OMS account') && screen.includes('commands · esc to close'));
     assert.equal(web.search.choices().find((choice) => choice.current)?.id, 'oms');
+    terminal.send('setup');
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('OMS hosted'));
     terminal.send('\x1b[A');
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('Choose a web search provider'));
