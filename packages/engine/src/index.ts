@@ -43,9 +43,18 @@ export {
   wrapUntrusted,
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_TOOL_NAMES,
+  hideKnowledgeBlocks,
+  knowledgeTopic,
   type KnowledgeConfig,
 } from './runtime/knowledge-service.ts';
-export { createWeb, omsBase, SEARCH_BACKENDS, type WebConfig, type WebUsage } from './runtime/web.ts';
+export {
+  createWeb,
+  omsBase,
+  SEARCH_BACKENDS,
+  type WebConfig,
+  type WebSearchControls,
+  type WebUsage,
+} from './runtime/web.ts';
 export { readProject } from './toolchain/project.ts';
 export { checkToolchain } from './toolchain/check.ts';
 export { planToolchainFix, applyToolchainFix } from './toolchain/fix.ts';

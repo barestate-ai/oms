@@ -100,6 +100,7 @@ export function createCoreApi(parts: SessionApiParts): SessionCore {
   const webControls = web && {
     enabled: web.enabled,
     usage: web.usage,
+    search: web.search,
     set(on: boolean) {
       web.setEnabled(on);
       const others = session.getActiveToolNames().filter((name) => !web.toolNames.includes(name));

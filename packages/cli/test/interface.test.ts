@@ -10,7 +10,7 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
-import type { HarnessSession, HarnessVerification } from '@oms/engine';
+import { createWeb, type HarnessSession, type HarnessVerification } from '@oms/engine';
 import { getKeybindings, resetCapabilitiesCache, setCapabilities } from '@earendil-works/pi-tui';
 import { runOmsInterface } from '../src/tui/interface.ts';
 import { getTheme } from '../src/tui/theme.ts';
@@ -2040,7 +2040,7 @@ function distinctColours(terminal: InterfaceTerminal): number {
 test('an empty session opens with startup art above the placeholder, and the art scrolls away with the conversation', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
-  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+  const run = runOmsInterface(f.harness, { terminal, startupArt: 'truecolor' });
   try {
     const screen = await terminal.until((s) => !!artOnScreen(terminal, s) && s.includes('Try:'));
     const art = artOnScreen(terminal, screen)!;
@@ -2083,7 +2083,7 @@ test('an empty session opens with startup art above the placeholder, and the art
 test('startup art follows the window size and is hidden when under 44 columns of picture fit in a third of the window', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
-  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+  const run = runOmsInterface(f.harness, { terminal, startupArt: 'truecolor' });
   try {
     const wide = artOnScreen(terminal, await terminal.until((s) => !!artOnScreen(terminal, s)))!;
     terminal.setSize(100, 50);
@@ -2353,11 +2353,90 @@ test('Esc cancels only cancellable work: a command, not a review or verification
   }
 });
 
+test('first-run setup picks a model, offers keyless search and returns to the composer', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'oms-welcome-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const f = chatFixture();
+  f.model(false);
+  const web = createWeb({ agentRoot: root, enabled: true, env: {} });
+  f.harness.web = { enabled: web.enabled, set: web.setEnabled, usage: web.usage, search: web.search };
+  const terminal = new InterfaceTerminal(100, 28);
+  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+  try {
+    const welcome = await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
+    assert.match(welcome, /Choose a model/);
+    assert.match(welcome, /Web search\s+Optional/);
+    assert.match(welcome, /Skip for now/);
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Local provider models'));
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('local/test-model'));
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('Start chatting'));
+    terminal.send('\x1b[A');
+    terminal.send('\r');
+    const search = await terminal.until((screen) => screen.includes('Choose a web search provider'));
+    assert.match(search, /TinyFish/);
+    assert.doesNotMatch(search, /OMS hosted|Sign in to OMS/i);
+    terminal.send('TinyFish');
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Use without an API key'));
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('TinyFish'));
+    terminal.send('\r');
+    await terminal.until((screen) => screen.includes('❯') && !screen.includes('Welcome to Oh My Sol'));
+    assert.equal(f.harness.session.model?.id, 'test-model');
+    assert.equal(web.search.choices().find((choice) => choice.current)?.id, 'tinyfish');
+    assert.deepEqual(f.prompts, []);
+  } finally {
+    await quit(terminal, run);
+    terminal.vt.dispose();
+  }
+});
+
+for (const [mode, createFixture] of [
+  ['a folder chat', chatFixture],
+  ['an interactive task', fixture],
+] as const) {
+  test(`first-run setup in ${mode} can be skipped and reopened with /setup`, async () => {
+    const f = createFixture();
+    f.model(false);
+    const terminal = new InterfaceTerminal();
+    const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+    try {
+      await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
+      terminal.send('\x1b');
+      await terminal.until((screen) => !screen.includes('Welcome to Oh My Sol') && /no model/i.test(screen));
+      terminal.send('/setup');
+      terminal.send('\r');
+      await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
+      assert.deepEqual(f.prompts, []);
+    } finally {
+      await quit(terminal, run);
+      terminal.vt.dispose();
+    }
+  });
+}
+
+test('a ready model skips the automatic wizard on first launch', async () => {
+  const ready = chatFixture();
+  const direct = new InterfaceTerminal();
+  const other = runOmsInterface(ready.harness, { terminal: direct, firstRun: true });
+  try {
+    const screen = await direct.until((frame) => frame.includes('❯'));
+    assert.doesNotMatch(screen, /Welcome to Oh My Sol/);
+  } finally {
+    await quit(direct, other);
+    direct.vt.dispose();
+  }
+});
+
 test('/web off and /web on switch the session web tools and report the call counts; no web reports unavailable', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal();
   let enabled = true;
   const sets: boolean[] = [];
+  const selection: Array<{ id: string; keyless?: boolean }> = [];
   (f.harness as { web?: HarnessSession['web'] }).web = {
     enabled: () => enabled,
     set(on) {
@@ -2365,6 +2444,15 @@ test('/web off and /web on switch the session web tools and report the call coun
       enabled = on;
     },
     usage: () => ({ webSearch: 2, webFetch: 1, solanaMcp: 3, searchBy: {}, fetchBy: {} }),
+    search: {
+      override: undefined,
+      choices: () => [
+        { id: 'auto', label: 'Automatic', current: true, needsKey: false },
+        { id: 'tinyfish', label: 'TinyFish', current: false, needsKey: false },
+        { id: 'exa', label: 'Exa', current: false, needsKey: true },
+      ],
+      select: (id, options) => selection.push({ id, keyless: options?.keyless }),
+    },
   };
   const run = runOmsInterface(f.harness, { terminal });
   try {
@@ -2376,7 +2464,16 @@ test('/web off and /web on switch the session web tools and report the call coun
     terminal.send('\r');
     await terminal.until((s) => s.includes('Web on ·'));
     assert.deepEqual(sets, [false, true]);
-    assert.deepEqual(f.prompts, [], 'the switch never prompts the model');
+    terminal.send('/web provider');
+    terminal.send('\r');
+    await terminal.until((s) => s.includes('Choose a web search provider'));
+    terminal.send('\x1b[B');
+    terminal.send('\r');
+    await terminal.until((s) => s.includes('Use without an API key'));
+    terminal.send('\r');
+    await terminal.until((s) => s.includes('Web search: TinyFish'));
+    assert.deepEqual(selection, [{ id: 'tinyfish', keyless: true }]);
+    assert.deepEqual(f.prompts, [], 'web setup never prompts the model');
   } finally {
     await quit(terminal, run);
     terminal.vt.dispose();

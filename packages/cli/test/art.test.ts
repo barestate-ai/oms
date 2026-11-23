@@ -142,56 +142,14 @@ test('the picture keeps its aspect, stops at 220 columns, and is skipped under 6
   );
 });
 
-test('the colour tier comes from the environment, and the setting overrides it', () => {
+test('automatic art uses native graphics or a plain title, and explicit colour modes still work', () => {
   const TMUX = '/tmp/tmux-1/default,1,0';
-  // host: Kitty graphics (pi-tui's answer), tmux's RGB for this client, Darwin major (0 off macOS; 25 is macOS 26).
-  const table: [
-    Record<string, string>,
-    ReturnType<typeof artShow>,
-    { kitty?: boolean; tmuxRgb?: boolean; darwin?: number }?,
-  ][] = [
-    [{ TERM: 'xterm-kitty' }, 'image', { kitty: true }],
-    [{ TERM_PROGRAM: 'WarpTerminal', TERM: 'xterm-256color' }, 'image', { kitty: true }],
-    [{ TMUX, TERM: 'tmux-256color', COLORTERM: 'truecolor' }, 'truecolor', { kitty: true }],
-    [{ TERM: 'screen-256color', STY: '1234.pts-0.host' }, '256', { kitty: true }],
-    [{ NO_COLOR: '1', TERM: 'xterm-kitty' }, 'title', { kitty: true }],
-    [{ COLORTERM: 'truecolor', TERM: 'xterm-256color' }, 'truecolor'],
-    [{ COLORTERM: '24bit', TERM: 'xterm' }, 'truecolor'],
-    [{ TERM_PROGRAM: 'ghostty', TERM: 'xterm-256color' }, 'truecolor'],
-    [{ TERM_PROGRAM: 'iTerm.app', TERM: 'xterm-256color' }, 'truecolor'],
-    [{ TERM_PROGRAM: 'WezTerm', TERM: 'xterm-256color' }, 'truecolor'],
-    [{ TERM_PROGRAM: 'vscode', TERM: 'xterm-256color' }, 'truecolor'],
-    [{ TERM: 'xterm-kitty' }, 'truecolor'],
-    [{ TERM: 'xterm-ghostty' }, 'truecolor'],
-    [{ TERM: 'wezterm' }, 'truecolor'],
-    // SSH forwards TERM but not COLORTERM (Warp over SSH): 256color alone means truecolor.
-    [{ TERM: 'xterm-256color' }, 'truecolor'],
-    [{ TERM: 'xterm-256color', SSH_TTY: '/dev/pts/3' }, 'truecolor'],
-    [{ TERM_PROGRAM: 'WarpTerminal', TERM: 'xterm-256color' }, 'truecolor'],
-    [{ TERM_PROGRAM: 'Apple_Terminal', TERM: 'xterm-256color' }, '256', { darwin: 24 }],
-    [{ TERM_PROGRAM: 'Apple_Terminal', TERM: 'xterm-256color' }, 'truecolor', { darwin: 25 }],
-    [{ TERM: 'screen-256color', STY: '1234.pts-0.host' }, '256'],
-    [{ TERM: 'xterm' }, 'title'],
-    [{ TERM: 'linux' }, 'title'],
-    [{}, 'title'],
-    [{ TMUX, TERM: 'tmux-256color', COLORTERM: 'truecolor' }, 'truecolor'],
-    [{ TMUX, TERM: 'tmux-256color' }, 'truecolor', { tmuxRgb: true }],
-    [{ TMUX, TERM: 'tmux-256color', TERM_PROGRAM: 'tmux' }, '256'],
-    [{ TMUX, TERM: 'screen' }, '256'],
-    [{ NO_COLOR: '1', COLORTERM: 'truecolor' }, 'title'],
-    [{ NO_COLOR: '', COLORTERM: 'truecolor' }, 'truecolor'],
-  ];
-  for (const [env, expected, host] of table) {
-    assert.equal(
-      artShow('auto', env, {
-        kitty: host?.kitty ?? false,
-        tmuxRgb: () => host?.tmuxRgb ?? false,
-        darwin: host?.darwin ?? 0,
-      }),
-      expected,
-      `${JSON.stringify(env)} ${JSON.stringify(host ?? {})}`,
-    );
-  }
+  const konsole = { KONSOLE_VERSION: '211203', TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+  assert.equal(artShow('auto', konsole, false), 'title');
+  assert.equal(artShow('auto', konsole, true), 'image');
+  assert.equal(artShow('auto', { NO_COLOR: '1' }, true), 'title');
+  assert.equal(artShow('auto', { TMUX }, true), 'title');
+  assert.equal(artShow('auto', { STY: '1234.pts-0.host' }, true), 'title');
   assert.equal(artShow('256', { COLORTERM: 'truecolor' }), '256');
   assert.equal(artShow('truecolor', { TERM: 'xterm' }), 'truecolor');
   assert.equal(artShow('off', { COLORTERM: 'truecolor' }), 'off');
@@ -251,11 +209,13 @@ test('a Kitty OK and the DA1 that follows it in a later chunk are both consumed 
   assert.equal(input.read(), null, 'DA1 must not be left in the input stream');
 });
 
-test('Kitty graphics are asked about only over SSH outside tmux and screen, and the image setting forces them', async () => {
+test('Kitty graphics are queried for SSH and Konsole outside multiplexers, and the image setting forces them', async () => {
   const cases: [string, Record<string, string>, boolean, boolean][] = [
     // mode, env, the terminal's answer, asked
     ['auto', { SSH_TTY: '/dev/pts/1', TERM: 'xterm-256color' }, true, true],
     ['auto', { SSH_CONNECTION: '10.0.0.2 5 10.0.0.1 22', TERM: 'xterm-256color' }, false, true],
+    ['auto', { KONSOLE_VERSION: '211203' }, false, true],
+    ['auto', { KONSOLE_VERSION: '260401' }, true, true],
     ['auto', { TERM: 'xterm-256color' }, true, false],
     ['auto', { SSH_TTY: '/dev/pts/1', TMUX: '/tmp/tmux-1/default,1,0' }, true, false],
     ['auto', { SSH_TTY: '/dev/pts/1', STY: '1.pts-0.host' }, true, false],
@@ -280,15 +240,11 @@ test('Kitty graphics are asked about only over SSH outside tmux and screen, and 
   }
 });
 
-test('the image tier places the real picture with Kitty graphics, and draws the mosaic where it cannot', async () => {
+test('the image tier places the real picture with Kitty graphics and uses a plain title until it can', async () => {
   const art = new StartupArt(() => 0.3); // 28 Kyoto
   try {
     setCapabilities({ images: 'kitty', trueColor: true, hyperlinks: false });
-    assert.equal(
-      art.block(160, 40, 'image', (t) => t).some((line) => line.includes('\x1b_G')),
-      false,
-      'mosaic until the PNG is ready',
-    );
+    assert.deepEqual(art.block(160, 40, 'image', (t) => t), art.block(160, 40, 'title', (t) => t));
     await art.loadImage();
     const lines = art.block(160, 40, 'image', (t) => t);
     const sequence = lines[0]!.trimStart(),
@@ -313,8 +269,7 @@ test('the image tier places the real picture with Kitty graphics, and draws the 
     );
 
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-    const fallback = art.block(160, 40, 'image', (t) => t);
-    assert.ok(fallback[0]!.includes('\x1b[48;2;') && !fallback.some((line) => line.includes('\x1b_G')));
+    assert.deepEqual(art.block(160, 40, 'image', (t) => t), art.block(160, 40, 'title', (t) => t));
   } finally {
     resetCapabilitiesCache();
   }

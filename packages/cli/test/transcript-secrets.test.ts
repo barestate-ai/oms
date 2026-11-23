@@ -64,6 +64,48 @@ function assertHidden({ collapsed, expanded }: { collapsed: string; expanded: st
   assert.match(expanded, /DB_PASSWORD=••••/);
 }
 
+test('Solana knowledge stays hidden in saved history, prompts and live tool results', () => {
+  const needle = 'private reference passage';
+  const args = { topic: 'tokens' };
+  const content = [{ type: 'text', text: needle }];
+  const saved = new Conversation(
+    [
+      {
+        role: 'user',
+        content: `Add a test.\n<untrusted-knowledge tool="search_docs">\n${needle}\n</untrusted-knowledge>`,
+        timestamp: 1,
+      },
+      assistant([{ type: 'toolCall', id: 'k1', name: 'search_docs', arguments: args }]),
+      { role: 'toolResult', toolCallId: 'k1', toolName: 'search_docs', content, isError: false },
+    ],
+    undefined,
+    options,
+  );
+  const live = new Conversation([], undefined, options);
+  live.accept({ type: 'tool_execution_start', toolCallId: 'k1', toolName: 'search_docs', args } as never);
+  live.accept({
+    type: 'tool_execution_update',
+    toolCallId: 'k1',
+    toolName: 'search_docs',
+    args,
+    partialResult: { content },
+  } as never);
+  assert.ok(!screens(live).expanded.includes(needle));
+  live.accept({
+    type: 'tool_execution_end',
+    toolCallId: 'k1',
+    toolName: 'search_docs',
+    result: { content },
+    isError: false,
+  } as never);
+  for (const view of [saved, live]) {
+    for (const screen of Object.values(screens(view))) {
+      assert.match(screen, /fetched Solana knowledge: tokens/);
+      assert.ok(!screen.includes(needle));
+    }
+  }
+});
+
 test('secret values never reach the screen, collapsed or after Ctrl+O', () => {
   assertHidden(screens(new Conversation(history, undefined, options)));
 });

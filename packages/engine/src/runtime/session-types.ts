@@ -21,7 +21,7 @@ import type { ProviderControls } from './provider-controls.ts';
 import type { HarnessSettingsControls } from './settings-controls.ts';
 import type { TaskFileAccess } from './task-files.ts';
 import type { TaskTerminal } from './task-terminal.ts';
-import type { WebConfig, WebUsage } from './web.ts';
+import type { WebConfig, WebSearchControls, WebUsage } from './web.ts';
 
 export interface HarnessEnvironment {
   backend?: 'host' | 'docker';
@@ -98,7 +98,7 @@ export interface SessionCore extends ProviderControls {
   startTerminal(columns: number, rows: number): Promise<TaskTerminal>;
   setHostApproval?(approve: HostApproval | undefined): void;
   /** Present only when the session was opened with `web`; `set` is the `/web on|off` switch. */
-  web?: { enabled(): boolean; set(on: boolean): void; usage(): WebUsage };
+  web?: { enabled(): boolean; set(on: boolean): void; usage(): WebUsage; search: WebSearchControls };
   /** The task's local Surfpool, for chain commands (never another network). */
   chain?: ChainControls;
   /** decode_error text for a program error code; throws when no knowledge credential exists. */

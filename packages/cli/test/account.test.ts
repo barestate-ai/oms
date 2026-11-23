@@ -186,7 +186,7 @@ test('offline logout states revocation uncertainty instead of claiming server su
   pane.dispose();
 });
 
-test('account pane shows the signed-in email and origin and explains that sign-in only enables hosted search', async () => {
+test('account pane shows the signed-in email and origin and points to independent search setup', async () => {
   const snapshot: OmsAccountSnapshot = {
     state: 'signed-in',
     origin: 'https://oms.barestate.xyz',
@@ -207,7 +207,8 @@ test('account pane shows the signed-in email and origin and explains that sign-i
   const screen = pane.body.render(120).join('\n');
   assert.match(screen, /Signed in as/);
   assert.match(screen, /person@example\.test/);
-  assert.match(screen, /hosted web search only/);
+  assert.match(screen, /Sign in with GitHub for Solana knowledge/);
+  assert.match(screen, /configure web search with \/web provider/);
   assert.doesNotMatch(screen, /credit|managed/i);
   pane.dispose();
 });

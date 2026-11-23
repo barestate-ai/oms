@@ -19,13 +19,13 @@ export interface OmsAccountSnapshot {
   origin: string;
   message?: string;
 }
-/** The OMS account exists only so hosted web search can authenticate; it never selects a model or carries inference. */
+/** A device session for authenticating requests to the OMS account gateway. */
 export interface OmsAccountControls {
   snapshot(): OmsAccountSnapshot;
   login(interaction: AccountInteraction, signal: AbortSignal): Promise<void>;
   logout(signal: AbortSignal): Promise<{ serverRevoked: boolean }>;
   refresh(signal?: AbortSignal): Promise<void>;
-  /** Origin and token for the hosted search routes, only while signed in. */
+  /** Gateway origin and device token, only while signed in. */
   searchCredential(): { origin: string; token: string } | undefined;
 }
 export interface OmsAccountOptions {
@@ -371,8 +371,7 @@ export function createOmsAccountControls(options: OmsAccountOptions): OmsAccount
         email = verified.email;
         unavailable = undefined;
       } catch {
-        if (credential === current && !loggingOut)
-          unavailable = 'OMS account status unavailable. Hosted search is not confirmed.';
+        if (credential === current && !loggingOut) unavailable = 'OMS account status unavailable.';
         throw new Error('OMS account status unavailable.');
       }
     },
