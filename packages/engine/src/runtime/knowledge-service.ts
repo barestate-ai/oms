@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { ExtensionFactory, SessionManager } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, ExtensionFactory, SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { KNOWLEDGE_RULE } from './system-prompt.ts';
 
@@ -142,6 +142,22 @@ export function hideKnowledgeBlocks(text: string, includeUnclosed = false): stri
     .replace(excerpt, 'fetched Solana knowledge: error');
 }
 
+const activePrimers = new WeakMap<SessionManager, string>();
+
+/** Keep the injected primer private without treating user-authored markup as reference data. */
+export async function promptWithKnowledge(
+  session: Pick<AgentSession, 'sessionManager' | 'prompt'>,
+  prompt: string,
+  primer: string,
+): Promise<void> {
+  activePrimers.set(session.sessionManager, primer);
+  try {
+    await session.prompt(prompt);
+  } finally {
+    activePrimers.delete(session.sessionManager);
+  }
+}
+
 /** Persist a safe copy and let the running model keep its reference context. */
 export function hideKnowledgeInSession(manager: SessionManager): SessionManager {
   const append = manager.appendMessage.bind(manager);
@@ -151,11 +167,19 @@ export function hideKnowledgeInSession(manager: SessionManager): SessionManager 
       const text = message.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge: Solana';
       return append({ ...safe, content: [{ type: 'text', text }] });
     }
-    if (message.role !== 'assistant' && message.role !== 'toolResult' && message.role !== 'user') {
-      return append(message);
+    if (message.role === 'user') {
+      const primer = activePrimers.get(manager);
+      if (!primer) return append(message);
+      const redact = (text: string) =>
+        text.includes(primer) ? text.replaceAll(primer, () => hideKnowledgeBlocks(primer)) : hideKnowledgeBlocks(text);
+      const content =
+        typeof message.content === 'string'
+          ? redact(message.content)
+          : message.content.map((part) => (part.type === 'text' ? { ...part, text: redact(part.text) } : part));
+      return append({ ...message, content });
     }
-    if (typeof message.content === 'string') {
-      return append(message.role === 'user' ? { ...message, content: hideKnowledgeBlocks(message.content) } : message);
+    if (message.role !== 'assistant' && message.role !== 'toolResult') {
+      return append(message);
     }
     const content = message.content.map((part) =>
       part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text, message.role === 'assistant') } : part,
