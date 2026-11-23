@@ -244,7 +244,10 @@ test('the image tier places the real picture with Kitty graphics and uses a plai
   const art = new StartupArt(() => 0.3); // 28 Kyoto
   try {
     setCapabilities({ images: 'kitty', trueColor: true, hyperlinks: false });
-    assert.deepEqual(art.block(160, 40, 'image', (t) => t), art.block(160, 40, 'title', (t) => t));
+    assert.deepEqual(
+      art.block(160, 40, 'image', (t) => t),
+      art.block(160, 40, 'title', (t) => t),
+    );
     await art.loadImage();
     const lines = art.block(160, 40, 'image', (t) => t);
     const sequence = lines[0]!.trimStart(),
@@ -269,7 +272,10 @@ test('the image tier places the real picture with Kitty graphics and uses a plai
     );
 
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-    assert.deepEqual(art.block(160, 40, 'image', (t) => t), art.block(160, 40, 'title', (t) => t));
+    assert.deepEqual(
+      art.block(160, 40, 'image', (t) => t),
+      art.block(160, 40, 'title', (t) => t),
+    );
   } finally {
     resetCapabilitiesCache();
   }
