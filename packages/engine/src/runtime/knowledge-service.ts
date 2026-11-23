@@ -122,16 +122,18 @@ export function knowledgeTopic(input: unknown): string {
   return (typeof topic === 'string' ? topic.replace(/\s+/g, ' ').trim().slice(0, 70) : '') || 'Solana';
 }
 
-export function hideKnowledgeBlocks(text: string): string {
+export function hideKnowledgeBlocks(text: string, includeUnclosed = false): string {
+  const knowledge = includeUnclosed
+    ? /(?:\[Untrusted reference data[^\n]*\]\n)?<untrusted-knowledge tool="([^"]+)">[\s\S]*?(?:<\/untrusted-knowledge>|$)/g
+    : /(?:\[Untrusted reference data[^\n]*\]\n)?<untrusted-knowledge tool="([^"]+)">[\s\S]*?<\/untrusted-knowledge>/g;
+  const excerpt = includeUnclosed
+    ? /<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|$)/g
+    : /<solana-knowledge-excerpt>[\s\S]*?<\/solana-knowledge-excerpt>/g;
   return text
-    .replace(
-      /(?:\[Untrusted reference data[^\n]*\]\n)?<untrusted-knowledge tool="([^"]+)">[\s\S]*?(?:<\/untrusted-knowledge>|$)/g,
-      (block, tool: string) => (KNOWLEDGE_TOOL_NAMES.includes(tool) ? 'fetched Solana knowledge: Solana' : block),
+    .replace(knowledge, (block, tool: string) =>
+      KNOWLEDGE_TOOL_NAMES.includes(tool) ? 'fetched Solana knowledge: Solana' : block,
     )
-    .replace(
-      /<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|$)/g,
-      'fetched Solana knowledge: error',
-    );
+    .replace(excerpt, 'fetched Solana knowledge: error');
 }
 
 /** UTF-8 safe truncation to a byte budget. */

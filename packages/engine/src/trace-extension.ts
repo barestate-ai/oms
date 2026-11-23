@@ -123,7 +123,7 @@ export function createTraceExtension(options: TraceExtensionOptions): ExtensionF
     write({
       type: 'turn',
       turnIndex: event.turnIndex,
-      text: hideKnowledgeBlocks(assistantText(event.message)),
+      text: hideKnowledgeBlocks(assistantText(event.message), true),
       toolCalls: toolCallNames(event.message),
       toolResults: toolResults.map((result) => {
         const record = asRecord(result) ?? {};

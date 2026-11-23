@@ -29,8 +29,8 @@ const HISTORY_CHARS = 192_000;
 const HISTORY_ENTRIES = 160;
 
 /** All provider, repository, tool and metadata strings cross this boundary before rendering. */
-export function displayText(value: string, limit = ENTRY_CHARS): string {
-  value = hideKnowledgeBlocks(value);
+export function displayText(value: string, limit = ENTRY_CHARS, includeUnclosedKnowledge = false): string {
+  value = hideKnowledgeBlocks(value, includeUnclosedKnowledge);
   const clipped = value.length > limit;
   const text = maskSecrets(
     stripTerminalSequences(value.slice(0, limit))
@@ -155,8 +155,8 @@ function assistantForDisplay(message: AssistantMessage, diagnostic: string): Ass
   const content = contentOf(message)
     .slice(0, 128)
     .map((block) => {
-      if (block.type === 'text') return { ...block, text: displayText(block.text) };
-      if (block.type === 'thinking') return { ...block, thinking: displayText(block.thinking) };
+      if (block.type === 'text') return { ...block, text: displayText(block.text, ENTRY_CHARS, true) };
+      if (block.type === 'thinking') return { ...block, thinking: displayText(block.thinking, ENTRY_CHARS, true) };
       return block;
     });
   const budget = ENTRY_CHARS - diagnostic.length - 1 - '\n[display truncated]'.length;
