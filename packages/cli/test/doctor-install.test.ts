@@ -10,6 +10,7 @@ import {
   existsSync,
   chmodSync,
   symlinkSync,
+  linkSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -49,6 +50,20 @@ test('installs the executable when the SHA-256 matches', async () => {
     await installSurfpool({ url: `${base}/surfpool.tar.gz`, sha256 }, target);
     assert.equal(readFileSync(target, 'utf8').includes('surfpool 1.7.0'), true);
     assert.ok(statSync(target).mode & 0o100);
+  });
+});
+
+test('replaces the pinned executable without changing the previous inode', async () => {
+  await withServer(async (base) => {
+    const target = join(dir, 'upgrade', 'surfpool');
+    const previous = join(dir, 'upgrade', 'previous');
+    mkdirSync(join(dir, 'upgrade'));
+    writeFileSync(target, 'previous executable', { mode: 0o755 });
+    linkSync(target, previous);
+    await installSurfpool({ url: `${base}/surfpool.tar.gz`, sha256 }, target);
+    assert.equal(readFileSync(previous, 'utf8'), 'previous executable');
+    assert.match(readFileSync(target, 'utf8'), /surfpool 1\.7\.0/);
+    assert.equal(statSync(target).mode & 0o777, 0o755);
   });
 });
 

@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -52,8 +53,15 @@ export async function installSurfpool(
     const found = findFile(work, 'surfpool');
     if (!found) throw new Error('The archive contains no `surfpool` executable');
     mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(found, target);
-    chmodSync(target, 0o755);
+    const stage = mkdtempSync(join(dirname(target), '.surfpool-install-'));
+    try {
+      const executable = join(stage, 'surfpool');
+      copyFileSync(found, executable);
+      chmodSync(executable, 0o755);
+      renameSync(executable, target);
+    } finally {
+      rmSync(stage, { recursive: true, force: true });
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
