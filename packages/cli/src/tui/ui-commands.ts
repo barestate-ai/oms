@@ -1,5 +1,6 @@
 import type { StartupArtMode } from './startup-art.ts';
 import type { CommandContext } from './commands.ts';
+import { savingsSummary } from './savings.ts';
 
 /** The commands that only move around the interface: views, panes, files, setup screens, the startup picture and web access. */
 
@@ -13,6 +14,7 @@ const ART_MODES: Record<string, StartupArtMode> = {
 };
 export const acceptsArt = (argument: string): boolean =>
   !argument || argument === 'next' || Object.hasOwn(ART_MODES, argument);
+export const acceptsSavings = (argument: string): boolean => ['', 'on', 'off'].includes(argument);
 export const acceptsWeb = (argument: string): boolean => ['', 'on', 'off'].includes(argument);
 export const acceptsLayout = (argument: string): boolean => ['editor', 'balanced', ''].includes(argument);
 export const acceptsPanel = (argument: string): boolean =>
@@ -118,6 +120,20 @@ export const uiCommands = {
       ctx.setNotice(`${ctx.art.title()} · /art next · /art off`);
     }
     ctx.art.reload();
+  },
+  savings(ctx: CommandContext, argument: string, draft: Draft): void {
+    if (!ctx.savings) {
+      ctx.clearDraft(draft);
+      ctx.setNotice('Savings are not tracked here');
+      return;
+    }
+    if (argument) {
+      ctx.clearDraft(draft);
+      ctx.savings.setShown(argument === 'on');
+      ctx.setNotice(argument === 'on' ? 'OMS receipts on' : 'OMS receipts off · /savings on to bring them back');
+      return;
+    }
+    ctx.show('savings', savingsSummary(ctx.savings.get()), draft);
   },
   web(ctx: CommandContext, argument: string, draft: Draft): void {
     ctx.clearDraft(draft);

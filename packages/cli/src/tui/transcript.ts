@@ -5,6 +5,7 @@ import { commandNamesEnvFile, isEnvFile, maskEnvFile, maskSecrets } from './secr
 import { installPiTheme } from './pi-theme.ts';
 import { DEFAULT_THEME_ID, getTheme, type OmsTheme } from './theme.ts';
 import type { Args, HelperDisplay, ToolCall } from './display-tools.ts';
+import type { Receipt, TurnUsage } from './savings.ts';
 import { groupable, renderExplore, renderTool, type Rendered, type RowContext } from './tool-rows.ts';
 import {
   errorRows,
@@ -13,6 +14,7 @@ import {
   newOutputChip,
   noteRows,
   proseRows,
+  receiptRows,
   reducedMotion,
   Style,
   thoughtRows,
@@ -81,6 +83,8 @@ export interface ConversationOptions {
   /** Rows of output Ctrl+O shows for one call. */
   expandedLines?: number;
   env?: Readonly<Record<string, string | undefined>>;
+  /** A turn that worked long enough for a footer: what it used, by model. Returns the OMS receipt to show under it, if any. */
+  receipt?: (usage: readonly TurnUsage[]) => Receipt | undefined;
 }
 
 /** Whether a tool call touches an env file, so every value in its arguments and output is hidden, not only secret-named ones. */
@@ -205,7 +209,11 @@ interface FooterEntry extends Base {
   ms: number;
   tokens: number;
 }
-type Entry = UserEntry | AssistantEntry | ToolEntry | NoteEntry | FooterEntry;
+interface ReceiptEntry extends Base {
+  kind: 'receipt';
+  receipt: Receipt;
+}
+type Entry = UserEntry | AssistantEntry | ToolEntry | NoteEntry | FooterEntry | ReceiptEntry;
 
 /** One drawn thing: an entry, or a run of read-only calls drawn as one. */
 interface Block {
@@ -244,7 +252,7 @@ export class Conversation {
   private toolsExpanded = false;
   /** Thinking shows as 'Thought for 3s' until Ctrl+T opens it. */
   private thinkingHidden = true;
-  private turn: { start: number; tokens: number } | undefined;
+  private turn: { start: number; tokens: number; usage: Map<string, TurnUsage> } | undefined;
   private pulse: ReturnType<typeof setInterval> | undefined;
   private seen = 0;
   private chipRow: number | undefined;
@@ -516,7 +524,7 @@ export class Conversation {
   accept(event: AgentSessionEvent): void {
     switch (event.type) {
       case 'agent_start':
-        this.turn = { start: this.now(), tokens: 0 };
+        this.turn = { start: this.now(), tokens: 0, usage: new Map() };
         break;
       case 'agent_settled': {
         const { turn } = this;
@@ -527,7 +535,7 @@ export class Conversation {
             entry.call.state = 'interrupted';
             this.touch(entry);
           }
-        if (turn && !event.aborted && this.now() - turn.start >= FOOTER_AFTER_MS)
+        if (turn && !event.aborted && this.now() - turn.start >= FOOTER_AFTER_MS) {
           this.put({
             kind: 'footer',
             key: `footer-${this.sequence++}`,
@@ -535,6 +543,9 @@ export class Conversation {
             ms: this.now() - turn.start,
             tokens: turn.tokens,
           });
+          const receipt = this.options.receipt?.([...turn.usage.values()]);
+          if (receipt) this.put({ kind: 'receipt', key: `receipt-${this.sequence++}`, rev: 0, receipt });
+        }
         break;
       }
       case 'message_start': {
@@ -556,7 +567,21 @@ export class Conversation {
         this.assistant(event.message as AssistantMessage, this.currentMessage, streaming);
         if (event.type === 'message_end') {
           const done = event.message as AssistantMessage;
-          if (this.turn) this.turn.tokens += Number(done.usage?.output) || 0;
+          if (this.turn) {
+            this.turn.tokens += Number(done.usage?.output) || 0;
+            if (done.usage && typeof done.model === 'string') {
+              const sum = this.turn.usage.get(done.model) ?? {
+                model: done.model,
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+              };
+              for (const field of ['input', 'output', 'cacheRead', 'cacheWrite'] as const)
+                sum[field] += Number(done.usage[field]) || 0;
+              this.turn.usage.set(done.model, sum);
+            }
+          }
           if (done.stopReason === 'error' || done.stopReason === 'aborted')
             for (const block of contentOf(done))
               if (block.type === 'toolCall') this.failCall(block.id, done.errorMessage);
@@ -692,6 +717,8 @@ export class Conversation {
       }
       case 'footer':
         return { lines: [footerRow(s, first.ms, first.tokens)], collapsed: false, volatile: false };
+      case 'receipt':
+        return { lines: receiptRows(s, first.receipt, width), collapsed: false, volatile: false };
       case 'note': {
         if (/ failed$/i.test(first.label)) {
           const error = errorRows(s, first.text, width, { expanded: open, hint });

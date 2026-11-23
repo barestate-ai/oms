@@ -85,6 +85,7 @@ import type { CommandOutput, Prepared } from './prepared.ts';
 import { sessionLabel } from './inspect-commands.ts';
 import { newGoal, runGoalCheck, runGoalLoop, taskVerifierItem, type Goal } from './goal.ts';
 import { StartupArt, artShow, settleKittyGraphics, type StartupArtMode } from './startup-art.ts';
+import { emptySavings, recordTurn, type SavingsState } from './savings.ts';
 import {
   colorText,
   DEFAULT_THEME_ID,
@@ -266,6 +267,9 @@ export async function runOmsInterface(
     background?: Backdrop;
     startupArt?: StartupArtMode;
     onStartupArtChange?: (mode: StartupArtMode) => void;
+    /** The OMS receipt's saved running total; the receipt shows only when `onSavingsChange` keeps it. */
+    savings?: SavingsState;
+    onSavingsChange?: (savings: SavingsState) => void;
     view?: 'harness' | 'workbench';
     onViewChange?: (view: 'harness' | 'workbench') => void;
     /** A note shown in the conversation when the interface opens. */
@@ -486,10 +490,24 @@ export async function runOmsInterface(
           },
         }
       : undefined;
+  let savings = options.savings ?? emptySavings();
+  const keepSavings = (next: SavingsState) => {
+    savings = next;
+    options.onSavingsChange?.(next);
+  };
   const conversation = new Conversation(
     nativeChatDisplayHistory(harness),
     (message, provider) => actionError('agent', message, provider),
     {
+      ...(options.onSavingsChange
+        ? {
+            receipt: (usage) => {
+              const turn = recordTurn(savings, usage);
+              if (turn.state !== savings) keepSavings(turn.state);
+              return turn.receipt;
+            },
+          }
+        : {}),
       helpers: helperDisplay,
       rows: () => terminal.rows,
       cwd: harness.root,
@@ -1336,6 +1354,13 @@ export async function runOmsInterface(
     openConnectors,
     connectors: options.connectors,
     changeTheme,
+    savings: {
+      get: () => savings,
+      setShown(shown) {
+        const { off: _, ...rest } = savings;
+        keepSavings(shown ? rest : { ...rest, off: true });
+      },
+    },
     art: {
       setMode(mode) {
         artMode = mode;

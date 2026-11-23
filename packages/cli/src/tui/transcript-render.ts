@@ -1,6 +1,7 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi, Markdown, type MarkdownTheme } from '@earendil-works/pi-tui';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
 import { colorBg, colorText, type OmsTheme, type ThemeRole } from './theme.ts';
+import { BENCHMARK_URL, dollars, type Receipt } from './savings.ts';
 
 /** Presentation of the conversation body: pure functions from text and an OMS theme to terminal rows. */
 
@@ -18,6 +19,7 @@ interface Glyphs {
   arrow: string;
   check: string;
   cross: string;
+  rule: string;
 }
 const UNICODE: Glyphs = {
   prompt: '❯',
@@ -32,6 +34,7 @@ const UNICODE: Glyphs = {
   arrow: '→',
   check: '✓',
   cross: '✗',
+  rule: '─',
 };
 const ASCII: Glyphs = {
   prompt: '>',
@@ -46,6 +49,7 @@ const ASCII: Glyphs = {
   arrow: '->',
   check: 'ok',
   cross: 'x',
+  rule: '-',
 };
 /** ASCII glyphs for TERM=linux or dumb, or OMS_ASCII=1. */
 export function glyphsFor(env: Readonly<Record<string, string | undefined>> = process.env): Glyphs {
@@ -79,6 +83,7 @@ export class Style {
   error = (text: string): string => this.fg('error', text);
   bold = (text: string): string => `\x1b[1m${text}\x1b[22m`;
   italic = (text: string): string => `\x1b[3m${text}\x1b[23m`;
+  strike = (text: string): string => `\x1b[9m${text}\x1b[29m`;
   /** Whether the terminal can show a painted background at all. */
   get paints(): boolean {
     return this.theme.sgr.bg.surface !== '49';
@@ -394,4 +399,72 @@ export function copyableText(text: string): string {
       return line.slice(Math.min(hang, line.length - line.trimStart().length));
     })
     .join('\n');
+}
+
+// ---------------------------------------------------------------- the OMS receipt
+
+/** A finished task against the same model in its own lab's harness, as a short receipt under the turn footer. */
+export function receiptRows(s: Style, r: Receipt, width: number): string[] {
+  const pad = ' '.repeat(INDENT);
+  const inner = Math.max(20, width - INDENT);
+  const cash = (microUsd: number | undefined, approx = '') =>
+    microUsd === undefined ? '' : approx + dollars(microUsd);
+  const priced = r.omsMicroUsd !== undefined && r.rivalMicroUsd !== undefined;
+  const rows: (readonly [string, string, string])[] =
+    r.kind === 'milestone'
+      ? []
+      : [
+          [`This task · ${r.model}`, `${compact(r.inputTokens)} input tokens`, cash(r.omsMicroUsd)],
+          [`Same model in ${r.rival} (est.)`, `~${compact(r.rivalTokens)} input tokens`, cash(r.rivalMicroUsd, '~')],
+          [
+            'You kept',
+            `~${compact(r.rivalTokens - r.inputTokens)} tokens (${r.percent}%)`,
+            priced ? cash(r.rivalMicroUsd! - r.omsMicroUsd!, '~') : '',
+          ],
+        ];
+  const jokes: (readonly [string, string])[] =
+    r.kind === 'first'
+      ? [
+          ['Extra context for the same work', 'Seriously? Nope'],
+          ['Failed runs you still pay for', `Fewer: ${r.omsPass}% passed vs ${r.rivalPass}%`],
+        ]
+      : [];
+  const widest = (column: readonly string[]) => Math.max(0, ...column.map((text) => visibleWidth(text)));
+  const labelWidth = widest([...rows.map((row) => row[0]), ...jokes.map((row) => row[0])]);
+  const valueWidth = widest(rows.map((row) => row[1]));
+  const cashWidth = widest(rows.map((row) => row[2]));
+  const fits = labelWidth + valueWidth + cashWidth + 4 <= inner;
+
+  const title = `${s.g.rule}${s.g.rule} OMS receipt `;
+  const out = [
+    pad + s.accent(s.bold(title)) + s.faint(s.g.rule.repeat(Math.max(0, Math.min(inner, 52) - visibleWidth(title)))),
+  ];
+  rows.forEach(([label, value, money], index) => {
+    const paint = index === rows.length - 1 ? (text: string) => s.success(s.bold(text)) : s.muted;
+    if (!fits) out.push(pad + s.muted(`${label}: `) + paint([value, money].filter(Boolean).join(' · ')));
+    else
+      out.push(
+        pad +
+          s.muted(label.padEnd(labelWidth + 2)) +
+          paint(value.padStart(valueWidth)) +
+          (cashWidth ? '  ' + paint(money.padStart(cashWidth)) : ''),
+      );
+  });
+  if (r.kind !== 'first') {
+    const { tasks, keptTokens, keptMicroUsd } = r.total;
+    const total = `~${compact(keptTokens)} tokens${keptMicroUsd > 0 ? ` (~${dollars(keptMicroUsd)})` : ''} kept so far, over ${tasks} ${tasks === 1 ? 'task' : 'tasks'}`;
+    out.push(pad + (r.kind === 'milestone' ? s.success(s.bold(total)) : s.muted(total)));
+  }
+  if (jokes.length) {
+    out.push('');
+    for (const [label, value] of jokes)
+      out.push(
+        pad + s.faint(s.strike(label)) + ' '.repeat(fits ? labelWidth - visibleWidth(label) + 2 : 2) + s.muted(value),
+      );
+  }
+  const note =
+    `Estimate: on Oh My Sol's fresh Solana tasks, ${r.rival} used ${r.ratio.toFixed(1)}× the input tokens per solved task on ${r.model}.` +
+    `${priced ? ' Dollars at API list prices.' : ''} ${BENCHMARK_URL} · /savings off`;
+  out.push('', ...wrapTextWithAnsi(note, inner).map((row) => pad + s.faint(row)));
+  return out;
 }
