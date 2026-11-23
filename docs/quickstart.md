@@ -123,6 +123,8 @@ Choose a built-in provider that matches your endpoint, enter its key in the priv
 
 Web tools are on by default in `npm start` and `oms run`. They run in the OMS process, not in the sandbox.
 
+If `OMS_SEARCH_PROVIDER` still names a retired provider, unset it before launching OMS.
+
 Run `/web provider` and choose a provider. Select **TinyFish → Use without an API key** to start searching without signing in. To use your own TinyFish or Exa key, choose the provider and enter the key in the private prompt. OMS remembers your provider and saved keys across launches.
 
 **Automatic** tries Exa and then TinyFish when you have their keys configured. Choose TinyFish to search without a key. Choosing a specific provider routes searches only to that provider. `web_fetch` and the official Solana docs tools do not require a search key. Use `/login` to sign in with GitHub for Solana knowledge.
