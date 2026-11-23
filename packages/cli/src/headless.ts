@@ -8,6 +8,7 @@ import {
   measuredInputBound,
   modelReadiness,
   parseRunRecord,
+  promptWithKnowledge,
   type HarnessSession,
   type HarnessSessionOptions,
   type RunRecord,
@@ -214,7 +215,8 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         }
         const before = JSON.stringify(items);
         if (noProgressTurns > 0) noProgressContinuations++;
-        await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
+        if (turn === 0 && primerText) await promptWithKnowledge(current.session, firstTurn, primerText);
+        else await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         observe();
         const last = [...current.session.messages].reverse().find((message) => message.role === 'assistant') as
           { rawStopReason?: string } | undefined;
