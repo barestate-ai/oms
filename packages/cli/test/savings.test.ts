@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { stripTerminalSequences } from '@earendil-works/pi-tui';
+import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
 import { emptySavings, parseSavings, recordTurn, type TurnUsage } from '../src/tui/savings.ts';
 import { interfacePreferences, readTuiPreferences } from '../src/tui/preferences.ts';
 import { getTheme } from '../src/tui/theme.ts';
@@ -93,7 +93,12 @@ test('the receipt draws under the footer of a turn that worked', () => {
   assert.ok(rows.some((row) => /You kept +~291k tokens \(62%\)/.test(row)));
   assert.ok(rows.some((row) => /You just saved ~291k tokens \(~\$0\.18\)/.test(row)));
   assert.ok(rows.some((row) => row.includes('barestate.xyz/oh-my-sol')));
-  assert.ok(conversation.render(40).length > 0, 'a narrow terminal still draws it');
+  const narrow = plain(conversation.render(46));
+  assert.ok(
+    narrow.every((row) => visibleWidth(row) <= 46),
+    'a narrow terminal wraps rather than clips',
+  );
+  for (const text of ['~$0.37', '~473k', 'Seriously? Nope', '79%']) assert.ok(narrow.join(' ').includes(text), text);
 });
 
 test('hour-long cache writes are priced at the long-write rate', () => {

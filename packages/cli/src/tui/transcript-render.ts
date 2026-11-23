@@ -441,7 +441,12 @@ export function receiptRows(s: Style, r: Receipt, width: number): string[] {
   ];
   rows.forEach(([label, value, money], index) => {
     const paint = index === rows.length - 1 ? (text: string) => s.success(s.bold(text)) : s.muted;
-    if (!fits) out.push(pad + s.muted(`${label}: `) + paint([value, money].filter(Boolean).join(' · ')));
+    if (!fits)
+      out.push(
+        ...wrapTextWithAnsi(s.muted(`${label}: `) + paint([value, money].filter(Boolean).join(' · ')), inner).map(
+          (row) => pad + row,
+        ),
+      );
     else
       out.push(
         pad +
@@ -453,14 +458,14 @@ export function receiptRows(s: Style, r: Receipt, width: number): string[] {
   if (r.kind !== 'first') {
     const { tasks, keptTokens, keptMicroUsd } = r.total;
     const total = `~${compact(keptTokens)} tokens${keptMicroUsd > 0 ? ` (~${dollars(keptMicroUsd)})` : ''} kept so far, over ${tasks} tasks`;
-    out.push('', pad + s.success(s.bold(total)));
+    out.push('', ...wrapTextWithAnsi(total, inner).map((row) => pad + s.success(s.bold(row))));
   }
   if (jokes.length) {
     out.push('');
     for (const [label, value] of jokes)
-      out.push(
-        pad + s.faint(s.strike(label)) + ' '.repeat(fits ? labelWidth - visibleWidth(label) + 2 : 2) + s.muted(value),
-      );
+      if (fits)
+        out.push(pad + s.faint(s.strike(label)) + ' '.repeat(labelWidth - visibleWidth(label) + 2) + s.muted(value));
+      else out.push(pad + s.faint(s.strike(label)), pad + '  ' + s.muted(value));
   }
   const note =
     `Estimate: on Oh My Sol's fresh Solana tasks, ${r.rival} used ${r.ratio.toFixed(1)}× the input tokens per solved task on ${r.model}.` +
