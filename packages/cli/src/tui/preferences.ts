@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { StartupArtMode } from './startup-art.ts';
+import { emptySavings, parseSavings, type SavingsState } from './savings.ts';
 import { DEFAULT_THEME_ID, getTheme, type Backdrop, type OmsThemeId } from './theme.ts';
 
 /** Look-and-feel choices kept across launches in `<state root>/tui.json`. Nothing secret belongs here. */
@@ -12,6 +13,8 @@ export interface TuiPreferences {
   startupArt?: StartupArtMode;
   /** Set once the first launch has shown the startup art; absent until then. */
   welcomed?: true;
+  /** The OMS receipt's running total and whether it shows; absent until the first finished task. */
+  savings?: SavingsState;
 }
 
 const ART_MODES: readonly string[] = ['auto', 'image', 'truecolor', '256', 'off'] satisfies StartupArtMode[];
@@ -33,6 +36,7 @@ export function readTuiPreferences(stateRoot: string): TuiPreferences {
     background: text('background') === 'terminal' ? 'terminal' : 'theme',
     ...(ART_MODES.includes(startupArt) ? { startupArt: startupArt as StartupArtMode } : {}),
     ...(saved.welcomed === true ? { welcomed: true as const } : {}),
+    ...(parseSavings(saved.savings) ? { savings: parseSavings(saved.savings)! } : {}),
   };
 }
 
@@ -69,5 +73,8 @@ export function interfacePreferences(stateRoot: string) {
     onFirstRunShown: () => void saveTuiPreferences(stateRoot, { welcomed: true }),
     onThemeChange: (theme: OmsThemeId) => void saveTuiPreferences(stateRoot, { theme }),
     onStartupArtChange: (startupArt: StartupArtMode) => void saveTuiPreferences(stateRoot, { startupArt }),
+    ...(saved.savings ? { savings: saved.savings } : {}),
+    onSavingsChange: (savings: SavingsState) => saveTuiPreferences(stateRoot, { savings }),
+    readSavings: () => readTuiPreferences(stateRoot).savings ?? emptySavings(),
   };
 }
