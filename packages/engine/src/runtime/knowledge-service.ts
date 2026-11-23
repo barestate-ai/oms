@@ -6,6 +6,7 @@ import { Type } from 'typebox';
 import { KNOWLEDGE_RULE } from './system-prompt.ts';
 
 export { KNOWLEDGE_RULE };
+export const OMS_KNOWLEDGE_GATEWAY = 'https://barestate.xyz/oms/api/knowledge/mcp';
 
 /**
  * Client for the hosted Solana knowledge service (stateless MCP over HTTP, Bearer auth).
@@ -560,7 +561,7 @@ export async function knowledgePrimer(
   taskText: string,
 ): Promise<{ text: string; injection: KnowledgeInjection; fallback?: string; built?: string }> {
   if (!config?.token) return { text: '', injection: 'search-v0' };
-  if (config.guidance) {
+  if (config.guidance || config.endpoint === OMS_KNOWLEDGE_GATEWAY) {
     const query = [...solanaPackages(root), taskText].join(' ').replace(/\s+/g, ' ').trim().slice(0, 2_000);
     try {
       const result = await fetchMcpText(config, 'search_docs', { query, limit: 3 });

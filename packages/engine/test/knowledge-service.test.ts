@@ -13,6 +13,7 @@ import {
   KNOWLEDGE_RULE,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
+  OMS_KNOWLEDGE_GATEWAY,
   readWorktreeText,
   TOPIC_CARDS_LIMIT,
   TOPICS_RULE,
@@ -31,7 +32,7 @@ test('hosted primer uses a single focused lookup and passes the guidance to the 
   });
   try {
     const primer = await knowledgePrimer(
-      { endpoint: mock.endpoint, token: TOKEN, guidance: true },
+      { endpoint: OMS_KNOWLEDGE_GATEWAY, token: TOKEN, fetch: (_url, init) => fetch(mock.endpoint, init) },
       '/nonexistent',
       'Create an ATA',
     );
