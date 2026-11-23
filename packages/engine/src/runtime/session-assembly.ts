@@ -72,6 +72,7 @@ export async function assembleSession(
     extensions,
     initiallyKnown,
     extras.extensionTools,
+    account.searchCredential,
   );
   return { options, life, env, tools, model, account, owner: extras.owner };
 }

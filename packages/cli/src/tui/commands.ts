@@ -62,7 +62,11 @@ export interface CommandContext {
   checkRequirements(): { proofAvailable: boolean; checkedAt: string; items: readonly Requirement[] };
   selectedRequirement(): string | undefined;
   modelDetail(): string | undefined;
-  openSetup(mode: 'model' | 'connect' | 'theme' | 'settings', query: string, draft: string | undefined): void;
+  openSetup(
+    mode: 'model' | 'connect' | 'theme' | 'settings' | 'search' | 'welcome',
+    query: string,
+    draft: string | undefined,
+  ): void;
   openAccount(mode: 'login' | 'logout' | 'account', draft: string | undefined): void;
   /** A folder chat's connectors; absent in a pinned task and in tests that do not need them. */
   readonly connectors?: Connectors;
@@ -343,11 +347,18 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'web',
     group: 'Setup',
-    description: 'Show or switch web search',
-    argument: '[on|off]',
+    description: 'Web access and search providers',
+    argument: '[on|off|provider]',
     accepts: acceptsWeb,
     whileBusy: 'accepted',
     run: uiCommands.web,
+  },
+  {
+    name: 'setup',
+    group: 'Setup',
+    description: 'Model and web search setup',
+    whileBusy: 'accepted',
+    run: uiCommands.setup,
   },
   {
     name: 'yolo',
@@ -368,7 +379,7 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
   {
     name: 'login',
     group: 'Setup',
-    description: 'Sign in to OMS for hosted search',
+    description: 'Sign in to OMS for Solana knowledge',
     whileBusy: 'accepted',
     run: uiCommands.login,
   },

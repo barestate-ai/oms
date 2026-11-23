@@ -23,6 +23,7 @@ import type {
   TurnEndEvent,
 } from '@earendil-works/pi-coding-agent';
 import type { TraceEventInput, TraceWriteResult } from '@oms/core';
+import { hideKnowledgeBlocks, knowledgeTopic, KNOWLEDGE_TOOL_NAMES } from './runtime/knowledge-service.ts';
 
 /** The slice of `createTraceWriter()` this extension needs. */
 export interface TraceSink {
@@ -122,7 +123,7 @@ export function createTraceExtension(options: TraceExtensionOptions): ExtensionF
     write({
       type: 'turn',
       turnIndex: event.turnIndex,
-      text: assistantText(event.message),
+      text: hideKnowledgeBlocks(assistantText(event.message), true),
       toolCalls: toolCallNames(event.message),
       toolResults: toolResults.map((result) => {
         const record = asRecord(result) ?? {};
@@ -147,13 +148,23 @@ export function createTraceExtension(options: TraceExtensionOptions): ExtensionF
   };
 
   const onToolResult = (event: ToolResultEvent): ToolResultEventResult | undefined => {
+    const knowledge = KNOWLEDGE_TOOL_NAMES.includes(event.toolName);
     write({
       type: 'tool_result',
       toolName: event.toolName,
       toolCallId: event.toolCallId,
       isError: event.isError === true,
-      content: event.content,
-      structuredContent: event.structuredContent,
+      content: knowledge
+        ? [
+            {
+              type: 'text',
+              text: `${event.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge'}: ${knowledgeTopic(event.input)}`,
+            },
+          ]
+        : event.content.map((part) =>
+            part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text) } : part,
+          ),
+      structuredContent: knowledge ? undefined : event.structuredContent,
     });
     if (options.redactModelView !== true) return undefined;
 

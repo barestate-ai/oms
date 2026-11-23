@@ -35,6 +35,8 @@ In a source checkout, run `npm ci --ignore-scripts`, then `node packages/cli/src
 
 Docker is not part of the install. `npm start` uses host mode: on macOS commands run under a Seatbelt profile without asking (writes only in the folder, no access to keys or other repos, network only to Surfnet); on Linux v0.1 there is no sandbox, OMS tells you once at startup, and each command asks first: allow it once, allow it for the session, or deny. `/yolo` (or `oms --yolo`) turns the asking and the sandbox off after you confirm with `y`, and the footer shows YOLO while it is on. Optional: `--sandbox docker` selects Docker for untrusted repositories with `oms task create` and `oms run`; plain `oms` does not run in Docker.
 
+On your first launch without a model, OMS opens a short setup wizard. Choose a model, optionally set up web search, then select **Start chatting**. Press Esc or select **Skip for now** to open the TUI and set up later with `/setup`.
+
 Enter the slash commands below inside OMS, not in your shell. Arrow keys select a row; Enter confirms; Esc returns. `/connect` configures access and `/model` selects a model. A row marked **Connected** means credentials are configured locally. Never paste credentials into chat, source files or bug reports.
 
 ## Codex / ChatGPT subscription
@@ -121,24 +123,21 @@ Choose a built-in provider that matches your endpoint, enter its key in the priv
 
 Web tools are on by default in `npm start` and `oms run`. They run in the OMS process, not in the sandbox.
 
-- `web_fetch` and the `solana_*` docs tools (from the official Solana MCP) need no key.
-- `web_search` needs a key of your own, exported before you start OMS. For example:
+If `OMS_SEARCH_PROVIDER` still names a retired provider, unset it before launching OMS.
 
-  ```sh
-  export FIRECRAWL_API_KEY=...   # or EXA_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY
-  npm start
-  ```
+Run `/web provider` and choose a provider. Select **TinyFish → Use without an API key** to start searching without signing in. To use your own TinyFish or Exa key, choose the provider and enter the key in the private prompt. OMS remembers your provider and saved keys across launches.
 
-  Firecrawl's free tier is 1,000 credits a month (a search costs 2 credits per 10 results) and 10 requests a minute. With several keys, OMS fails over between them on rate limits.
+**Automatic** tries Exa and then TinyFish when you have their keys configured. Choose TinyFish to search without a key. Choosing a specific provider routes searches only to that provider. `web_fetch` and the official Solana docs tools do not require a search key. Use `/login` to sign in with GitHub for Solana knowledge.
 
-Hosted search: `/login` signs in to your OMS account through browser device authorization and enables the hosted oms-search backend; `/logout` removes it. Signing in does not select a model or send inference.
+You can also set a provider and key at launch. `OMS_SEARCH_PROVIDER` overrides your saved selection for that launch. A provider key in the environment takes precedence over a saved key.
 
-Turn web access off:
-- with `/web off` in a session (`/web` alone shows the state and the call counts);
-- with `npm start -- --no-web` for one launch;
-- with `{"web": "off"}` in `~/.oms/config.json`.
+```sh
+OMS_SEARCH_PROVIDER=tinyfish oms
+# Or export EXA_API_KEY before running this command.
+OMS_SEARCH_PROVIDER=exa oms
+```
 
-Headless runs have no web access unless you pass `--web`.
+Run `/web` to see your call counts and `/web off` to turn web access off in the session. You can also start with `oms --no-web` or set `{"web": "off"}` in `~/.oms/config.json`. Headless runs require `--web` to use web tools.
 
 ## Diagnose a failed setup
 

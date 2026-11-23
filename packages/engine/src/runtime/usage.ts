@@ -70,6 +70,8 @@ export { CLAUDE_CODE_CONTEXT_OVERFLOW } from './claude-code.ts';
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
+export type ModelUsageObserver = (model: Model<Api>) => ((outcome: 'ok' | 'error') => void) | undefined;
+
 export interface MeteredStreamOptions {
   /** Capture the original agent.streamFunction before replacing it. */
   readonly streamFunction: StreamFn;
@@ -95,6 +97,7 @@ export interface MeteredStreamOptions {
   readonly headroom?: () => { tokens: number; spendMicroUsd: number };
   /** Called when the provider rejects a request with a bare 400 that gives no reason, before the turn is retried. */
   readonly onBareBadRequest?: () => void;
+  readonly observeModelUsage?: ModelUsageObserver;
 }
 
 function cleanMessage(message: AssistantMessage): AssistantMessage {
@@ -335,10 +338,17 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
     let dispatchId: string | undefined;
     let dispatched = false;
     let settled = false;
+    let httpRequests = 0;
+    let reportModelUsage: ReturnType<ModelUsageObserver>;
+    let nativeRequestObserved = false;
+    const reportOutcome = (outcome: 'ok' | 'error'): void => {
+      if (httpRequests > 0 || nativeRequestObserved) reportModelUsage?.(outcome);
+    };
     let timer: NodeJS.Timeout | undefined;
     const controller = new AbortController();
     const onCallerAbort = () => controller.abort();
     const failed = (text: string, aborted = false, rawStopReason?: string): void => {
+      if (!aborted) reportOutcome('error');
       const message: AssistantMessage = {
         role: 'assistant',
         content: [],
@@ -444,7 +454,6 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       settled = true;
       return true;
     };
-    let httpRequests = 0;
     // Under `transport: 'sse'` an API provider can only be reached through the single metered
     // request below; a failure with zero issued requests provably sent nothing, so it settles
     // `not_dispatched` and frees the reservation. Claude Code's native channel is not metered
@@ -754,6 +763,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
         dispatched = true;
         const request = Promise.resolve().then(() => {
           controller.signal.throwIfAborted();
+          reportModelUsage = config.observeModelUsage?.(model);
           return config.streamFunction(model, context, providerOptions);
         });
         const source = await Promise.race([request, aborted]);
@@ -763,13 +773,14 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           if (next.done) break;
           const event = next.value;
           if (event.type === 'error') {
-            // Operator diagnostics only (never in the transcript): the raw cause behind the plain user-facing message.
+            // The native transport bypasses the metered fetch and classifies its own startup refusals.
+            if (isClaudeCodeModel(model)) {
+              const stop = event.error.rawStopReason;
+              nativeRequestObserved = stop !== CLAUDE_CODE_SIGNIN && !stop?.startsWith(CLAUDE_CODE_NOT_DISPATCHED);
+            }
             const errorMessage = (event as { error?: { errorMessage?: string } }).error?.errorMessage;
             if (process.env.OMS_STREAM_DEBUG)
-              console.error(
-                'oms stream error',
-                JSON.stringify({ reason: event.reason, message: errorMessage }).slice(0, 600),
-              );
+              console.error('oms stream error', JSON.stringify({ reason: event.reason }));
             if (releaseUnsent() || releaseRejected()) return;
             // A failed attempt that carries provider-reported usage settles at that usage.
             const observedSettled = settleObserved(event.error);
@@ -804,6 +815,8 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
             ) {
               // Charge the failed attempt at the usage its provider reported — or its full bound
               // when no receipt exists — then admit the retry against the remaining budget.
+              reportOutcome('error');
+              reportModelUsage = undefined;
               await delay(3_000, undefined, { signal: controller.signal });
               const retry = streamAttempt(
                 selectedModel,
@@ -864,6 +877,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
             return;
           }
           if (event.type === 'done') {
+            nativeRequestObserved = isClaudeCodeModel(model);
             const usage =
               event.reason !== 'deferred' && (!event.message.responseModel || event.message.responseModel === model.id)
                 ? normalizePiUsage(model, event.message.usage)
@@ -900,6 +914,7 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               return;
             }
             settled = true;
+            reportOutcome('ok');
             output.push({ ...event, message: cleanMessage(event.message) });
             output.end();
             return;

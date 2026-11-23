@@ -1,6 +1,4 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { release } from 'node:os';
 import { convertToPng } from '@earendil-works/pi-coding-agent';
 import { cropKittyImageLine } from '@earendil-works/pi-tui/dist/terminal-image.js';
 import {
@@ -34,58 +32,15 @@ interface ArtEntry {
 const MIN_COLS = 60;
 const MAX_COLS = 220;
 const INDEX = JSON.parse(readFileSync(new URL('index.json', ART_DIR), 'utf8')) as ArtEntry[];
-const TRUECOLOR_PROGRAMS = new Set(['ghostty', 'iTerm.app', 'WezTerm', 'vscode']);
 
-/** Facts about the host that the environment does not carry. None of them asks the terminal anything. */
-export interface ArtHost {
-  /** Whether the terminal draws Kitty graphics: pi-tui's answer, from the environment or the query over SSH. */
-  readonly kitty: boolean;
-  /** Whether tmux reports RGB for this client; only called inside tmux. */
-  tmuxRgb(): boolean;
-  /** Darwin major version, 0 off macOS. Terminal.app draws 24-bit colour from Darwin 25 (macOS 26). */
-  darwin: number;
-}
-
-const HOST: ArtHost = {
-  get kitty() {
-    return getCapabilities().images === 'kitty';
-  },
-  tmuxRgb() {
-    try {
-      return /\bRGB\b/.test(
-        execFileSync('tmux', ['display-message', '-p', '#{client_termfeatures}'], {
-          encoding: 'utf8',
-          timeout: 200,
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }),
-      );
-    } catch {
-      return false;
-    }
-  },
-  darwin: process.platform === 'darwin' ? Number.parseInt(release(), 10) || 0 : 0,
-};
-
-/**
- * From the environment, so it can never wait on the terminal. The real picture needs Kitty graphics, and never
- * inside tmux or screen (their passthrough is unreliable) unless the setting forces it. SSH forwards TERM but not
- * COLORTERM, so a 256color TERM means truecolor: every current terminal that sets it draws 24-bit colour. The 256
- * tier is for the hosts known to turn 24-bit colour grey: Terminal.app before macOS 26, tmux without RGB, and GNU
- * screen. A 16-colour picture is never clean, so those terminals get the title only. A non-TTY never gets here:
- * interactive.ts refuses to start without one.
- */
-export function artShow(mode: StartupArtMode, env: Record<string, string | undefined>, host: ArtHost = HOST): ArtShow {
+/** Auto uses the native picture. Character mosaics are opt-in through the colour modes. */
+export function artShow(
+  mode: StartupArtMode,
+  env: Record<string, string | undefined>,
+  kitty = getCapabilities().images === 'kitty',
+): ArtShow {
   if (mode !== 'auto') return mode;
-  if (env.NO_COLOR) return 'title';
-  const term = env.TERM ?? '',
-    truecolor = env.COLORTERM === 'truecolor' || env.COLORTERM === '24bit';
-  if (env.TMUX) return truecolor || host.tmuxRgb() ? 'truecolor' : '256';
-  if (env.STY) return '256';
-  if (host.kitty) return 'image';
-  if (env.TERM_PROGRAM === 'Apple_Terminal') return host.darwin >= 25 ? 'truecolor' : '256';
-  if (truecolor || TRUECOLOR_PROGRAMS.has(env.TERM_PROGRAM ?? '') || /kitty|ghostty|wezterm|256color/.test(term))
-    return 'truecolor';
-  return 'title';
+  return kitty && !env.NO_COLOR && !env.TMUX && !env.STY ? 'image' : 'title';
 }
 
 const KITTY_QUERY = '\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\';
@@ -93,8 +48,7 @@ const KITTY_QUERY = '\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\';
 const DA1 = '\x1b[c';
 
 /**
- * Over SSH the environment does not say which terminal is on the other end, so ask once whether it draws Kitty
- * graphics (the protocol's own capability query). True only for an OK followed by the DA1 reply; DA1 alone or
+ * Ask the terminal whether it draws Kitty graphics. True only for an OK followed by the DA1 reply; DA1 alone or
  * `timeoutMs` (1 s, for slow SSH links) without DA1 means no. Run before the interface starts reading the terminal.
  */
 export function queryKittyGraphics(
@@ -127,7 +81,7 @@ export function queryKittyGraphics(
 
 /**
  * Settle Kitty graphics before the renderer starts (it decides there how image lines are uploaded and placed):
- * forced by the setting, or, over SSH where pi-tui's environment check cannot see the terminal, one query.
+ * forced by the setting, or queried once for SSH and Konsole, whose graphics support varies by version.
  */
 export async function settleKittyGraphics(
   mode: StartupArtMode,
@@ -136,8 +90,13 @@ export async function settleKittyGraphics(
 ): Promise<void> {
   const capabilities = getCapabilities();
   if (capabilities.images === 'kitty' || (mode !== 'auto' && mode !== 'image')) return;
-  const ssh = !!(env.SSH_TTY || env.SSH_CONNECTION) && !capabilities.images && !env.TMUX && !env.STY && !env.NO_COLOR;
-  if (mode === 'image' || (ssh && (await query()))) setCapabilities({ ...capabilities, images: 'kitty' });
+  const probe =
+    (env.SSH_TTY || env.SSH_CONNECTION || env.KONSOLE_VERSION) &&
+    !capabilities.images &&
+    !env.TMUX &&
+    !env.STY &&
+    !env.NO_COLOR;
+  if (mode === 'image' || (probe && (await query()))) setCapabilities({ ...capabilities, images: 'kitty' });
 }
 
 /** A picture's lines and the columns it covers; an image is one Kitty placement on the first line. */
@@ -177,7 +136,7 @@ export class StartupArt {
     this.cache.clear();
   }
 
-  /** Convert the current picture to PNG for the image tier (about 100 ms). Until then the image tier draws the mosaic. */
+  /** Convert the current picture to PNG for the image tier (about 100 ms). */
   async loadImage(): Promise<void> {
     const entry = this.entry;
     if (this.png?.entry === entry) return;
@@ -191,21 +150,21 @@ export class StartupArt {
   /**
    * The picture centred in `width` (up to `width - 2` and MAX_COLS columns, at most `maxRows` rows, aspect kept),
    * then a blank line, the title styled by `muted` under its left edge, and a blank line. 'title' leaves out
-   * the picture. Empty when off or when the picture would be under MIN_COLS columns. 'image' draws the mosaic in
-   * truecolor while the PNG is not ready or the terminal turns out not to draw Kitty graphics. `hidden` is how many
-   * of the block's rows are scrolled above the viewport: pi-tui crops a placement whose top is hidden only for a
+   * the picture. Empty when off or when the picture would be under MIN_COLS columns. 'image' shows only the title
+   * until the PNG can be drawn. `hidden` is how many of the block's rows are scrolled above the viewport:
+   * pi-tui crops a placement whose top is hidden only for a
    * box at column 0, so the cropped placement moves to the first visible row here.
    */
   block(width: number, maxRows: number, show: ArtShow, muted: (text: string) => string, hidden = 0): string[] {
     if (show === 'off') return [];
     const picture =
       show === 'image'
-        ? (this.image(width, maxRows) ?? this.mosaic(width, maxRows, 'truecolor'))
+        ? (this.image(width, maxRows) ?? this.mosaic(width, maxRows, 'title'))
         : this.mosaic(width, maxRows, show);
     if (!picture) return [];
     const pad = ' '.repeat(Math.floor((width - picture.cols) / 2));
     const title = [pad + muted(this.title), ''];
-    if (show === 'title') return title;
+    if (!picture.lines.length) return title;
     const lines = picture.lines.map((line) => pad + line);
     if (picture.image && hidden > 0 && hidden < lines.length) {
       lines[hidden] = pad + cropKittyImageLine(picture.lines[0]!, hidden, lines.length - hidden);

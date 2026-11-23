@@ -458,10 +458,10 @@ export function prepareError(argument: string, harness: OmsSession): Prepared {
       const head = `Custom error ${parsed} (0x${parsed.toString(16)})${program ? ` in ${program}` : ''}`;
       if (decoding.matches.length) return { title: 'error', text: [head, ...describeDecoding(decoding)].join('\n') };
       try {
-        const answer = await harness.knowledge.decodeError(String(parsed), program, signal);
+        await harness.knowledge.decodeError(String(parsed), program, signal);
         return {
           title: 'error',
-          text: [head, 'Not in offline tables · Solana docs answer (unverified):', clip(answer, 3_000)].join('\n'),
+          text: `fetched Solana knowledge: error ${parsed}`,
         };
       } catch {
         return {

@@ -22,6 +22,26 @@ import {
 } from '../src/runtime/knowledge-service.ts';
 
 const TOKEN = 'synthetic-knowledge-token-4d2e';
+
+test('hosted primer uses a single focused lookup and passes the guidance to the model', async () => {
+  const calls: string[] = [];
+  const mock = await service(({ name }) => {
+    calls.push(name);
+    return { text: 'Use the token program that owns the mint.' };
+  });
+  try {
+    const primer = await knowledgePrimer(
+      { endpoint: mock.endpoint, token: TOKEN, guidance: true },
+      '/nonexistent',
+      'Create an ATA',
+    );
+    assert.deepEqual(calls, ['search_docs']);
+    assert.match(primer.text, /Use the token program that owns the mint/);
+    assert.equal(primer.fallback, undefined);
+  } finally {
+    await mock.close();
+  }
+});
 const body = async (req: IncomingMessage) => {
   let s = '';
   for await (const c of req) s += c;

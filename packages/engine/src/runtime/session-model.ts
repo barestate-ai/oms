@@ -29,7 +29,7 @@ import type { CommonSessionOptions } from './session-types.ts';
 import { createHarnessSettings } from './settings-controls.ts';
 import { RAW_OUTPUT_TOOL } from './solana-diagnosis.ts';
 import { withToolExecutionModes } from './tool-execution.ts';
-import { createMeteredStream } from './usage.ts';
+import { createMeteredStream, type ModelUsageObserver } from './usage.ts';
 
 /** Registered tools pi would otherwise drop: deps_fetch is part of the build profile. */
 export function sessionToolNames(
@@ -63,6 +63,34 @@ export interface SessionModel {
   checkAuthFile(): void;
 }
 
+type ModelUsageCredential = () => { origin: string; token: string } | undefined;
+
+export function modelUsageObserver(readCredential?: ModelUsageCredential): ModelUsageObserver | undefined {
+  if (process.env.OMS_SHARE_MODEL_USAGE !== '1' || !readCredential) return undefined;
+  return (model) => {
+    const credential = readCredential();
+    if (credential?.origin !== 'https://barestate.xyz/oms') return undefined;
+    return (outcome) => {
+      void Promise.resolve()
+        .then(() => {
+          return fetch(credential.origin + '/api/telemetry/model', {
+            method: 'POST',
+            redirect: 'error',
+            credentials: 'omit',
+            signal: AbortSignal.timeout(2_000),
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.token}` },
+            body: JSON.stringify({
+              provider: model.provider,
+              model: model.id,
+              outcome,
+            }),
+          }).then((response) => response.body?.cancel());
+        })
+        .catch(() => {});
+    };
+  };
+}
+
 /**
  * Model and stream wiring: the model runtime and catalog, the Claude Code native provider, the pi session with the OMS
  * extensions, and the metered stream that enforces the budget on every model call.
@@ -76,6 +104,7 @@ export async function createSessionModel(
   extensions: ExtensionFactory[],
   initiallyKnown: boolean,
   injectedTools: readonly string[] = [],
+  telemetryCredential?: ModelUsageCredential,
 ): Promise<SessionModel> {
   const { environment } = options;
   const { controller } = life;
@@ -201,6 +230,7 @@ export async function createSessionModel(
   const originalSdkStream: StreamFn = session.agent.streamFunction;
   const directStream = createMeteredStream({
     streamFunction: originalSdkStream,
+    observeModelUsage: modelUsageObserver(telemetryCredential),
     ledger: env.budget,
     allocate: env.allocate,
     executionMode: env.executionMode,

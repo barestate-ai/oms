@@ -58,6 +58,18 @@ function fixture(supportsThinking = true) {
 }
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+test('settings shows whether local model reporting is opted in', (t) => {
+  const previous = process.env.OMS_SHARE_MODEL_USAGE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.OMS_SHARE_MODEL_USAGE;
+    else process.env.OMS_SHARE_MODEL_USAGE = previous;
+  });
+  process.env.OMS_SHARE_MODEL_USAGE = '0';
+  assert.match(fixture().screen(), /Local model reporting\s+off/);
+  process.env.OMS_SHARE_MODEL_USAGE = '1';
+  assert.match(fixture().screen(), /Local model reporting\s+on/);
+});
+
 test('settings list changes the actual controls and reflects persisted values without closing the pane', async () => {
   const f = fixture();
   assert.equal(f.pane.label, 'Settings');
