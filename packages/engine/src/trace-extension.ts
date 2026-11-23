@@ -155,8 +155,15 @@ export function createTraceExtension(options: TraceExtensionOptions): ExtensionF
       toolCallId: event.toolCallId,
       isError: event.isError === true,
       content: knowledge
-        ? [{ type: 'text', text: `${event.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge'}: ${knowledgeTopic(event.input)}` }]
-        : event.content.map((part) => part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text) } : part),
+        ? [
+            {
+              type: 'text',
+              text: `${event.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge'}: ${knowledgeTopic(event.input)}`,
+            },
+          ]
+        : event.content.map((part) =>
+            part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text) } : part,
+          ),
       structuredContent: knowledge ? undefined : event.structuredContent,
     });
     if (options.redactModelView !== true) return undefined;

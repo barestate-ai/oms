@@ -30,7 +30,11 @@ test('hosted primer uses a single focused lookup and passes the guidance to the 
     return { text: 'Use the token program that owns the mint.' };
   });
   try {
-    const primer = await knowledgePrimer({ endpoint: mock.endpoint, token: TOKEN, guidance: true }, '/nonexistent', 'Create an ATA');
+    const primer = await knowledgePrimer(
+      { endpoint: mock.endpoint, token: TOKEN, guidance: true },
+      '/nonexistent',
+      'Create an ATA',
+    );
     assert.deepEqual(calls, ['search_docs']);
     assert.match(primer.text, /Use the token program that owns the mint/);
     assert.equal(primer.fallback, undefined);

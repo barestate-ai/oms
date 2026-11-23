@@ -390,7 +390,9 @@ export class Conversation {
     if (KNOWLEDGE_TOOL_NAMES.includes(call.name)) {
       const text = result.isError ? resultText(result.content, this.mask(call.id)) : '';
       call.text = result.isError
-        ? (/^Solana knowledge rate limit reached\.(?: Try again in \d{1,4} minute\(s\)\.)?$/.test(text) ? text : 'Solana knowledge unavailable.')
+        ? /^Solana knowledge rate limit reached\.(?: Try again in \d{1,4} minute\(s\)\.)?$/.test(text)
+          ? text
+          : 'Solana knowledge unavailable.'
         : `fetched Solana knowledge: ${knowledgeTopic(call.args)}`;
       this.touch(entry);
       return;

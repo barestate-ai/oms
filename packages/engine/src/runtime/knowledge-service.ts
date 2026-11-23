@@ -124,9 +124,14 @@ export function knowledgeTopic(input: unknown): string {
 
 export function hideKnowledgeBlocks(text: string): string {
   return text
-    .replace(/(?:\[Untrusted reference data[^\n]*\]\n)?<untrusted-knowledge tool="([^"]+)">[\s\S]*?(?:<\/untrusted-knowledge>|$)/g,
-      (block, tool: string) => KNOWLEDGE_TOOL_NAMES.includes(tool) ? 'fetched Solana knowledge: Solana' : block)
-    .replace(/<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|$)/g, 'fetched Solana knowledge: error');
+    .replace(
+      /(?:\[Untrusted reference data[^\n]*\]\n)?<untrusted-knowledge tool="([^"]+)">[\s\S]*?(?:<\/untrusted-knowledge>|$)/g,
+      (block, tool: string) => (KNOWLEDGE_TOOL_NAMES.includes(tool) ? 'fetched Solana knowledge: Solana' : block),
+    )
+    .replace(
+      /<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|$)/g,
+      'fetched Solana knowledge: error',
+    );
 }
 
 /** UTF-8 safe truncation to a byte budget. */
@@ -469,10 +474,16 @@ export async function knowledgePrimer(
     try {
       const result = await fetchMcpText(config, 'search_docs', { query, limit: 3 });
       if (!result.isError && result.text.trim()) {
-        const guidance = wrapUntrusted('search_docs', result.text, KNOWLEDGE_PRIMER_LIMIT - Buffer.byteLength(KNOWLEDGE_RULE) - 2);
+        const guidance = wrapUntrusted(
+          'search_docs',
+          result.text,
+          KNOWLEDGE_PRIMER_LIMIT - Buffer.byteLength(KNOWLEDGE_RULE) - 2,
+        );
         return { text: `${KNOWLEDGE_RULE}\n\n${guidance}`, injection: 'search-v0' };
       }
-    } catch { /* the task can start without guidance */ }
+    } catch {
+      /* the task can start without guidance */
+    }
     return { text: KNOWLEDGE_RULE, injection: 'search-v0', fallback: 'Hosted Solana guidance unavailable' };
   }
   let fallback = '';
@@ -586,6 +597,8 @@ export function accountKnowledgeSource(inputs: {
     const { OMS_KNOWLEDGE_URL: endpoint, OMS_KNOWLEDGE_TOKEN: token } = inputs.env ?? process.env;
     if (endpoint && token) return { endpoint, token };
     const credential = inputs.account();
-    return credential ? { endpoint: `${credential.origin}/api/knowledge/mcp`, token: credential.token, guidance: true } : undefined;
+    return credential
+      ? { endpoint: `${credential.origin}/api/knowledge/mcp`, token: credential.token, guidance: true }
+      : undefined;
   };
 }

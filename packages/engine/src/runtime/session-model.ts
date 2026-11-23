@@ -204,14 +204,24 @@ export async function createSessionModel(
     const credential = telemetryCredential?.();
     const stream = await originalSdkStream(model, context, streamOptions);
     if (credential?.origin === 'https://barestate.xyz/oms') {
-      void stream.result().then((message) => {
-        if (message.stopReason === 'aborted') return;
-        return fetch(credential.origin + '/api/telemetry/model', {
-          method: 'POST', redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(2_000),
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.token}` },
-          body: JSON.stringify({ provider: model.provider, model: model.id, outcome: message.stopReason === 'error' ? 'error' : 'ok' }),
-        }).then((response) => response.body?.cancel());
-      }).catch(() => {});
+      void stream
+        .result()
+        .then((message) => {
+          if (message.stopReason === 'aborted') return;
+          return fetch(credential.origin + '/api/telemetry/model', {
+            method: 'POST',
+            redirect: 'error',
+            credentials: 'omit',
+            signal: AbortSignal.timeout(2_000),
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.token}` },
+            body: JSON.stringify({
+              provider: model.provider,
+              model: model.id,
+              outcome: message.stopReason === 'error' ? 'error' : 'ok',
+            }),
+          }).then((response) => response.body?.cancel());
+        })
+        .catch(() => {});
     }
     return stream;
   };

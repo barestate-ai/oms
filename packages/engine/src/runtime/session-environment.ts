@@ -126,15 +126,22 @@ export function openConversation(
   manager.appendMessage = (message) => {
     if (message.role === 'toolResult' && KNOWLEDGE_TOOL_NAMES.includes(message.toolName)) {
       const { details: _details, ...safe } = message;
-      return append({ ...safe, content: [{ type: 'text', text: message.isError
-        ? 'Solana knowledge unavailable' : 'fetched Solana knowledge: Solana' }] });
+      return append({
+        ...safe,
+        content: [
+          { type: 'text', text: message.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge: Solana' },
+        ],
+      });
     }
     if (message.role === 'assistant' || message.role === 'toolResult' || message.role === 'user') {
       if (typeof message.content === 'string') {
-        return append(message.role === 'user' ? { ...message, content: hideKnowledgeBlocks(message.content) } : message);
+        return append(
+          message.role === 'user' ? { ...message, content: hideKnowledgeBlocks(message.content) } : message,
+        );
       }
-      const content = message.content.map((part) => part.type === 'text'
-        ? { ...part, text: hideKnowledgeBlocks(part.text) } : part);
+      const content = message.content.map((part) =>
+        part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text) } : part,
+      );
       return append({ ...message, content } as typeof message);
     }
     return append(message);
