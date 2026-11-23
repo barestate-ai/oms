@@ -45,6 +45,7 @@ export {
   wrapUntrusted,
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_TOOL_NAMES,
+  OMS_KNOWLEDGE_GATEWAY,
   hideKnowledgeBlocks,
   knowledgeTopic,
   type KnowledgeConfig,
