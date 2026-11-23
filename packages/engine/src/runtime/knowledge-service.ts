@@ -135,7 +135,7 @@ export function hideKnowledgeBlocks(text: string, includeUnclosed = false): stri
       if (tool !== 'solana_diagnosis') return block;
       // The outer diagnosis stays framed when its size limit cuts through an inner excerpt.
       return block.replace(
-        /<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|(?=<\/untrusted-knowledge>)|$)/g,
+        /<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|(?=(?:\n\[truncated\])?\n?<\/untrusted-knowledge>)|$)/g,
         'fetched Solana knowledge: error',
       );
     })

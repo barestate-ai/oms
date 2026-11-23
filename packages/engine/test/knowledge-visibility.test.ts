@@ -62,7 +62,7 @@ test('a diagnosis keeps its visible context when a private error excerpt is cut 
   const safe = hideKnowledgeBlocks(diagnosis);
   assert.match(safe, /Instruction 3 failed/);
   assert.match(safe, /fetched Solana knowledge: error/);
-  assert.match(safe, /<\/untrusted-knowledge>/);
+  assert.match(safe, /\[truncated\]\n<\/untrusted-knowledge>/);
   assert.doesNotMatch(safe, /synthetic private/);
 });
 
