@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import type { ExtensionFactory, SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { KNOWLEDGE_RULE } from './system-prompt.ts';
 
@@ -134,6 +134,29 @@ export function hideKnowledgeBlocks(text: string, includeUnclosed = false): stri
       KNOWLEDGE_TOOL_NAMES.includes(tool) ? 'fetched Solana knowledge: Solana' : block,
     )
     .replace(excerpt, 'fetched Solana knowledge: error');
+}
+
+/** Persist a safe copy and let the running model keep its reference context. */
+export function hideKnowledgeInSession(manager: SessionManager): SessionManager {
+  const append = manager.appendMessage.bind(manager);
+  manager.appendMessage = (message) => {
+    if (message.role === 'toolResult' && KNOWLEDGE_TOOL_NAMES.includes(message.toolName)) {
+      const { details: _details, ...safe } = message;
+      const text = message.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge: Solana';
+      return append({ ...safe, content: [{ type: 'text', text }] });
+    }
+    if (message.role !== 'assistant' && message.role !== 'toolResult' && message.role !== 'user') {
+      return append(message);
+    }
+    if (typeof message.content === 'string') {
+      return append(message.role === 'user' ? { ...message, content: hideKnowledgeBlocks(message.content) } : message);
+    }
+    const content = message.content.map((part) =>
+      part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text, message.role === 'assistant') } : part,
+    );
+    return append({ ...message, content } as typeof message);
+  };
+  return manager;
 }
 
 /** UTF-8 safe truncation to a byte budget. */

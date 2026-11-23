@@ -15,6 +15,8 @@ import {
   accountKnowledgeSource,
   createKnowledgeExtension,
   createKnowledgeVisibility,
+  hideKnowledgeBlocks,
+  hideKnowledgeInSession,
   KNOWLEDGE_TOOL_NAMES,
   type KnowledgeConfig,
 } from '../src/runtime/knowledge-service.ts';
@@ -24,6 +26,27 @@ import { knowledgeHint } from '../src/runtime/session.ts';
 const ACCOUNT = 'synthetic-account-token-7c1d';
 const ENV_TOKEN = 'synthetic-env-token-91ab';
 const HINT = /look the fact up with search_docs/;
+
+test('saved sessions retain literal prompt tags and omit private tool results', () => {
+  const manager = hideKnowledgeInSession(SessionManager.inMemory(process.cwd()));
+  const prompt = 'Explain the syntax <untrusted-knowledge tool="search_docs"> and <solana-knowledge-excerpt>';
+  manager.appendMessage({ role: 'user', content: prompt, timestamp: 1 });
+  manager.appendMessage({
+    role: 'toolResult',
+    toolCallId: 'lookup',
+    toolName: 'search_docs',
+    content: [{ type: 'text', text: 'private lookup result' }],
+    details: { reference: 'private lookup metadata' },
+    isError: false,
+    timestamp: 2,
+  });
+  const saved = JSON.stringify(manager.getEntries());
+  assert.match(saved, /Explain the syntax.*and <solana-knowledge-excerpt>/);
+  assert.match(saved, /fetched Solana knowledge: Solana/);
+  assert.doesNotMatch(saved, /private lookup/);
+  assert.equal(hideKnowledgeBlocks(prompt), prompt);
+  assert.equal(hideKnowledgeBlocks(prompt, true), 'Explain the syntax fetched Solana knowledge: Solana');
+});
 
 async function gateway(status = 200) {
   const calls: Array<{ path: string; auth: string | undefined; tool: string }> = [];

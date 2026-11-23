@@ -27,7 +27,7 @@ import { taskRoot, type SessionRoot } from './session-root.ts';
 import { verifierBackendOptions } from './task-definition.ts';
 import { taskContext, type TaskContext } from './task-context.ts';
 import { openBudgetJournal } from './usage.ts';
-import { hideKnowledgeBlocks, KNOWLEDGE_TOOL_NAMES } from './knowledge-service.ts';
+import { hideKnowledgeInSession } from './knowledge-service.ts';
 import { createVerifierBackend } from './verifier-backend.ts';
 
 /** The pinned requirements and their independent checks; only a pinned task session has them. */
@@ -121,31 +121,7 @@ export function openConversation(
   const executionMode = options.executionMode ?? 'bounded';
   privateDirectory(dirname(root.sessionsDir));
   privateDirectory(root.sessionsDir);
-  const manager = openSessionManager(options, root);
-  const append = manager.appendMessage.bind(manager);
-  manager.appendMessage = (message) => {
-    if (message.role === 'toolResult' && KNOWLEDGE_TOOL_NAMES.includes(message.toolName)) {
-      const { details: _details, ...safe } = message;
-      return append({
-        ...safe,
-        content: [
-          { type: 'text', text: message.isError ? 'Solana knowledge unavailable' : 'fetched Solana knowledge: Solana' },
-        ],
-      });
-    }
-    if (message.role === 'assistant' || message.role === 'toolResult' || message.role === 'user') {
-      if (typeof message.content === 'string') {
-        return append(
-          message.role === 'user' ? { ...message, content: hideKnowledgeBlocks(message.content) } : message,
-        );
-      }
-      const content = message.content.map((part) =>
-        part.type === 'text' ? { ...part, text: hideKnowledgeBlocks(part.text) } : part,
-      );
-      return append({ ...message, content } as typeof message);
-    }
-    return append(message);
-  };
+  const manager = hideKnowledgeInSession(openSessionManager(options, root));
   const sessionId = manager.getSessionId();
   const budgetJournal = (life.budgetJournal = openBudgetJournal({
     path: join(root.sessionsDir, `${sessionId}.budget.jsonl`),
