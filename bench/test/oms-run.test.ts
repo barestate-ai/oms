@@ -9,7 +9,7 @@ import { parseContender, SUBSCRIPTION_MODELS } from '../src/matrix.ts';
 
 const OMS = 'oms3-web:gpt-sol';
 
-test('the OMS cell needs the oms-search stack and refuses bring-your-own search keys', () => {
+test('the OMS cell needs the oms-search stack and refuses bring-your-own search and fetch keys', () => {
   assert.throws(() => omsWebArgs(OMS, {}), /OMS_SEARCH_TOKEN/);
   assert.throws(
     () => omsWebArgs(OMS, { OMS_SEARCH_TOKEN: 't', OMS_SEARCH_URL: 'http://search.example.com' }),
@@ -18,6 +18,11 @@ test('the OMS cell needs the oms-search stack and refuses bring-your-own search 
   assert.throws(
     () => omsWebArgs(OMS, { OMS_SEARCH_TOKEN: 't', OMS_SEARCH_URL: 'https://search.example.com', EXA_API_KEY: 'k' }),
     /EXA_API_KEY/,
+  );
+  assert.throws(
+    () =>
+      omsWebArgs(OMS, { OMS_SEARCH_TOKEN: 't', OMS_SEARCH_URL: 'https://search.example.com', FIRECRAWL_API_KEY: 'k' }),
+    /FIRECRAWL_API_KEY/,
   );
   assert.throws(
     () =>

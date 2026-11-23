@@ -36,7 +36,7 @@ export function onlineStamp(contender: string, args: readonly string[]): Pick<Ru
 }
 
 /**
- * `--web` for the online OMS cell, on the hosted oms-search stack only: a bring-your-own search key in the environment would add
+ * `--web` for the online OMS cell, on the hosted oms-search stack only: a bring-your-own search or fetch key in the environment would add
  * a backend the cell's label does not name, and a missing or non-loopback/https OMS_SEARCH_URL would leave web_search without one.
  * Credentials come from OMS_SEARCH_URL and OMS_SEARCH_TOKEN.
  */
@@ -50,6 +50,7 @@ export function omsWebArgs(contender: string, env: NodeJS.ProcessEnv = process.e
   const byok = SEARCH_BACKENDS.filter((backend) => backend.name !== 'oms' && env[backend.key]).map(
     (backend) => backend.key,
   );
+  if (env.FIRECRAWL_API_KEY) byok.push('FIRECRAWL_API_KEY');
   const provider = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase();
   if (provider && provider !== 'auto' && provider !== 'oms') byok.push('OMS_SEARCH_PROVIDER');
   if (byok.length) throw new Error(`${contender} searches through oms-search only; unset ${byok.join(', ')}`);
