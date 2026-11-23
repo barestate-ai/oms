@@ -5,6 +5,7 @@ import {
   CLAUDE_CODE_CONTEXT_OVERFLOW,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
+  knowledgeRequestMessages,
   measuredInputBound,
   modelReadiness,
   parseRunRecord,
@@ -150,10 +151,10 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
       // instruction — not the catalog window, or a run stops early while a real request fits.
       const inputBound = async (pending: string) =>
         measuredInputBound(current.session.model!, {
-          messages: [
+          messages: knowledgeRequestMessages(current.session.sessionManager, [
             ...(await current.session.agent.convertToLlm(current.session.agent.state.messages)),
             { role: 'user', content: pending, timestamp: Date.now() },
-          ],
+          ]),
         });
       for (let turn = 0; ; turn++) {
         observe();

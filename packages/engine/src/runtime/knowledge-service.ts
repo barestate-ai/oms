@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AgentSession, ExtensionFactory, SessionManager } from '@earendil-works/pi-coding-agent';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { Type } from 'typebox';
 import { KNOWLEDGE_RULE } from './system-prompt.ts';
 
@@ -162,15 +163,20 @@ export async function promptWithKnowledge(
 
 /** Pi builds each request from history, so restore references only on the provider request. */
 export function attachKnowledgeContext({ agent, sessionManager }: AgentSession): void {
-  const references = liveReferences.get(sessionManager);
-  if (!references) return;
+  if (!liveReferences.has(sessionManager)) return;
   const prepare = agent.prepareRequest;
   agent.prepareRequest = async (request, signal) => {
     const prepared = await prepare?.call(agent, request, signal);
     const context = prepared?.context ?? request.context;
-    const messages = context.messages.map((message) => references.get(message) ?? message);
+    const messages = knowledgeRequestMessages(sessionManager, context.messages);
     return { ...prepared, context: { ...context, messages } };
   };
+}
+
+/** Use the same messages for dispatch and headless budget preflight. */
+export function knowledgeRequestMessages(manager: SessionManager, messages: AgentMessage[]): AgentMessage[] {
+  const references = liveReferences.get(manager);
+  return references ? messages.map((message) => references.get(message) ?? message) : messages;
 }
 
 /** Persist a safe copy and keep lookup text in memory while its history entry is live. */
