@@ -348,9 +348,17 @@ test(
     const f = await createHarnessFixture({ binary, image, forwarderImage });
     let runs = 0;
     const run = async (inject: boolean, toolCalls: Array<[string, Record<string, string>]> = []) => {
-      f.faux.setResponses([
+      const replies = [
         ...toolCalls.map(([name, args]) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: 'toolUse' })),
         fauxAssistantMessage('Unable to complete.'),
+      ];
+      let firstRequest = '';
+      f.faux.setResponses([
+        (context) => {
+          firstRequest = JSON.stringify(context.messages);
+          return replies[0]!;
+        },
+        ...replies.slice(1),
       ]);
       const jsonOut = join(f.base, `record-${runs++}.json`);
       await runHarnessCommand(
@@ -387,6 +395,7 @@ test(
       const record = JSON.parse(readFileSync(jsonOut, 'utf8'));
       return {
         prompt: record.identities.prompt as string,
+        firstRequest,
         transcript: readFileSync(record.transcriptPath, 'utf8'),
         injection: record.injection as unknown,
         knowledgeBuilt: record.knowledgeBuilt as unknown,
@@ -398,8 +407,9 @@ test(
       const omsAgain = await run(false);
       const oms3 = await run(true);
       assert.equal(omsAgain.prompt, oms.prompt, 'control: same harness, same identity');
-      assert.ok(oms3.transcript.includes('primer-marker'), 'the primer reached the first user turn');
-      assert.equal(oms.transcript.includes('primer-marker'), false);
+      assert.match(oms3.firstRequest, /primer-marker/);
+      assert.doesNotMatch(oms3.transcript, /primer-marker/);
+      assert.doesNotMatch(oms.firstRequest, /primer-marker/);
       assert.ok(
         oms.transcript.includes('task_status (trusted, already read'),
         'the first turn carries the task status, so the model needs no tool call for it',
@@ -407,7 +417,7 @@ test(
       assert.notEqual(oms3.prompt, oms.prompt);
       assert.equal(oms.injection, undefined);
       assert.equal(oms3.injection, 'search-v0', 'an old Worker gets the search-only primer');
-      assert.equal(oms3.transcript.includes('topic-card-marker'), false);
+      assert.doesNotMatch(oms3.firstRequest, /topic-card-marker/);
       workerV2 = true;
       scopedTo.length = 0;
       const topics = await run(true, [
@@ -419,8 +429,9 @@ test(
       assert.equal(topics.injection, 'topics-v1');
       assert.equal(topics.knowledgeBuilt, 'Built 2026-11-07T00:00:00Z.', 'the record names the corpus version');
       assert.equal(oms.knowledgeBuilt, undefined);
-      assert.ok(topics.transcript.includes('topic-card-marker'), 'the topic card reached the first user turn');
-      assert.ok(topics.transcript.includes('primer-marker'), 'and so did the topic-scoped hits');
+      assert.match(topics.firstRequest, /topic-card-marker/);
+      assert.match(topics.firstRequest, /primer-marker/);
+      assert.doesNotMatch(topics.transcript, /topic-card-marker|primer-marker/);
       assert.deepEqual(
         scopedTo,
         ['kit-client', undefined],

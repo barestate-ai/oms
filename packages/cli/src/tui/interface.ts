@@ -526,9 +526,8 @@ export async function runOmsInterface(
   const art = new StartupArt(Math.random, 44);
   // The picture shows on the first launch, or when /art turns it on.
   let artMode = options.startupArt ?? (options.firstRun ? 'auto' : 'off');
-  // Chosen from the environment (after the one Kitty graphics query over SSH) and again when /art changes the setting.
+  // Rechecked after probing for native graphics and when /art changes the setting.
   let artShown = artShow(artMode, process.env);
-  /** The image tier draws the mosaic until the picture is converted for Kitty graphics. */
   const loadArtImage = () => (artShown === 'image' ? art.loadImage().catch(() => {}) : Promise.resolve());
   let artViewport = 0,
     artHidden = 0;
@@ -781,27 +780,64 @@ export async function runOmsInterface(
     renderer.setFocus(pane.input);
     requestRender();
   }
-  function openSetup(mode: 'model' | 'connect' | 'theme' | 'settings', query = '', draft?: string): void {
+  function setupModelLabel(): string | undefined {
+    const model = harness.session.model;
+    const choice = selectedModelChoice();
+    return model && hasModelConfiguration(model) && choice?.configured && choice.selectable !== false
+      ? shortModelName(model.id)
+      : undefined;
+  }
+  function setupSearchLabel(): string | undefined {
+    if (!harness.web?.enabled() || !harness.web.search) return undefined;
+    const choices = harness.web.search.choices();
+    const selected = choices.find((choice) => choice.current);
+    if (selected && selected.id !== 'auto') return selected.label;
+    return 'Optional';
+  }
+  function openSetup(
+    mode: 'model' | 'connect' | 'theme' | 'settings' | 'search' | 'welcome',
+    query = '',
+    draft?: string,
+    returnToWelcome = false,
+  ): void {
     if (closing) return;
-    if ((mode === 'model' || mode === 'connect') && busy()) {
+    if (mode !== 'settings' && mode !== 'theme' && busy()) {
       setNotice('Wait for the current turn to finish');
       clearDraft(draft);
       return;
     }
     setup?.dispose();
+    const close = returnToWelcome ? () => openSetup('welcome') : closeSetup;
+    const webSearch = harness.web?.search;
     const shared = {
       theme: () => theme!,
       rows: () => terminal.rows,
       bodyRows: () => setupPanel.bodyRows(),
       render: requestRender,
-      close: closeSetup,
+      close,
       notice: toast,
       warn: setNotice,
     };
     const pane =
       mode === 'settings'
         ? new HarnessSettingsPane(harness, shared)
-        : new SetupPane(harness, { ...shared, mode, query, selectTheme: changeTheme, previewTheme });
+        : new SetupPane(harness, {
+            ...shared,
+            mode,
+            query,
+            webSearch,
+            ...(mode === 'welcome'
+              ? {
+                  welcome: {
+                    model: setupModelLabel(),
+                    search: setupSearchLabel(),
+                    open: (step: 'model' | 'search') => openSetup(step, '', undefined, true),
+                  },
+                }
+              : {}),
+            selectTheme: changeTheme,
+            previewTheme,
+          });
     if (draft !== undefined) clearDraft(draft);
     notice = '';
     showPanel(pane);
@@ -2292,6 +2328,7 @@ export async function runOmsInterface(
     titleSaved = true;
     colorCursor();
     syncActivity();
+    if (options.firstRun && !setupModelLabel()) openSetup('welcome');
     if (options.firstRun) options.onFirstRunShown?.();
     // Running work and a bounded budget's wall clock change with time; nothing else on screen does.
     clock = setInterval(() => {

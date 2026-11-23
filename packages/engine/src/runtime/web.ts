@@ -3,10 +3,11 @@ import { Agent, request } from 'node:https';
 import { BlockList, isIP, type LookupFunction } from 'node:net';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { fetchMcpText, wrapUntrusted } from './knowledge-service.ts';
+import { fetchMcpText, parseMcpText, wrapUntrusted } from './knowledge-service.ts';
 import { createSourceFetch, SOURCE_LIMITS, type SourceLimits } from './source-fetch.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isMissing, readPrivateJson, writePrivateJson } from '../workspace/storage.ts';
 
 /**
  * Web access for normal OMS sessions: web_search (BYOK backends), web_fetch and the official Solana MCP doc tools.
@@ -16,6 +17,8 @@ import { join } from 'node:path';
 export interface WebConfig {
   /** Initial state; `/web on|off` flips it for the session. */
   enabled: boolean;
+  /** Private OMS agent directory for saved search preferences and keys. */
+  agentRoot?: string;
   /** Where BYOK keys are read; defaults to the host process environment. */
   env?: Record<string, string | undefined>;
   fetch?: typeof fetch;
@@ -26,8 +29,6 @@ export interface WebConfig {
   sourcesDir?: string;
   sourceLimits?: Partial<SourceLimits>;
   solanaMcpUrl?: string;
-  /** The signed-in OMS account, if any: without OMS_SEARCH_URL/OMS_SEARCH_TOKEN the oms backend uses its gateway route. */
-  account?: () => { origin: string; token: string } | undefined;
 }
 /**
  * Call counts, plus the backend that answered each successful web_search / web_fetch. An oms-search answer is named by
@@ -46,10 +47,55 @@ export interface WebControls {
   enabled(): boolean;
   setEnabled(on: boolean): void;
   usage(): WebUsage;
+  search: WebSearchControls;
+}
+
+export interface WebSearchChoice {
+  id: string;
+  label: string;
+  keySource?: 'environment' | 'saved';
+  keyless?: boolean;
+  needsKey: boolean;
+  current: boolean;
+}
+export interface WebSearchControls {
+  choices(): WebSearchChoice[];
+  /** An explicit launch environment setting takes precedence over saved preferences. */
+  override: string | undefined;
+  select(provider: string, options?: { key?: string; keyless?: boolean }): void;
+}
+
+interface SearchPreferences {
+  provider: string;
+  keyless: boolean;
+  keys: Record<string, string>;
+}
+
+const searchKey = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^[\x21-\x7e]{1,4096}$/.test(value.trim()) ? value.trim() : undefined;
+
+function readSearchPreferences(path?: string): SearchPreferences {
+  const defaults: SearchPreferences = { provider: 'auto', keyless: false, keys: {} };
+  if (!path) return defaults;
+  try {
+    const saved = readPrivateJson(path) as Partial<SearchPreferences> | null;
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw new Error('Invalid search settings');
+    if (SEARCH_BACKENDS.some((backend) => backend.name === saved.provider)) defaults.provider = saved.provider!;
+    defaults.keyless = saved.provider === 'tinyfish' && saved.keyless === true;
+    for (const backend of SEARCH_BACKENDS) {
+      const key = searchKey(saved.keys?.[backend.name]);
+      if (backend.name !== 'oms' && key) defaults.keys[backend.name] = key;
+    }
+    return defaults;
+  } catch (error) {
+    if (isMissing(error)) return defaults;
+    throw error;
+  }
 }
 
 export const WEB_RESULT_LIMIT = 16_000;
 const WEB_FETCH_BYTE_LIMIT = 2_000_000;
+const TINYFISH_SEARCH_BYTE_LIMIT = 256_000;
 const WEB_TIMEOUT_MS = 20_000;
 const SOURCE_TIMEOUT_MS = 120_000;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
@@ -98,8 +144,10 @@ interface Hit {
 }
 interface Backend {
   name: string;
-  key: string;
+  labelText: string;
+  key?: string;
   request(key: string, query: string, count: number, base?: string): { url: string; init: RequestInit };
+  readBody?(response: Response): Promise<unknown>;
   parse(body: any): Hit[];
   /** Label for the usage record; defaults to the backend name. */
   label?(body: any): string;
@@ -124,12 +172,98 @@ const omsLabel = (answered: unknown) =>
 const joined = (parts: unknown) =>
   Array.isArray(parts) ? parts.filter((part) => typeof part === 'string').join(' … ') : '';
 
-/** Selection order: OMS's own oms-search first, then BYOK. Request shapes from each provider's API reference (links in CHANGELOG / progress notes). */
-export const SEARCH_BACKENDS: Backend[] = [
-  // oms-search (packages/search-service): SearXNG + Firecrawl + TinyFish fused server-side, same bearer scheme as the knowledge service.
-  // base: OMS_SEARCH_URL (https: or loopback http:), else the signed-in account's gateway route; see omsEndpoint.
+function tinyFishHits(body: { results?: unknown[] } | null): Hit[] {
+  if (!Array.isArray(body?.results)) throw new Error('Invalid TinyFish results');
+  return body.results.flatMap((value) => {
+    const hit = value as Partial<Hit> | null;
+    if (typeof hit?.url !== 'string' || !/^https?:\/\//i.test(hit.url)) return [];
+    return [
+      {
+        title: typeof hit.title === 'string' ? hit.title : '',
+        url: hit.url,
+        snippet: typeof hit.snippet === 'string' ? hit.snippet : '',
+      },
+    ];
+  });
+}
+
+const TINYFISH_KEYLESS: Backend = {
+  name: 'tinyfish',
+  labelText: 'TinyFish',
+  request: (_key, query) => ({
+    url: 'https://agent.tinyfish.ai/mcp',
+    init: json(
+      { accept: 'application/json, text/event-stream', 'x-tinyfish-access-mode': 'keyless' },
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search', arguments: { query } } },
+    ),
+  }),
+  async readBody(response) {
+    const eventStream = response.headers.get('content-type')?.includes('text/event-stream');
+    const body = eventStream
+      ? await readTinyFishEvent(response)
+      : await readBoundedText(response, TINYFISH_SEARCH_BYTE_LIMIT);
+    const { text, isError } = parseMcpText(body, 'TinyFish');
+    if (isError) throw new Error('TinyFish search failed');
+    return JSON.parse(text);
+  },
+  parse: tinyFishHits,
+};
+
+async function* readBoundedChunks(response: Response, limit: number): AsyncGenerator<Uint8Array> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) throw new Error('Search response exceeded its size limit');
+      yield value;
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+async function readBoundedText(response: Response, limit: number): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of readBoundedChunks(response, limit)) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** A stateless MCP call can receive notifications before the response and leave the SSE connection open. */
+async function readTinyFishEvent(response: Response): Promise<string> {
+  const decoder = new TextDecoder();
+  // An SSE line can end in CRLF, CR, or LF. Count CRLF as one line ending.
+  const blankLine = /(?:\r\n|\r(?!\n)|(?<!\r)\n){2}/;
+  let buffer = '';
+  for await (const chunk of readBoundedChunks(response, TINYFISH_SEARCH_BYTE_LIMIT)) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let boundary: RegExpExecArray | null;
+    while ((boundary = blankLine.exec(buffer))) {
+      const data = buffer
+        .slice(0, boundary.index)
+        .split(/\r\n|[\r\n]/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n');
+      buffer = buffer.slice(boundary.index + boundary[0].length);
+      if (!data) continue;
+      const rpc = JSON.parse(data);
+      if (rpc?.id === 1 && ('result' in rpc || 'error' in rpc)) return data;
+    }
+  }
+  throw new Error('Missing TinyFish search response');
+}
+
+/** Automatic selection tries configured providers in this order. */
+export const SEARCH_BACKENDS: Array<Backend & { key: string }> = [
+  // Explicit OMS_SEARCH_URL and OMS_SEARCH_TOKEN are used by the benchmark stack.
   {
     name: 'oms',
+    labelText: 'OMS search service',
     key: 'OMS_SEARCH_TOKEN',
     request: (key, query, count, base) => ({
       url: `${base}/search`,
@@ -143,6 +277,7 @@ export const SEARCH_BACKENDS: Backend[] = [
   },
   {
     name: 'exa',
+    labelText: 'Exa',
     key: 'EXA_API_KEY',
     request: (key, query, count) => ({
       url: 'https://api.exa.ai/search',
@@ -155,53 +290,16 @@ export const SEARCH_BACKENDS: Backend[] = [
         snippet: joined(r.highlights) || (r.text ?? ''),
       })),
   },
-  {
-    name: 'firecrawl',
-    key: 'FIRECRAWL_API_KEY',
-    request: (key, query, count) => ({
-      url: 'https://api.firecrawl.dev/v2/search',
-      init: json({ authorization: `Bearer ${key}` }, { query, limit: count }),
-    }),
-    parse: (body) =>
-      (body?.data?.web ?? []).map((r: any) => ({
-        title: r.title ?? '',
-        url: r.url ?? '',
-        snippet: r.description ?? '',
-      })),
-  },
-  {
-    name: 'tavily',
-    key: 'TAVILY_API_KEY',
-    request: (key, query, count) => ({
-      url: 'https://api.tavily.com/search',
-      init: json({ authorization: `Bearer ${key}` }, { query, max_results: count }),
-    }),
-    parse: (body) =>
-      (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: r.content ?? '' })),
-  },
-  {
-    name: 'parallel',
-    key: 'PARALLEL_API_KEY',
-    request: (key, query, count) => ({
-      url: 'https://api.parallel.ai/v1/search',
-      init: json(
-        { 'x-api-key': key },
-        { objective: query, search_queries: [query], advanced_settings: { max_results: count } },
-      ),
-    }),
-    parse: (body) =>
-      (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: joined(r.excerpts) })),
-  },
   // shortcut: TinyFish has no result-count parameter (one page, ~10 results); we slice locally.
   {
     name: 'tinyfish',
+    labelText: 'TinyFish',
     key: 'TINYFISH_API_KEY',
     request: (key, query) => ({
       url: `https://api.search.tinyfish.ai?query=${encodeURIComponent(query)}`,
       init: { method: 'GET', headers: { 'x-api-key': key } },
     }),
-    parse: (body) =>
-      (body?.results ?? []).map((r: any) => ({ title: r.title ?? '', url: r.url ?? '', snippet: r.snippet ?? '' })),
+    parse: tinyFishHits,
   },
 ];
 
@@ -215,7 +313,7 @@ export function retryAfterMs(header: string | null, now: number): number {
 }
 
 const PAYWALL_CODE = /^[A-Z_]{1,64}$/;
-const BYOK_SEARCH_KEYS = 'EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY';
+const BYOK_SEARCH_KEYS = 'EXA_API_KEY or TINYFISH_API_KEY';
 const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** `Dec 1` in UTC from an ms epoch. */
 const utcMonthDay = (ms: number) => {
@@ -247,23 +345,8 @@ const billingUrl = (raw: unknown): raw is string => {
  */
 async function paywallDetails(response: Response): Promise<PaywallDetails> {
   try {
-    const reader = response.body?.getReader();
-    if (!reader) return {};
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done || !value) break;
-      size += value.byteLength;
-      if (size > 4_096) {
-        await reader.cancel().catch(() => {});
-        return {};
-      }
-      chunks.push(value);
-    }
-    reader.releaseLock();
     const error = (
-      JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+      JSON.parse(await readBoundedText(response, 4_096)) as {
         error?: { code?: unknown; resetsAt?: unknown; billing?: unknown };
       }
     )?.error;
@@ -285,7 +368,7 @@ async function paywallDetails(response: Response): Promise<PaywallDetails> {
  * the server's message. The advice is always the same two options: a BYOK key, or the billing page the refusal names.
  */
 function paywallText({ code, resetsAt, billing }: PaywallDetails): string {
-  const advice = `set one of ${BYOK_SEARCH_KEYS}${billing ? ` or go to ${billing}` : ''}`;
+  const advice = `set ${BYOK_SEARCH_KEYS}${billing ? ` or go to ${billing}` : ''}`;
   if (code === 'SEARCH_LIMIT_REACHED' && resetsAt !== undefined)
     return `this month's free hosted searches are used up (reset ${utcMonthDay(resetsAt)}) — ${advice} to keep searching`;
   return `hosted search is unavailable for this account — ${advice}`;
@@ -640,18 +723,69 @@ export function createWeb(config: WebConfig): WebControls {
   const env = config.env ?? process.env;
   const now = config.now ?? Date.now;
   const doFetch = config.fetch ?? fetch;
-  const bench = env.OMS_SEARCH_TOKEN && omsBase(env.OMS_SEARCH_URL);
-  /** The bench stack when OMS_SEARCH_URL/OMS_SEARCH_TOKEN are set, else the gateway route of the account signed in right now. */
-  const omsEndpoint = (): { base: string; token: string } | undefined => {
-    if (bench) return { base: bench, token: env.OMS_SEARCH_TOKEN! };
-    const account = config.account?.();
-    const gateway = account && omsBase(`${account.origin}/search/v1`);
-    return gateway ? { base: gateway, token: account.token } : undefined;
+  const benchToken = searchKey(env.OMS_SEARCH_TOKEN);
+  const benchBase = omsBase(env.OMS_SEARCH_URL);
+  const bench = benchToken && benchBase ? { base: benchBase, token: benchToken } : undefined;
+  const availableBackends = SEARCH_BACKENDS.filter((backend) => backend.name !== 'oms' || bench);
+  const override = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase() || undefined;
+  const unsupportedOverride =
+    override && override !== 'auto' && !SEARCH_BACKENDS.some((backend) => backend.name === override);
+  const path = config.agentRoot && join(config.agentRoot, 'web-search.json');
+  let settings: SearchPreferences;
+  try {
+    settings = readSearchPreferences(path);
+  } catch {
+    // Search settings should not block the agent. Save will surface the error and preserve the file.
+    settings = readSearchPreferences();
+  }
+  const current = () => override ?? (settings.provider === 'oms' && !bench ? 'auto' : settings.provider);
+  const envKey = (backend: Backend) => (backend.key ? searchKey(env[backend.key]) : undefined);
+  const getKey = (backend: Backend, saved = settings) => envKey(backend) ?? saved.keys[backend.name];
+  const backends = () => {
+    const selected = SEARCH_BACKENDS.find((backend) => backend.name === current());
+    if (selected) {
+      if (selected.name === 'tinyfish' && ((!override && settings.keyless) || !getKey(selected)))
+        return [TINYFISH_KEYLESS];
+      return [selected];
+    }
+    return availableBackends.filter((backend) => (backend.name === 'oms' ? bench : getKey(backend)));
   };
-  const backends = SEARCH_BACKENDS.filter((backend) =>
-    backend.name === 'oms' ? bench || config.account : env[backend.key],
-  );
-  const blockedUntil = new Map<string, number>();
+  const searchControls: WebSearchControls = {
+    override,
+    choices: () => [
+      { id: 'auto', label: 'Automatic', current: current() === 'auto', needsKey: false },
+      ...availableBackends.map((backend): WebSearchChoice => {
+        const keySource = envKey(backend) ? 'environment' : settings.keys[backend.name] ? 'saved' : undefined;
+        return {
+          id: backend.name,
+          label: backend.labelText,
+          current: current() === backend.name,
+          needsKey: backend.name !== 'oms' && backend.name !== 'tinyfish',
+          ...(backend.name === 'tinyfish' ? { keyless: (!override && settings.keyless) || !keySource } : {}),
+          ...(backend.name !== 'oms' && keySource ? { keySource } : {}),
+        };
+      }),
+    ],
+    select(provider, options = {}) {
+      const backend = availableBackends.find((item) => item.name === provider);
+      if (!path || override || (provider !== 'auto' && !backend)) throw new Error('Cannot change search provider');
+      const next = readSearchPreferences(path);
+      const keyless = provider === 'tinyfish' && options.keyless === true;
+      if (options.key !== undefined) {
+        const key = searchKey(options.key);
+        if (!backend?.key || provider === 'oms' || envKey(backend) || !key) throw new Error('Invalid search API key');
+        next.keys[provider] = key;
+      }
+      if (backend?.key && provider !== 'oms' && provider !== 'tinyfish' && !getKey(backend, next))
+        throw new Error('A search API key is required');
+      next.provider = provider;
+      next.keyless = keyless;
+      writePrivateJson(path, next);
+      settings = next;
+    },
+  };
+  const hasSearch = !!path || !!unsupportedOverride || backends().length > 0;
+  const blockedUntil = new Map<Backend, number>();
   const usage: WebUsage = { webSearch: 0, webFetch: 0, solanaMcp: 0, searchBy: {}, fetchBy: {} };
   const note = (tally: Record<string, number>, label: string) => {
     tally[label] = (tally[label] ?? 0) + 1;
@@ -664,19 +798,27 @@ export function createWeb(config: WebConfig): WebControls {
     signal ? AbortSignal.any([signal, AbortSignal.timeout(WEB_TIMEOUT_MS)]) : AbortSignal.timeout(WEB_TIMEOUT_MS);
 
   async function search(query: string, count: number, signal?: AbortSignal): Promise<string> {
+    if (unsupportedOverride)
+      throw new Error(
+        'Unsupported OMS_SEARCH_PROVIDER. Set it to auto, exa or tinyfish, or unset it to use /web provider.',
+      );
+    if (override === 'oms' && !bench)
+      throw new Error(
+        'OMS_SEARCH_PROVIDER=oms requires OMS_SEARCH_URL and OMS_SEARCH_TOKEN. Unset it to use /web provider.',
+      );
     const failures: string[] = [];
-    for (const backend of backends) {
-      const until = blockedUntil.get(backend.name) ?? 0;
+    for (const backend of backends()) {
+      const until = blockedUntil.get(backend) ?? 0;
       if (until > now()) {
         failures.push(`${backend.name}: rate limited for ${Math.ceil((until - now()) / 1000)} s`);
         continue;
       }
-      const oms = backend.name === 'oms' ? omsEndpoint() : undefined;
-      if (backend.name === 'oms' && !oms) {
-        failures.push('oms: sign in to OMS (/login)');
+      const key = backend.name === 'oms' ? bench?.token : getKey(backend);
+      if (backend.key && !key) {
+        failures.push(`${backend.name}: set ${backend.key} before starting OMS`);
         continue;
       }
-      const { url, init } = backend.request(oms?.token ?? env[backend.key]!, query, count, oms?.base);
+      const { url, init } = backend.request(key ?? '', query, count, bench?.base);
       let response: Response;
       try {
         response = await doFetch(url, { ...init, redirect: 'error', signal: timeout(signal) });
@@ -690,17 +832,18 @@ export function createWeb(config: WebConfig): WebControls {
         const named = await backend.refusal?.(response);
         if (named === undefined) void response.body?.cancel().catch(() => {});
         if (response.status === 429 || response.status >= 500)
-          blockedUntil.set(backend.name, now() + retryAfterMs(response.headers.get('retry-after'), now()));
+          blockedUntil.set(backend, now() + retryAfterMs(response.headers.get('retry-after'), now()));
         failures.push(`${backend.name}: ${named ?? `HTTP ${response.status}`}`);
         continue;
       }
       let hits: Hit[];
       let label: string;
       try {
-        const body = await response.json();
+        const body = await (backend.readBody?.(response) ?? response.json());
         hits = backend.parse(body).slice(0, count);
         label = backend.label?.(body) ?? backend.name;
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
         failures.push(`${backend.name}: unreadable response`);
         continue;
       }
@@ -719,6 +862,7 @@ export function createWeb(config: WebConfig): WebControls {
         `a web search (${backend.name})`,
       );
     }
+    if (!failures.length) throw new Error('No web search configured. Choose a provider with /web provider.');
     throw new Error(`web_search failed on every configured backend (${failures.join('; ')})`);
   }
 
@@ -793,8 +937,7 @@ export function createWeb(config: WebConfig): WebControls {
       const text = key ? await firecrawlScrape(url, key, deadline) : undefined;
       return text === undefined ? undefined : { text, label: 'firecrawl' };
     };
-    const oms = omsEndpoint();
-    const scraped = (oms ? await omsFetch(url, oms.base, oms.token, deadline) : undefined) ?? (await byok());
+    const scraped = (bench ? await omsFetch(url, bench.base, bench.token, deadline) : undefined) ?? (await byok());
     const page =
       scraped !== undefined
         ? { url: url.href, text: scraped.text, truncated: false }
@@ -817,7 +960,7 @@ export function createWeb(config: WebConfig): WebControls {
 
   const solana = { endpoint: config.solanaMcpUrl ?? SOLANA_MCP_URL, fetch: doFetch, timeoutMs: WEB_TIMEOUT_MS };
   const toolNames = [
-    ...(backends.length ? ['web_search'] : []),
+    ...(hasSearch ? ['web_search'] : []),
     'web_fetch',
     'source_fetch',
     ...SOLANA_TOOLS.map((tool) => tool.name),
@@ -831,11 +974,12 @@ export function createWeb(config: WebConfig): WebControls {
       }
     });
     const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }], details: undefined });
-    if (backends.length)
+    if (hasSearch)
       pi.registerTool({
         name: 'web_search',
         label: 'Web search',
-        description: `Search the web (${backends.map((b) => b.name).join(', ')}; fails over on rate limits). Returns titles, URLs and snippets; read a page with web_fetch.`,
+        description:
+          'Search the web using the configured provider. Returns titles, URLs and snippets; read a page with web_fetch.',
         parameters: Type.Object({
           query: Type.String({ minLength: 1, maxLength: 400 }),
           max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
@@ -911,6 +1055,7 @@ export function createWeb(config: WebConfig): WebControls {
   };
   return {
     extension,
+    search: searchControls,
     toolNames,
     enabled: () => enabled,
     setEnabled(on) {

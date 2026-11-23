@@ -13,17 +13,79 @@ import {
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import {
   accountKnowledgeSource,
+  attachKnowledgeContext,
   createKnowledgeExtension,
   createKnowledgeVisibility,
+  hideKnowledgeBlocks,
+  hideKnowledgeInSession,
   KNOWLEDGE_TOOL_NAMES,
+  knowledgeRequestMessages,
+  promptWithKnowledge,
+  wrapUntrusted,
   type KnowledgeConfig,
 } from '../src/runtime/knowledge-service.ts';
 import { createHarnessSettings } from '../src/runtime/settings-controls.ts';
 import { knowledgeHint } from '../src/runtime/session.ts';
+import { measuredInputBound } from '../src/runtime/usage.ts';
 
 const ACCOUNT = 'synthetic-account-token-7c1d';
 const ENV_TOKEN = 'synthetic-env-token-91ab';
 const HINT = /look the fact up with search_docs/;
+
+test('saved sessions retain literal prompt tags and omit injected primers and private tool results', async () => {
+  const manager = hideKnowledgeInSession(SessionManager.inMemory(process.cwd()));
+  const prompt = 'Explain the syntax <untrusted-knowledge tool="search_docs"> and <solana-knowledge-excerpt>';
+  const literal = '<untrusted-knowledge tool="search_docs">literal example</untrusted-knowledge>';
+  const submitted = `${prompt}\n${literal}`;
+  manager.appendMessage({ role: 'user', content: submitted, timestamp: 1 });
+  const primer = wrapUntrusted('search_docs', 'private injected primer');
+  const firstTurn = `${submitted}\n\n${primer}`;
+  await promptWithKnowledge(
+    {
+      sessionManager: manager,
+      async prompt(text) {
+        assert.equal(text, firstTurn);
+        manager.appendMessage({ role: 'user', content: [{ type: 'text', text }], timestamp: 2 });
+      },
+    },
+    firstTurn,
+    primer,
+  );
+  manager.appendMessage({
+    role: 'toolResult',
+    toolCallId: 'lookup',
+    toolName: 'search_docs',
+    content: [{ type: 'text', text: 'private lookup result' }],
+    details: { reference: 'private lookup metadata' },
+    isError: false,
+    timestamp: 2,
+  });
+  const saved = JSON.stringify(manager.getEntries());
+  assert.match(saved, /Explain the syntax.*and <solana-knowledge-excerpt>/);
+  assert.equal(saved.match(/literal example/g)?.length, 2);
+  assert.doesNotMatch(saved, /private injected primer/);
+  assert.match(saved, /fetched Solana knowledge: Solana/);
+  assert.doesNotMatch(saved, /private lookup/);
+  assert.equal(hideKnowledgeBlocks(prompt), prompt);
+  assert.equal(hideKnowledgeBlocks(prompt, true), 'Explain the syntax fetched Solana knowledge: Solana');
+});
+
+test('a diagnosis keeps its visible context when a private error excerpt is cut short', () => {
+  const diagnosis = wrapUntrusted(
+    'solana_diagnosis',
+    'Instruction 3 failed.\n<solana-knowledge-excerpt>' +
+      'synthetic private error detail '.repeat(20) +
+      '</solana-knowledge-excerpt>',
+    400,
+  );
+  assert.match(diagnosis, /synthetic private error detail/);
+  assert.doesNotMatch(diagnosis, /<\/solana-knowledge-excerpt>/);
+  const safe = hideKnowledgeBlocks(diagnosis);
+  assert.match(safe, /Instruction 3 failed/);
+  assert.match(safe, /fetched Solana knowledge: error/);
+  assert.match(safe, /\[truncated\]\n<\/untrusted-knowledge>/);
+  assert.doesNotMatch(safe, /synthetic private/);
+});
 
 async function gateway(status = 200) {
   const calls: Array<{ path: string; auth: string | undefined; tool: string }> = [];
@@ -115,10 +177,11 @@ async function rig(inputs: {
     model: runtime.getModel('oms-knowledge', 'm')!,
     settingsManager,
     resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager: hideKnowledgeInSession(SessionManager.inMemory(cwd)),
     noTools: 'builtin',
     tools: KNOWLEDGE_TOOL_NAMES,
   });
+  attachKnowledgeContext(session);
   await session.bindExtensions({});
   const turn = async (reply = fauxAssistantMessage('ok')) => {
     faux.setResponses([
@@ -145,6 +208,34 @@ async function rig(inputs: {
     },
   };
 }
+
+test('the real agent sends the primer and persists only the redacted prompt', async () => {
+  const r = await rig({ account: () => undefined });
+  try {
+    const literal = '<untrusted-knowledge tool="search_docs">quoted example</untrusted-knowledge>';
+    const primer = wrapUntrusted('search_docs', 'private primer text');
+    let wire = '';
+    r.faux.setResponses([
+      (context) => {
+        wire = JSON.stringify(context.messages);
+        return fauxAssistantMessage('ok');
+      },
+    ]);
+    await promptWithKnowledge(r.session, `${literal}\n\n${primer}`, primer);
+    assert.match(wire, /private primer text/);
+    assert.match(wire, /quoted example/);
+    const entries = JSON.stringify(r.session.sessionManager.getEntries());
+    assert.doesNotMatch(entries, /private primer text/);
+    assert.match(entries, /quoted example/);
+    assert.match(entries, /fetched Solana knowledge: Solana/);
+    const history = await r.session.agent.convertToLlm(r.session.sessionManager.buildSessionContext().messages);
+    const request = knowledgeRequestMessages(r.session.sessionManager, history);
+    const model = r.session.model!;
+    assert.ok(measuredInputBound(model, { messages: request })! > measuredInputBound(model, { messages: history })!);
+  } finally {
+    r.cleanup();
+  }
+});
 
 test('signed out: the model sees no knowledge tools and no look-it-up rules', async () => {
   const r = await rig({ account: () => undefined });
@@ -179,9 +270,10 @@ test('signed in: the tools call <origin>/api/knowledge/mcp with the account bear
     );
     assert.match(shown.prompt, HINT);
     assert.match(shown.wire, /look the fact up with search_docs/, 'the rules reach the provider request');
-    await r.turn();
+    const followup = await r.turn();
     assert.deepEqual(gw.calls, [{ path: '/api/knowledge/mcp', auth: `Bearer ${ACCOUNT}`, tool: 'search_docs' }]);
-    assert.match(JSON.stringify(r.session.messages), /Untrusted reference data/);
+    assert.match(followup.wire, /doc text/);
+    assert.doesNotMatch(JSON.stringify(r.session.sessionManager.getEntries()), /doc text/);
     assert.ok(!JSON.stringify(r.session.messages).includes(ACCOUNT));
   } finally {
     r.cleanup();
@@ -199,6 +291,7 @@ test('OMS_KNOWLEDGE_URL plus OMS_KNOWLEDGE_TOKEN win over the account; one of th
   assert.deepEqual(accountKnowledgeSource({ env: { OMS_KNOWLEDGE_TOKEN: ENV_TOKEN }, account: () => account })(), {
     endpoint: 'http://127.0.0.1:1/api/knowledge/mcp',
     token: ACCOUNT,
+    guidance: true,
   });
   assert.equal(
     accountKnowledgeSource({ env: { OMS_KNOWLEDGE_URL: 'http://svc.test/mcp' }, account: () => undefined })(),

@@ -13,6 +13,7 @@ import {
   KNOWLEDGE_RULE,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
+  OMS_KNOWLEDGE_GATEWAY,
   readWorktreeText,
   TOPIC_CARDS_LIMIT,
   TOPICS_RULE,
@@ -22,6 +23,32 @@ import {
 } from '../src/runtime/knowledge-service.ts';
 
 const TOKEN = 'synthetic-knowledge-token-4d2e';
+
+for (const source of ['benchmark gateway', 'signed-in custom origin'] as const) {
+  test(`hosted primer keeps prose guidance from the ${source}`, async () => {
+    const calls: string[] = [];
+    const mock = await service(({ name }) => {
+      calls.push(name);
+      return { text: 'Use the token program that owns the mint.' };
+    });
+    try {
+      const config =
+        source === 'benchmark gateway'
+          ? {
+              endpoint: OMS_KNOWLEDGE_GATEWAY,
+              token: TOKEN,
+              fetch: (_url: unknown, init?: RequestInit) => fetch(mock.endpoint, init),
+            }
+          : { endpoint: mock.endpoint, token: TOKEN, guidance: true as const };
+      const primer = await knowledgePrimer(config, '/nonexistent', 'Create an ATA');
+      assert.deepEqual(calls, ['search_docs']);
+      assert.match(primer.text, /Use the token program that owns the mint/);
+      assert.equal(primer.fallback, undefined);
+    } finally {
+      await mock.close();
+    }
+  });
+}
 const body = async (req: IncomingMessage) => {
   let s = '';
   for await (const c of req) s += c;

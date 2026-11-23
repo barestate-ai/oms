@@ -193,74 +193,10 @@ test('the usage record names the backends oms-search says answered, BYOK and pla
   assert.ok(Value.Check(RunRecordSchema.properties.web, web.usage()), 'the run record accepts it');
 });
 
-test('signed in, the oms backend defaults to the gateway route with the account token; OMS_SEARCH_URL still wins', async () => {
-  const seen: Array<{ url: string; auth: string | null }> = [];
-  const fetch = (async (url: string, init: RequestInit) => {
-    seen.push({ url: String(url), auth: new Headers(init.headers).get('authorization') });
-    return String(url).endsWith('/fetch')
-      ? reply(200, { title: 'PDA', text: 'page', answered: ['firecrawl'] })
-      : reply(200, { results: [{ title: 't', url: 'https://solana.com/docs', snippet: 's' }], answered: ['searxng'] });
-  }) as typeof globalThis.fetch;
-  let signedIn: { origin: string; token: string } | undefined = {
-    origin: 'https://barestate.xyz/oms',
-    token: 'account-token-0123456789',
-  };
-  const { call, web } = tools({
-    enabled: true,
-    env: { EXA_API_KEY: 'k-exa' },
-    fetch,
-    lookup: publicHost,
-    account: () => signedIn,
-  });
-  await call('web_search', { query: 'q' });
-  await call('web_fetch', { url: 'https://solana.com/docs' });
-  assert.deepEqual(seen.splice(0), [
-    { url: 'https://barestate.xyz/oms/search/v1/search', auth: 'Bearer account-token-0123456789' },
-    { url: 'https://barestate.xyz/oms/search/v1/fetch', auth: 'Bearer account-token-0123456789' },
-  ]);
-  assert.deepEqual(web.usage().searchBy, { 'oms:searxng': 1 });
-
-  signedIn = undefined;
-  await call('web_search', { query: 'q' });
-  assert.equal(new URL(seen.splice(0)[0]!.url).host, 'api.exa.ai', 'signed out, BYOK answers');
-
-  const bench = tools({
-    enabled: true,
-    env: OMS,
-    fetch,
-    account: () => ({ origin: 'https://barestate.xyz/oms', token: 'account-token-0123456789' }),
-  });
-  await bench.call('web_search', { query: 'q' });
-  assert.deepEqual(seen.splice(0), [{ url: 'http://127.0.0.1:8790/search', auth: 'Bearer oms-token-0123456789' }]);
-});
-
-test('a signed-out session with no BYOK key still offers web_search and says to sign in', async () => {
-  const { call, web } = tools({ enabled: true, env: {}, account: () => undefined });
-  assert.ok(web.toolNames.includes('web_search'));
-  await assert.rejects(call('web_search', { query: 'q' }), /oms: sign in to OMS \(\/login\)/);
-});
-
-test('an account origin that is neither https nor loopback never receives the account token', async () => {
-  let calls = 0;
-  const fetch = (async () => {
-    calls++;
-    return reply(200, {});
-  }) as typeof globalThis.fetch;
-  const { call } = tools({
-    enabled: true,
-    env: {},
-    fetch,
-    account: () => ({ origin: 'http://barestate.example/oms', token: 'account-token-0123456789' }),
-  });
-  await assert.rejects(call('web_search', { query: 'q' }), /sign in/);
-  assert.equal(calls, 0);
-});
-
-const HOSTED_SEARCH_OUT =
-  /oms: hosted search is unavailable for this account — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY/;
+const HOSTED_SEARCH_OUT = /oms: hosted search is unavailable for this account — set EXA_API_KEY or TINYFISH_API_KEY/;
 
 const HOSTED_SEARCH_OUT_BILLING =
-  /oms: hosted search is unavailable for this account — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing/;
+  /oms: hosted search is unavailable for this account — set EXA_API_KEY or TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing/;
 
 test('oms answering 402 SEARCH_PAYMENT_REQUIRED offers the BYOK keys and the named billing page, never echoes the message, and is not rate-limited', async () => {
   const calls: string[] = [];
@@ -350,7 +286,7 @@ test('oms answering 402 SEARCH_LIMIT_REACHED names the UTC reset date and the na
     await assert.rejects(call('web_search', { query: 'q' }), (error: Error) => {
       assert.match(
         error.message,
-        /oms: this month's free hosted searches are used up \(reset Dec 1\) — set one of EXA_API_KEY, FIRECRAWL_API_KEY, TAVILY_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing to keep searching/,
+        /oms: this month's free hosted searches are used up \(reset Dec 1\) — set EXA_API_KEY or TINYFISH_API_KEY or go to https:\/\/barestate\.xyz\/oms\/billing to keep searching/,
       );
       assert.doesNotMatch(error.message, /SERVER CHOSEN TEXT/);
       return true;

@@ -5,9 +5,11 @@ import {
   CLAUDE_CODE_CONTEXT_OVERFLOW,
   KNOWLEDGE_TOOL_NAMES,
   knowledgePrimer,
+  knowledgeRequestMessages,
   measuredInputBound,
   modelReadiness,
   parseRunRecord,
+  promptWithKnowledge,
   type HarnessSession,
   type HarnessSessionOptions,
   type RunRecord,
@@ -149,10 +151,10 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
       // instruction — not the catalog window, or a run stops early while a real request fits.
       const inputBound = async (pending: string) =>
         measuredInputBound(current.session.model!, {
-          messages: [
+          messages: knowledgeRequestMessages(current.session.sessionManager, [
             ...(await current.session.agent.convertToLlm(current.session.agent.state.messages)),
             { role: 'user', content: pending, timestamp: Date.now() },
-          ],
+          ]),
         });
       for (let turn = 0; ; turn++) {
         observe();
@@ -214,7 +216,8 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         }
         const before = JSON.stringify(items);
         if (noProgressTurns > 0) noProgressContinuations++;
-        await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
+        if (turn === 0 && primerText) await promptWithKnowledge(current.session, firstTurn, primerText);
+        else await current.session.prompt(turn === 0 ? firstTurn : HEADLESS_INSTRUCTION);
         observe();
         const last = [...current.session.messages].reverse().find((message) => message.role === 'assistant') as
           { rawStopReason?: string } | undefined;

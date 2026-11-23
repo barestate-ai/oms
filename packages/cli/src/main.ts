@@ -21,6 +21,7 @@ Options
   --no-web            Start with web search off
 
 Inside oms
+  /setup     Set up a model and web search
   /connect   Sign in: ChatGPT, Claude, Grok or an API key
   /model     Pick a model
   /help      Commands and keys

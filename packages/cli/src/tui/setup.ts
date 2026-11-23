@@ -13,12 +13,12 @@ import {
 } from '@earendil-works/pi-tui';
 import { copyToClipboard } from '@earendil-works/pi-coding-agent';
 import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai';
-import type { OmsSession, ProviderModelChoice } from '@oms/engine';
+import type { OmsSession, ProviderModelChoice, WebSearchControls } from '@oms/engine';
 import { glyphsFor } from './glyphs.ts';
 import { colorText, getTheme, THEME_IDS, type OmsTheme } from './theme.ts';
 import { displayText } from './transcript.ts';
 
-type SetupMode = 'model' | 'connect' | 'theme';
+type SetupMode = 'model' | 'connect' | 'theme' | 'search' | 'welcome';
 type SetupHarness = Pick<
   OmsSession,
   'listModels' | 'listProviders' | 'selectModel' | 'loginProvider' | 'importEnvironment'
@@ -32,6 +32,12 @@ interface Choice {
 }
 interface SetupOptions {
   mode: SetupMode;
+  webSearch?: WebSearchControls;
+  welcome?: {
+    model?: string;
+    search?: string;
+    open(mode: 'model' | 'search'): void;
+  };
   query?: string;
   theme: () => OmsTheme;
   rows: () => number;
@@ -56,7 +62,7 @@ export class SetupPane {
   private readonly options: SetupOptions;
   private readonly search = new Input({ prompt: 'Filter: ' });
   private readonly controller = new AbortController();
-  private stage: 'providers' | 'models' | 'auth' | 'theme';
+  private stage: 'providers' | 'models' | 'auth' | 'theme' | 'search' | 'welcome';
   private choices: Choice[] = [];
   private shortlistProviders = false;
   private expandedProviders = false;
@@ -84,7 +90,7 @@ export class SetupPane {
   constructor(harness: SetupHarness, options: SetupOptions) {
     this.harness = harness;
     this.options = options;
-    this.stage = options.mode === 'theme' ? 'theme' : 'providers';
+    this.stage = options.mode === 'model' || options.mode === 'connect' ? 'providers' : options.mode;
     this.search.setValue(line(options.query ?? '').slice(0, 256));
     if (this.stage === 'theme') {
       this.choices = THEME_IDS.map((id) => ({
@@ -93,6 +99,24 @@ export class SetupPane {
         description: id === options.theme().id ? 'current' : '',
       }));
       this.selected = options.theme().id;
+    } else if (this.stage === 'search') {
+      this.showSearchProviders();
+    } else if (this.stage === 'welcome') {
+      const { model, search } = options.welcome!;
+      this.choices = [
+        {
+          value: 'model',
+          label: model ? 'Change model' : 'Choose a model',
+          description: model ?? 'Sign in or use an API key',
+        },
+        ...(search === undefined ? [] : [{ value: 'search', label: 'Web search', description: search }]),
+        {
+          value: 'finish',
+          label: model ? 'Start chatting' : 'Skip for now',
+          description: 'Reopen anytime with /setup',
+        },
+      ];
+      this.selected = model ? 'finish' : 'model';
     } else {
       this.buildTopLevel();
     }
@@ -134,6 +158,8 @@ export class SetupPane {
 
   get label(): string {
     if (this.stage === 'auth' || this.stage === 'models') return line(this.provider ?? '');
+    if (this.stage === 'search') return 'Web search';
+    if (this.stage === 'welcome') return 'Setup';
     return this.options.mode === 'model' ? 'Model' : this.options.mode === 'theme' ? 'Theme' : 'Sign in';
   }
   get hint(): string {
@@ -144,6 +170,84 @@ export class SetupPane {
         : 'ctrl+x copy link · pgup/pgdn scroll · esc cancel';
     }
     return this.stage === 'theme' ? '↑↓ preview · enter choose · esc cancel' : '↑↓ choose · enter select · esc back';
+  }
+
+  private showSearchProviders(): void {
+    const search = this.options.webSearch!;
+    this.stage = 'search';
+    this.provider = undefined;
+    this.message = '';
+    const rows = search.choices();
+    this.setChoices(
+      rows.map((row) => ({
+        value: row.id,
+        label: row.label,
+        description: [
+          row.current && 'Current',
+          row.id === 'auto' && 'Use configured providers',
+          row.id === 'tinyfish' && 'API key optional',
+          row.keySource === 'saved' && 'Key saved',
+          row.keySource === 'environment' && 'Key from environment',
+          row.needsKey && !row.keySource && 'API key required',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      })),
+    );
+    this.selected = rows.find((row) => row.current)?.id ?? '';
+    this.note = search.override ? `Selected by OMS_SEARCH_PROVIDER=${search.override}` : '';
+  }
+
+  private async chooseSearchProvider(id: string): Promise<void> {
+    const search = this.options.webSearch!;
+    if (search.override) {
+      this.message = 'Unset OMS_SEARCH_PROVIDER and restart OMS to change this here.';
+      this.options.render();
+      return;
+    }
+    const choice = search.choices().find((row) => row.id === id);
+    if (!choice) return;
+    this.pending = true;
+    this.message = '';
+    try {
+      let keyless = false;
+      let key: string | undefined;
+      if (choice.keySource === 'saved' || id === 'tinyfish') {
+        this.stage = 'auth';
+        this.provider = choice.label;
+        const access = await this.authPrompt({
+          type: 'select',
+          message: 'Choose search access',
+          options: [
+            ...(id === 'tinyfish' ? [{ id: 'keyless', label: 'Use without an API key' }] : []),
+            ...(choice.keySource
+              ? [{ id: 'current', label: `Use the ${choice.keySource === 'saved' ? 'saved' : 'environment'} key` }]
+              : []),
+            ...(choice.keySource !== 'environment' ? [{ id: 'key', label: 'Enter an API key' }] : []),
+          ],
+        });
+        keyless = access === 'keyless';
+        if (access === 'key')
+          key = await this.authPrompt({ type: 'secret', message: `Paste your ${choice.label} API key` });
+      } else if (choice.needsKey && !choice.keySource) {
+        this.stage = 'auth';
+        this.provider = choice.label;
+        key = await this.authPrompt({ type: 'secret', message: `Paste your ${choice.label} API key` });
+      }
+      this.controller.signal.throwIfAborted();
+      search.select(id, { key, keyless });
+      this.options.notice(`Web search: ${choice.label}${keyless ? ' · no key' : key ? ' · key saved' : ''}`);
+      this.options.close();
+    } catch {
+      if (!this.disposed) {
+        this.showSearchProviders();
+        this.message =
+          'Could not save search settings. Check the API key and the permissions on your OMS state directory.';
+      }
+    } finally {
+      this.pending = false;
+      if (!this.disposed) this.options.render();
+    }
   }
 
   private buildTopLevel(): void {
@@ -321,15 +425,19 @@ export class SetupPane {
     this.listTop = -1;
     const palette = this.options.theme();
     const title =
-      this.stage === 'theme'
-        ? 'Choose a theme'
-        : this.stage === 'providers'
-          ? this.options.mode === 'model'
-            ? 'Choose a provider'
-            : 'Choose how to sign in'
-          : this.stage === 'models'
-            ? 'Choose a model'
-            : `Connect ${line(this.provider ?? '')}`;
+      this.stage === 'welcome'
+        ? 'Welcome to Oh My Sol'
+        : this.stage === 'search'
+          ? 'Choose a web search provider'
+          : this.stage === 'theme'
+            ? 'Choose a theme'
+            : this.stage === 'providers'
+              ? this.options.mode === 'model'
+                ? 'Choose a provider'
+                : 'Choose how to sign in'
+              : this.stage === 'models'
+                ? 'Choose a model'
+                : `Connect ${line(this.provider ?? '')}`;
     const lines = [colorText(palette, 'accent', truncateToWidth(title, width, ''))];
     if (this.stage === 'providers' && this.options.mode === 'model' && this.shortlistProviders)
       lines.push(
@@ -509,6 +617,15 @@ export class SetupPane {
       return;
     }
     if (this.pending) return;
+    if (this.stage === 'welcome') {
+      if (value === 'model' || value === 'search') this.options.welcome?.open(value);
+      else this.options.close();
+      return;
+    }
+    if (this.stage === 'search') {
+      await this.chooseSearchProvider(value);
+      return;
+    }
     if (this.stage === 'theme') {
       if (this.options.selectTheme(value)) this.options.close();
       return;
