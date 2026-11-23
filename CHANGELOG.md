@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.1.3 (unreleased)
+## 0.1.3
 
+- A Homebrew install on Linux starts again. Host-mode chats no longer mount the OMS install folder, so a group-writable Homebrew Cellar no longer stops `oms` at launch.
 - Selecting text in OMS with the mouse copies it to the clipboard, the same way as in other coding CLIs. Before, the mouse selection did nothing and Cmd+C had nothing to copy.
 
 ## 0.1.2
