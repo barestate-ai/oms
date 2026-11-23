@@ -12,7 +12,7 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { Api, AssistantMessageEventStream, Model } from '@earendil-works/pi-ai';
 import { createChatExtensions } from '../chat-extensions.ts';
 import { defaultDeniedRoots } from '../../oms-extension.ts';
-import { hideKnowledgeInSession, KNOWLEDGE_TOOL_NAMES } from '../knowledge-service.ts';
+import { attachKnowledgeContext, hideKnowledgeInSession, KNOWLEDGE_TOOL_NAMES } from '../knowledge-service.ts';
 import type { SessionApiParts } from '../session-api.ts';
 import { createSessionHooks } from '../session-hooks.ts';
 import { readingExtensions } from '../session-tools.ts';
@@ -336,6 +336,7 @@ export async function runHelper(parts: SessionApiParts, run: HelperRun): Promise
       tools: toolNames,
     });
     child = session;
+    attachKnowledgeContext(session);
     run.attach(session);
     session.agent.toolExecution = 'parallel';
     const original: StreamFn = session.agent.streamFunction;
