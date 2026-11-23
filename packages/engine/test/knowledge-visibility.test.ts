@@ -18,6 +18,7 @@ import {
   hideKnowledgeBlocks,
   hideKnowledgeInSession,
   KNOWLEDGE_TOOL_NAMES,
+  wrapUntrusted,
   type KnowledgeConfig,
 } from '../src/runtime/knowledge-service.ts';
 import { createHarnessSettings } from '../src/runtime/settings-controls.ts';
@@ -46,6 +47,23 @@ test('saved sessions retain literal prompt tags and omit private tool results', 
   assert.doesNotMatch(saved, /private lookup/);
   assert.equal(hideKnowledgeBlocks(prompt), prompt);
   assert.equal(hideKnowledgeBlocks(prompt, true), 'Explain the syntax fetched Solana knowledge: Solana');
+});
+
+test('a diagnosis keeps its visible context when a private error excerpt is cut short', () => {
+  const diagnosis = wrapUntrusted(
+    'solana_diagnosis',
+    'Instruction 3 failed.\n<solana-knowledge-excerpt>' +
+      'synthetic private error detail '.repeat(20) +
+      '</solana-knowledge-excerpt>',
+    400,
+  );
+  assert.match(diagnosis, /synthetic private error detail/);
+  assert.doesNotMatch(diagnosis, /<\/solana-knowledge-excerpt>/);
+  const safe = hideKnowledgeBlocks(diagnosis);
+  assert.match(safe, /Instruction 3 failed/);
+  assert.match(safe, /fetched Solana knowledge: error/);
+  assert.match(safe, /<\/untrusted-knowledge>/);
+  assert.doesNotMatch(safe, /synthetic private/);
 });
 
 async function gateway(status = 200) {
