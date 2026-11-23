@@ -150,7 +150,7 @@ Agent commands start from an empty environment with a private home, so API keys 
 
 ## Web access
 
-The agent looks things up through the official Solana MCP, `web_fetch` and `web_search`. Use `/web provider` to choose a search provider. TinyFish works without a key, and you can enter your own key for TinyFish, Exa, Firecrawl, Tavily or Parallel. Automatic mode tries hosted search after `/login`, then the providers you have keys for. Use `/web off` to turn web access off.
+The agent looks things up through the official Solana MCP, `web_fetch` and `web_search`. Use `/web provider` to choose a search provider. TinyFish works without a key, and you can enter your own key for TinyFish, Exa, Firecrawl, Tavily or Parallel. Automatic mode tries providers you have keys for. Sign in with GitHub using `/login` to access Solana knowledge. Use `/web off` to turn web access off.
 
 ## Commands
 
@@ -167,7 +167,8 @@ The agent looks things up through the official Solana MCP, `web_fetch` and `web_
 | `/error <code>`, `/program <name>` | Decode errors and programs |
 | `/review` | Offline security report for your program |
 | `/workbench`, `/harness` | Editor or chat |
-| `/web provider`, `/web on\|off`, `/login` | Search provider, web access and hosted search |
+| `/web provider`, `/web on\|off` | Search provider and web access |
+| `/login` | Sign in with GitHub for Solana knowledge |
 | `/help`, `/exit` | Every command and key, and quit |
 
 Keys: Enter sends, Shift+Enter adds a line, Esc cancels, PgUp and PgDn scroll, Ctrl+K opens the command menu. Ctrl+C cancels running work, and pressing it twice at an idle prompt quits, as do Ctrl+D on an empty prompt and Ctrl+Q. `/help keys` lists the rest.

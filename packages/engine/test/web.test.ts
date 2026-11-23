@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import {
@@ -121,9 +121,8 @@ test('a chosen TinyFish provider works without a key and uses the keyed REST API
     }
     return reply(200, result);
   }) as typeof globalThis.fetch;
-  const account = () => ({ origin: 'https://barestate.xyz', token: 'account-secret' });
   const env = { OMS_SEARCH_PROVIDER: 'tinyfish', EXA_API_KEY: 'exa-secret' };
-  const keyless = tools({ enabled: true, env, fetch, account });
+  const keyless = tools({ enabled: true, env, fetch });
   const text = await keyless.call('web_search', { query: 'solana docs', max_results: 1 });
   assert.match(text, /Solana docs/);
   assert.doesNotMatch(text, /Other result/);
@@ -143,7 +142,7 @@ test('a chosen TinyFish provider works without a key and uses the keyed REST API
     params: { name: 'search', arguments: { query: 'solana docs' } },
   });
 
-  const keyed = tools({ enabled: true, env: { ...env, TINYFISH_API_KEY: 'tinyfish-secret' }, fetch, account });
+  const keyed = tools({ enabled: true, env: { ...env, TINYFISH_API_KEY: 'tinyfish-secret' }, fetch });
   assert.match(await keyed.call('web_search', { query: 'solana docs' }), /Solana docs/);
   const [rest] = seen;
   assert.equal(seen.length, 1);
@@ -184,7 +183,6 @@ test('saved search preferences apply immediately and survive a new session; laun
     enabled: true,
     env: {},
     fetch,
-    account: () => ({ origin: 'https://barestate.xyz', token: 'account-secret' }),
   };
   const original = tools(config);
   assert.throws(() => original.web.search.select('exa'), /API key is required/);
@@ -208,7 +206,37 @@ test('saved search preferences apply immediately and survive a new session; laun
 
   reopened.web.search.select('auto');
   await reopened.call('web_search', { query: 'q' });
-  assert.deepEqual(seen, [{ url: 'https://barestate.xyz/search/v1/search', key: null }]);
+  assert.deepEqual(seen, [{ url: 'https://api.exa.ai/search', key: 'saved-secret' }]);
+});
+
+test('an old hosted search selection falls back to configured providers', async (t) => {
+  const agentRoot = mkdtempSync(join(tmpdir(), 'oms-old-search-settings-'));
+  t.after(() => rmSync(agentRoot, { recursive: true, force: true }));
+  writeFileSync(join(agentRoot, 'web-search.json'), JSON.stringify({ provider: 'oms' }), { mode: 0o600 });
+  const seen: string[] = [];
+  const fetch = (async (url: string) => {
+    seen.push(url);
+    return reply(200, exaHit('from exa'));
+  }) as typeof globalThis.fetch;
+  const { web, call } = tools({ agentRoot, enabled: true, env: { EXA_API_KEY: 'exa-key' }, fetch });
+  assert.equal(web.search.choices().find((choice) => choice.current)?.id, 'auto');
+  assert.ok(!web.search.choices().some((choice) => choice.id === 'oms'));
+  await call('web_search', { query: 'q' });
+  assert.deepEqual(seen, ['https://api.exa.ai/search']);
+});
+
+test('without a search key, Automatic points to provider setup without sending a request', async (t) => {
+  const agentRoot = mkdtempSync(join(tmpdir(), 'oms-search-unconfigured-'));
+  t.after(() => rmSync(agentRoot, { recursive: true, force: true }));
+  const fetch = (async () => {
+    assert.fail('unconfigured search must not send a request');
+  }) as typeof globalThis.fetch;
+  const { web, call } = tools({ agentRoot, enabled: true, env: {}, fetch });
+  assert.ok(web.toolNames.includes('web_search'));
+  await assert.rejects(
+    call('web_search', { query: 'q' }),
+    /No web search configured. Choose a provider with \/web provider/,
+  );
 });
 
 test('a 429 fails over to the next backend and Retry-After keeps the limited one out until it passes (60 s default)', async () => {

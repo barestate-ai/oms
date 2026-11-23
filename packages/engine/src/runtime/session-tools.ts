@@ -87,10 +87,8 @@ export function createSessionTools(
       ? `Compatibility rule findings: ${[...new Set(initialToolchain.findings.map((finding) => finding.rule))].join(', ') || 'none'}; use toolchain_check for details. Build not verified.`
       : 'Toolchain scan unavailable; use toolchain_check for details. Build not verified.') +
     (installedClients.length ? ` Installed official program clients: ${installedClients.join(', ')}.` : '');
-  // Web tools ask for the credential only during a turn.
   const web = options.web
     ? createWeb({
-        account: () => account.searchCredential(),
         agentRoot: root.agentRoot,
         sourcesDir: env.sourcesDir,
         ...options.web,

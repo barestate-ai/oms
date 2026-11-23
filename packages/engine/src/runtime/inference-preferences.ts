@@ -6,7 +6,7 @@ export type TokenPlanProvider = (typeof TOKEN_PLAN_PROVIDERS)[number];
 export type MimoProvider = 'xiaomi' | TokenPlanProvider;
 export interface InferencePreferences {
   version: 1;
-  /** Origin of the hosted OMS account service used for web search sign-in. */
+  /** Origin of the OMS account service used for device sign-in. */
   gatewayOrigin: string;
   mimoProvider: MimoProvider | null;
 }

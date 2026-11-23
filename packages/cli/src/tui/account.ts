@@ -9,8 +9,6 @@ interface AccountOptions {
   bodyRows?(): number;
   render(): void;
   close(): void;
-  /** Feedback from the action that requested a successful sign-in. */
-  onSignedIn?(): string;
   /** An optional line shown once after a successful sign-in. */
   tip?(): string | undefined;
 }
@@ -53,7 +51,7 @@ export class AccountPane {
           await this.controls.refresh(this.controller.signal);
           if (this.disposed || this.controller.signal.aborted) return;
           if (this.controls.snapshot().state === 'signed-in') {
-            this.message = this.options.onSignedIn?.() ?? 'Already signed in · /logout to switch';
+            this.message = 'Already signed in · /logout to switch';
             return;
           }
         }
@@ -71,10 +69,7 @@ export class AccountPane {
           },
           this.controller.signal,
         );
-        if (!this.disposed && this.controls.snapshot().state === 'signed-in') {
-          this.message = this.options.onSignedIn?.() ?? this.message;
-          this.tip = this.options.tip?.() ?? '';
-        }
+        if (!this.disposed && this.controls.snapshot().state === 'signed-in') this.tip = this.options.tip?.() ?? '';
       } else if (this.options.mode === 'logout') {
         const result = await this.controls.logout(this.controller.signal);
         this.message = result.serverRevoked
@@ -109,7 +104,7 @@ export class AccountPane {
     if (this.message) lines.push(displayText(this.message, 2048));
     if (snapshot.message) lines.push(displayText(snapshot.message, 2048));
     if (this.tip) lines.push(this.tip);
-    lines.push('OMS sign-in enables hosted web search only · model keys stay in /connect');
+    lines.push('Sign in with GitHub for Solana knowledge · configure web search with /web provider');
     const rendered = lines.flatMap((line) =>
       wrapTextWithAnsi(colorText(this.options.theme(), 'foreground', line), Math.max(1, width)),
     );

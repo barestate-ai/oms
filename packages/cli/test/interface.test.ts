@@ -2360,24 +2360,6 @@ test('first-run setup picks a model, offers keyless search and returns to the co
   f.model(false);
   const web = createWeb({ agentRoot: root, enabled: true, env: {} });
   f.harness.web = { enabled: web.enabled, set: web.setEnabled, usage: web.usage, search: web.search };
-  let signedIn = false;
-  let loginAttempts = 0;
-  f.harness.account = {
-    snapshot: () => ({ state: signedIn ? 'signed-in' : 'signed-out', origin: 'https://oms.barestate.xyz' }),
-    searchCredential: () => undefined,
-    async refresh() {},
-    async login(_interaction, signal) {
-      loginAttempts++;
-      if (loginAttempts === 1) {
-        await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }));
-      } else {
-        signedIn = true;
-      }
-    },
-    async logout() {
-      return { serverRevoked: false };
-    },
-  };
   const terminal = new InterfaceTerminal(100, 28);
   const run = runOmsInterface(f.harness, { terminal, firstRun: true });
   try {
@@ -2393,28 +2375,9 @@ test('first-run setup picks a model, offers keyless search and returns to the co
     await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('Start chatting'));
     terminal.send('\x1b[A');
     terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Choose a web search provider'));
-    terminal.send('OMS');
-    terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Signing in…'));
-    terminal.send('\x1b');
-    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol'));
-    assert.equal(web.search.choices().find((choice) => choice.current)?.id, 'auto');
-    terminal.send('\x1b[A');
-    terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Choose a web search provider'));
-    terminal.send('OMS');
-    terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Signed in') && screen.includes('Web search: OMS hosted'));
-    terminal.send('\x0b');
-    await terminal.until((screen) => !screen.includes('OMS account') && screen.includes('commands · esc to close'));
-    assert.equal(web.search.choices().find((choice) => choice.current)?.id, 'oms');
-    terminal.send('setup');
-    terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Welcome to Oh My Sol') && screen.includes('OMS hosted'));
-    terminal.send('\x1b[A');
-    terminal.send('\r');
-    await terminal.until((screen) => screen.includes('Choose a web search provider'));
+    const search = await terminal.until((screen) => screen.includes('Choose a web search provider'));
+    assert.match(search, /TinyFish/);
+    assert.doesNotMatch(search, /OMS hosted|Sign in to OMS/i);
     terminal.send('TinyFish');
     terminal.send('\r');
     await terminal.until((screen) => screen.includes('Use without an API key'));
