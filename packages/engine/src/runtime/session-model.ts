@@ -63,6 +63,37 @@ export interface SessionModel {
   checkAuthFile(): void;
 }
 
+type ModelUsageCredential = () => { origin: string; token: string } | undefined;
+
+export function withModelUsage(streamFunction: StreamFn, readCredential?: ModelUsageCredential): StreamFn {
+  if (process.env.OMS_SHARE_MODEL_USAGE !== '1' || !readCredential) return streamFunction;
+  return async (model, context, streamOptions) => {
+    const credential = readCredential();
+    const stream = await streamFunction(model, context, streamOptions);
+    if (credential?.origin === 'https://barestate.xyz/oms') {
+      void stream
+        .result()
+        .then((message) => {
+          if (message.stopReason === 'aborted') return;
+          return fetch(credential.origin + '/api/telemetry/model', {
+            method: 'POST',
+            redirect: 'error',
+            credentials: 'omit',
+            signal: AbortSignal.timeout(2_000),
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.token}` },
+            body: JSON.stringify({
+              provider: model.provider,
+              model: model.id,
+              outcome: message.stopReason === 'error' ? 'error' : 'ok',
+            }),
+          }).then((response) => response.body?.cancel());
+        })
+        .catch(() => {});
+    }
+    return stream;
+  };
+}
+
 /**
  * Model and stream wiring: the model runtime and catalog, the Claude Code native provider, the pi session with the OMS
  * extensions, and the metered stream that enforces the budget on every model call.
@@ -76,6 +107,7 @@ export async function createSessionModel(
   extensions: ExtensionFactory[],
   initiallyKnown: boolean,
   injectedTools: readonly string[] = [],
+  telemetryCredential?: ModelUsageCredential,
 ): Promise<SessionModel> {
   const { environment } = options;
   const { controller } = life;
@@ -200,7 +232,7 @@ export async function createSessionModel(
   session.agent.toolExecution = 'parallel';
   const originalSdkStream: StreamFn = session.agent.streamFunction;
   const directStream = createMeteredStream({
-    streamFunction: originalSdkStream,
+    streamFunction: withModelUsage(originalSdkStream, telemetryCredential),
     ledger: env.budget,
     allocate: env.allocate,
     executionMode: env.executionMode,

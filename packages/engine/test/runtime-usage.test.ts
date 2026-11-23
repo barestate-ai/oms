@@ -20,6 +20,7 @@ import { isRetryableAssistantError } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createBudgetLedger, type BudgetLedgerEvent } from '@oms/core';
 import { createMeteredStream, openBudgetJournal, modelReadiness } from '../src/runtime/usage.ts';
+import { withModelUsage } from '../src/runtime/session-model.ts';
 import { modelReservationBound, normalizePiUsage } from '@oms/core/usage';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 
@@ -57,6 +58,43 @@ function message(): AssistantMessage {
     },
   };
 }
+
+test('local model reporting requires opt-in and sends only model metadata to Barestate', async (t) => {
+  const streamFunction: StreamFn = () => {
+    const stream = createAssistantMessageEventStream();
+    stream.end(message());
+    return stream;
+  };
+  const credential = { origin: 'https://barestate.xyz/oms', token: 'synthetic-credential' };
+  const report = t.mock.method(
+    globalThis,
+    'fetch',
+    async (..._request: Parameters<typeof fetch>) => new Response(null, { status: 204 }),
+  );
+  const previous = process.env.OMS_SHARE_MODEL_USAGE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.OMS_SHARE_MODEL_USAGE;
+    else process.env.OMS_SHARE_MODEL_USAGE = previous;
+  });
+  process.env.OMS_SHARE_MODEL_USAGE = '0';
+  assert.equal(
+    withModelUsage(streamFunction, () => credential),
+    streamFunction,
+  );
+  process.env.OMS_SHARE_MODEL_USAGE = '1';
+  const context = normalizeContext({ messages: [{ role: 'user', content: 'private prompt', timestamp: 0 }] });
+  const run = async (origin: string) => {
+    const stream = await withModelUsage(streamFunction, () => ({ ...credential, origin }))(model, context);
+    assert.equal((await stream.result()).stopReason, 'stop');
+  };
+  await run('https://example.com/oms');
+  assert.equal(report.mock.callCount(), 0);
+  await run(credential.origin);
+  assert.equal(report.mock.callCount(), 1);
+  const [url, init] = report.mock.calls[0]!.arguments;
+  assert.equal(url, credential.origin + '/api/telemetry/model');
+  assert.deepEqual(JSON.parse(String(init?.body)), { provider: model.provider, model: model.id, outcome: 'ok' });
+});
 function fixture(streamFunction?: StreamFn, customCaps = caps, onBareBadRequest?: () => void) {
   const events: BudgetLedgerEvent[] = [];
   const ledger = createBudgetLedger({

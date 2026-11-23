@@ -148,6 +148,8 @@ OMS never holds mainnet keys. Mainnet work comes back to you as a transaction to
 
 Agent commands start from an empty environment with a private home, so API keys such as `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` never reach them. Provider credentials stay in private configuration and never enter chat or task files.
 
+Signed-in users can set `OMS_SHARE_MODEL_USAGE=1` to share their local model's provider, identifier, and success or failure with Barestate. Local model usage stays on your machine by default. Hosted requests run on Barestate's servers.
+
 ## Web access
 
 The agent looks things up through the official Solana MCP, `web_fetch` and `web_search`. Signing in with `/login` turns on hosted search, or you can bring an Exa, Firecrawl, Tavily, Parallel or TinyFish key. Results come back as reference text, and `/web off` turns all of it off.
