@@ -2,6 +2,9 @@
 
 ## 0.1.3
 
+- On first launch, a skippable setup wizard helps you connect a model and choose web search. Run `/setup` to reopen it.
+- Use `/web provider` to choose TinyFish with or without an API key, or Exa with your own key. Sign in to Oh My Sol with a GitHub-linked account to access Solana knowledge.
+- Startup artwork uses a native image in compatible terminals and a plain title on other terminals. Use `/art truecolor` or `/art 256` to choose a character mosaic.
 - A Homebrew install on Linux starts again. Host-mode chats no longer mount the OMS install folder, so a group-writable Homebrew Cellar no longer stops `oms` at launch.
 - After your first finished task, OMS shows a short receipt: the input tokens and dollars it used, and an estimate of what the same model would have used in its own lab's harness (Claude Code or Codex CLI), at the ratio measured on Oh My Sol's fresh Solana tasks. It shows again on the 12th and 15th finished tasks, then every 25th, with the running total. Models outside the benchmark are never compared.
 - Selecting text in OMS with the mouse copies it to the clipboard, the same way as in other coding CLIs. Before, the mouse selection did nothing and Cmd+C had nothing to copy.
