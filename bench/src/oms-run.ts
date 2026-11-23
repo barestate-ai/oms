@@ -50,6 +50,8 @@ export function omsWebArgs(contender: string, env: NodeJS.ProcessEnv = process.e
   const byok = SEARCH_BACKENDS.filter((backend) => backend.name !== 'oms' && env[backend.key]).map(
     (backend) => backend.key,
   );
+  const provider = env.OMS_SEARCH_PROVIDER?.trim().toLowerCase();
+  if (provider && provider !== 'auto' && provider !== 'oms') byok.push('OMS_SEARCH_PROVIDER');
   if (byok.length) throw new Error(`${contender} searches through oms-search only; unset ${byok.join(', ')}`);
   return ['--web'];
 }

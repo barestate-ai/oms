@@ -177,7 +177,12 @@ export async function fetchMcpText(
   if (response.status === 401 || response.status === 403)
     throw new Error(`${label} rejected the credential (HTTP ${response.status})`);
   if (!response.ok) throw new Error(`${label} error (HTTP ${response.status})`);
-  const rpc = parseRpc(await response.text());
+  return parseMcpText(await response.text(), label);
+}
+
+/** Decode a successful MCP response, whether it came back as JSON or an event stream. */
+export function parseMcpText(body: string, label: string): { text: string; isError: boolean } {
+  const rpc = parseRpc(body);
   if (rpc.error) throw new Error(`${label} returned an error`);
   const text = (rpc.result?.content ?? [])
     .filter((part) => part.type === 'text')

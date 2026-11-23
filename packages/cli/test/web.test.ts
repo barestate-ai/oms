@@ -28,5 +28,5 @@ test('--no-web is a launch switch for oms run and npm start; /web is a listed co
   assert.equal(parseLaunchOptions(['--no-web']).values.has('--no-web'), true);
   assert.equal(parseLaunchOptions([]).values.has('--no-web'), false);
   assert.throws(() => parseLaunchOptions(['--web']), /Unknown option --web/, '--web exists only for headless oms run');
-  assert.ok(OMS_COMMANDS.some((command) => command.name === 'web' && command.argument === '[on|off]'));
+  assert.ok(OMS_COMMANDS.some((command) => command.name === 'web' && command.argument === '[on|off|provider]'));
 });

@@ -13,7 +13,7 @@ const ART_MODES: Record<string, StartupArtMode> = {
 };
 export const acceptsArt = (argument: string): boolean =>
   !argument || argument === 'next' || Object.hasOwn(ART_MODES, argument);
-export const acceptsWeb = (argument: string): boolean => ['', 'on', 'off'].includes(argument);
+export const acceptsWeb = (argument: string): boolean => ['', 'on', 'off', 'provider'].includes(argument);
 export const acceptsLayout = (argument: string): boolean => ['editor', 'balanced', ''].includes(argument);
 export const acceptsPanel = (argument: string): boolean =>
   ['', 'terminal', 'problems', 'output', 'changes', 'hide'].includes(argument);
@@ -43,7 +43,7 @@ const inEditor =
 
 /** Open a setup screen; the screen keeps the draft and the argument filters it. */
 const setupScreen =
-  (mode: 'model' | 'connect' | 'settings') =>
+  (mode: 'model' | 'connect' | 'settings' | 'welcome') =>
   (ctx: CommandContext, argument: string, draft: Draft): void =>
     ctx.openSetup(mode, argument, draft);
 const accountScreen =
@@ -96,6 +96,7 @@ export const uiCommands = {
     else if (!argument) ctx.ide.togglePanel();
     else ctx.ide.showPanel(argument as 'terminal' | 'problems' | 'output' | 'changes');
   },
+  setup: setupScreen('welcome'),
   model: setupScreen('model'),
   connect: setupScreen('connect'),
   settings: setupScreen('settings'),
@@ -120,16 +121,20 @@ export const uiCommands = {
     ctx.art.reload();
   },
   web(ctx: CommandContext, argument: string, draft: Draft): void {
-    ctx.clearDraft(draft);
     const { web } = ctx.harness;
-    if (!web) {
+    if (argument === 'provider' && web?.search) {
+      ctx.openSetup('search', '', draft);
+      return;
+    }
+    ctx.clearDraft(draft);
+    if (!web || argument === 'provider') {
       ctx.setNotice("Web search isn't available here");
       return;
     }
     if (argument) web.set(argument === 'on');
     const used = web.usage();
     ctx.setNotice(
-      `Web ${web.enabled() ? 'on' : 'off'} · ${plural(used.webSearch, 'search', 'searches')} · ${plural(used.webFetch, 'fetch', 'fetches')} · ${plural(used.solanaMcp, 'docs lookup')} · /web ${web.enabled() ? 'off' : 'on'}`,
+      `Web ${web.enabled() ? 'on' : 'off'} · ${plural(used.webSearch, 'search', 'searches')} · ${plural(used.webFetch, 'fetch', 'fetches')} · ${plural(used.solanaMcp, 'docs lookup')} · /web ${web.enabled() ? 'off' : 'on'}${web.search ? ' · /web provider' : ''}`,
     );
   },
   yolo(ctx: CommandContext, _argument: string, draft: Draft): void {

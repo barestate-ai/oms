@@ -781,32 +781,71 @@ export async function runOmsInterface(
     renderer.setFocus(pane.input);
     requestRender();
   }
-  function openSetup(mode: 'model' | 'connect' | 'theme' | 'settings', query = '', draft?: string): void {
+  function setupModelLabel(): string | undefined {
+    const model = harness.session.model;
+    const choice = selectedModelChoice();
+    return model && hasModelConfiguration(model) && choice?.configured && choice.selectable !== false
+      ? shortModelName(model.id)
+      : undefined;
+  }
+  function setupSearchLabel(): string | undefined {
+    if (!harness.web?.enabled() || !harness.web.search) return undefined;
+    const choices = harness.web.search.choices();
+    const selected = choices.find((choice) => choice.current);
+    if (selected && selected.id !== 'auto') return selected.label;
+    return 'Optional';
+  }
+  function openSetup(
+    mode: 'model' | 'connect' | 'theme' | 'settings' | 'search' | 'welcome',
+    query = '',
+    draft?: string,
+    returnToWelcome = false,
+  ): void {
     if (closing) return;
-    if ((mode === 'model' || mode === 'connect') && busy()) {
+    if (mode !== 'settings' && mode !== 'theme' && busy()) {
       setNotice('Wait for the current turn to finish');
       clearDraft(draft);
       return;
     }
     setup?.dispose();
+    const close = returnToWelcome ? () => openSetup('welcome') : closeSetup;
     const shared = {
       theme: () => theme!,
       rows: () => terminal.rows,
       bodyRows: () => setupPanel.bodyRows(),
       render: requestRender,
-      close: closeSetup,
+      close,
       notice: toast,
       warn: setNotice,
     };
     const pane =
       mode === 'settings'
         ? new HarnessSettingsPane(harness, shared)
-        : new SetupPane(harness, { ...shared, mode, query, selectTheme: changeTheme, previewTheme });
+        : new SetupPane(harness, {
+            ...shared,
+            mode,
+            query,
+            webSearch: harness.web?.search,
+            ...(mode === 'search' && harness.account && harness.account.snapshot().state !== 'signed-in'
+              ? { hostedLogin: () => openAccount('login', undefined, close) }
+              : {}),
+            ...(mode === 'welcome'
+              ? {
+                  welcome: {
+                    model: setupModelLabel(),
+                    search: setupSearchLabel(),
+                    open: (step: 'model' | 'search') => openSetup(step, '', undefined, true),
+                  },
+                }
+              : {}),
+            selectTheme: changeTheme,
+            previewTheme,
+          });
     if (draft !== undefined) clearDraft(draft);
     notice = '';
     showPanel(pane);
   }
-  function openAccount(mode: 'login' | 'logout' | 'account', draft?: string): void {
+  function openAccount(mode: 'login' | 'logout' | 'account', draft?: string, close = closeSetup): void {
     if (closing) return;
     if (mode === 'login' && busy()) {
       setNotice('Wait for the current turn to finish');
@@ -818,7 +857,7 @@ export async function runOmsInterface(
       mode,
       theme: () => theme!,
       render: requestRender,
-      close: closeSetup,
+      close,
       bodyRows: () => setupPanel.bodyRows(),
       tip: () => connectorTip('login'),
     });
@@ -2292,6 +2331,7 @@ export async function runOmsInterface(
     titleSaved = true;
     colorCursor();
     syncActivity();
+    if (chat && options.firstRun && !setupModelLabel()) openSetup('welcome');
     if (options.firstRun) options.onFirstRunShown?.();
     // Running work and a bounded budget's wall clock change with time; nothing else on screen does.
     clock = setInterval(() => {

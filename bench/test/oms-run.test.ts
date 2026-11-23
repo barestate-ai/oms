@@ -19,6 +19,15 @@ test('the OMS cell needs the oms-search stack and refuses bring-your-own search 
     () => omsWebArgs(OMS, { OMS_SEARCH_TOKEN: 't', OMS_SEARCH_URL: 'https://search.example.com', EXA_API_KEY: 'k' }),
     /EXA_API_KEY/,
   );
+  assert.throws(
+    () =>
+      omsWebArgs(OMS, {
+        OMS_SEARCH_TOKEN: 't',
+        OMS_SEARCH_URL: 'https://search.example.com',
+        OMS_SEARCH_PROVIDER: 'tinyfish',
+      }),
+    /OMS_SEARCH_PROVIDER/,
+  );
   assert.deepEqual(omsWebArgs(OMS, { OMS_SEARCH_TOKEN: 't', OMS_SEARCH_URL: 'https://search.example.com' }), ['--web']);
   assert.deepEqual(omsWebArgs('codex:gpt-sol', {}), []);
 });

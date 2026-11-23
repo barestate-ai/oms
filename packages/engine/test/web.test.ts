@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { test } from 'node:test';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import {
@@ -81,6 +81,100 @@ test('BYOK selection follows Exa, Firecrawl, Tavily, Parallel, TinyFish; no key 
     { url: 'https://api.parallel.ai/v1/search', auth: 'k-pl' },
     { url: 'https://api.search.tinyfish.ai?query=anchor%200.31%20release', auth: 'k-tf' },
   ]);
+});
+
+test('a chosen TinyFish provider works without a key and uses the keyed REST API when a key is supplied', async () => {
+  const seen: Array<{ url: string; init: RequestInit }> = [];
+  const result = {
+    results: [
+      { title: 'Solana docs', url: 'https://solana.com/docs', snippet: 'Program guides' },
+      { title: 'Other result', url: 'https://solana.com', snippet: '' },
+    ],
+  };
+  const fetch = (async (url: string, init: RequestInit) => {
+    seen.push({ url, init });
+    if (url.endsWith('/mcp')) {
+      const rpc = {
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        },
+      };
+      return new Response(`event: message\ndata: ${JSON.stringify(rpc)}\n\n`, {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    return reply(200, result);
+  }) as typeof globalThis.fetch;
+  const account = () => ({ origin: 'https://barestate.xyz', token: 'account-secret' });
+  const env = { OMS_SEARCH_PROVIDER: 'tinyfish', EXA_API_KEY: 'exa-secret' };
+  const keyless = tools({ enabled: true, env, fetch, account });
+  const text = await keyless.call('web_search', { query: 'solana docs', max_results: 1 });
+  assert.match(text, /Solana docs/);
+  assert.doesNotMatch(text, /Other result/);
+  assert.deepEqual(keyless.web.usage().searchBy, { tinyfish: 1 });
+
+  const [mcp] = seen.splice(0);
+  assert.equal(mcp!.url, 'https://agent.tinyfish.ai/mcp');
+  const headers = new Headers(mcp!.init.headers);
+  assert.equal(headers.get('x-tinyfish-access-mode'), 'keyless');
+  assert.equal(headers.get('authorization'), null);
+  assert.equal(headers.get('x-api-key'), null);
+  assert.deepEqual(JSON.parse(String(mcp!.init.body)), {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: { name: 'search', arguments: { query: 'solana docs' } },
+  });
+
+  const keyed = tools({ enabled: true, env: { ...env, TINYFISH_API_KEY: 'tinyfish-secret' }, fetch, account });
+  assert.match(await keyed.call('web_search', { query: 'solana docs' }), /Solana docs/);
+  const [rest] = seen;
+  assert.equal(seen.length, 1);
+  assert.equal(rest!.url, 'https://api.search.tinyfish.ai?query=solana%20docs');
+  assert.equal(new Headers(rest!.init.headers).get('x-api-key'), 'tinyfish-secret');
+});
+
+test('saved search preferences apply immediately and survive a new session; launch settings can override them', async (t) => {
+  const agentRoot = mkdtempSync(join(tmpdir(), 'oms-search-settings-'));
+  t.after(() => rmSync(agentRoot, { recursive: true, force: true }));
+  const seen: Array<{ url: string; key: string | null }> = [];
+  const fetch = (async (url: string, init: RequestInit) => {
+    const headers = new Headers(init.headers);
+    seen.push({ url, key: headers.get('x-api-key') });
+    return reply(200, exaHit('from exa'));
+  }) as typeof globalThis.fetch;
+  const config = {
+    agentRoot,
+    enabled: true,
+    env: {},
+    fetch,
+    account: () => ({ origin: 'https://barestate.xyz', token: 'account-secret' }),
+  };
+  const original = tools(config);
+  assert.throws(() => original.web.search.select('exa'), /API key is required/);
+  original.web.search.select('exa', { key: 'saved-secret' });
+  assert.equal(statSync(join(agentRoot, 'web-search.json')).mode & 0o777, 0o600);
+  assert.doesNotMatch(JSON.stringify(original.web.search.choices()), /saved-secret/);
+  assert.match(await original.call('web_search', { query: 'q' }), /from exa/);
+
+  const reopened = tools(config);
+  assert.equal(reopened.web.search.choices().find((choice) => choice.current)?.id, 'exa');
+  await reopened.call('web_search', { query: 'q' });
+  assert.deepEqual(seen.splice(0), [
+    { url: 'https://api.exa.ai/search', key: 'saved-secret' },
+    { url: 'https://api.exa.ai/search', key: 'saved-secret' },
+  ]);
+
+  const override = tools({ ...config, env: { OMS_SEARCH_PROVIDER: 'exa', EXA_API_KEY: 'env-secret' } });
+  assert.throws(() => override.web.search.select('auto'), /Cannot change search provider/);
+  await override.call('web_search', { query: 'q' });
+  assert.deepEqual(seen.splice(0), [{ url: 'https://api.exa.ai/search', key: 'env-secret' }]);
+
+  reopened.web.search.select('auto');
+  await reopened.call('web_search', { query: 'q' });
+  assert.deepEqual(seen, [{ url: 'https://barestate.xyz/search/v1/search', key: null }]);
 });
 
 test('a 429 fails over to the next backend and Retry-After keeps the limited one out until it passes (60 s default)', async () => {
