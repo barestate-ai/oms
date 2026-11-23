@@ -526,9 +526,8 @@ export async function runOmsInterface(
   const art = new StartupArt(Math.random, 44);
   // The picture shows on the first launch, or when /art turns it on.
   let artMode = options.startupArt ?? (options.firstRun ? 'auto' : 'off');
-  // Chosen from the environment (after the one Kitty graphics query over SSH) and again when /art changes the setting.
+  // Rechecked after probing for native graphics and when /art changes the setting.
   let artShown = artShow(artMode, process.env);
-  /** The image tier draws the mosaic until the picture is converted for Kitty graphics. */
   const loadArtImage = () => (artShown === 'image' ? art.loadImage().catch(() => {}) : Promise.resolve());
   let artViewport = 0,
     artHidden = 0;

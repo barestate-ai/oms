@@ -2040,7 +2040,7 @@ function distinctColours(terminal: InterfaceTerminal): number {
 test('an empty session opens with startup art above the placeholder, and the art scrolls away with the conversation', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
-  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+  const run = runOmsInterface(f.harness, { terminal, startupArt: 'truecolor' });
   try {
     const screen = await terminal.until((s) => !!artOnScreen(terminal, s) && s.includes('Try:'));
     const art = artOnScreen(terminal, screen)!;
@@ -2083,7 +2083,7 @@ test('an empty session opens with startup art above the placeholder, and the art
 test('startup art follows the window size and is hidden when under 44 columns of picture fit in a third of the window', async () => {
   const f = fixture();
   const terminal = new InterfaceTerminal(160, 50);
-  const run = runOmsInterface(f.harness, { terminal, firstRun: true });
+  const run = runOmsInterface(f.harness, { terminal, startupArt: 'truecolor' });
   try {
     const wide = artOnScreen(terminal, await terminal.until((s) => !!artOnScreen(terminal, s)))!;
     terminal.setSize(100, 50);
