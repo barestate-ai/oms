@@ -101,7 +101,10 @@ async function decodeCustom(
     program && sources.decodeError
       ? await sources.decodeError(String(code), program).catch(() => undefined)
       : undefined;
-  return remote ? `${head} = ${remote.replace(/\s+/g, ' ').slice(0, 300)} [decode_error]` : head;
+  if (!remote) return head;
+  const excerpt = remote.replace(/<\s*\/\s*solana-knowledge-excerpt/gi, '<\\/solana-knowledge-excerpt')
+    .replace(/\s+/g, ' ').slice(0, 300);
+  return `${head} = <solana-knowledge-excerpt>${excerpt}</solana-knowledge-excerpt> [decode_error]`;
 }
 
 /** A short diagnosis wrapped as untrusted text, or undefined when the output shows no Solana failure. */

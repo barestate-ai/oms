@@ -1,6 +1,7 @@
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
+import { hideKnowledgeBlocks, knowledgeTopic, KNOWLEDGE_TOOL_NAMES } from '@oms/engine';
 import { commandNamesEnvFile, isEnvFile, maskEnvFile, maskSecrets } from './secret-mask.ts';
 import { installPiTheme } from './pi-theme.ts';
 import { DEFAULT_THEME_ID, getTheme, type OmsTheme } from './theme.ts';
@@ -29,6 +30,7 @@ const HISTORY_ENTRIES = 160;
 
 /** All provider, repository, tool and metadata strings cross this boundary before rendering. */
 export function displayText(value: string, limit = ENTRY_CHARS): string {
+  value = hideKnowledgeBlocks(value);
   const clipped = value.length > limit;
   const text = maskSecrets(
     stripTerminalSequences(value.slice(0, limit))
@@ -385,6 +387,14 @@ export class Conversation {
   ): void {
     const { call } = entry;
     call.state = result.isError ? 'error' : 'done';
+    if (KNOWLEDGE_TOOL_NAMES.includes(call.name)) {
+      const text = result.isError ? resultText(result.content, this.mask(call.id)) : '';
+      call.text = result.isError
+        ? (/^Solana knowledge rate limit reached\.(?: Try again in \d{1,4} minute\(s\)\.)?$/.test(text) ? text : 'Solana knowledge unavailable.')
+        : `fetched Solana knowledge: ${knowledgeTopic(call.args)}`;
+      this.touch(entry);
+      return;
+    }
     call.text = resultText(result.content, this.mask(call.id));
     if (result.details !== undefined) call.details = this.details(call.id, result.details);
     call.durationMs =
@@ -606,8 +616,10 @@ export class Conversation {
         const partial = (event.partialResult ?? {}) as { content?: unknown; details?: unknown };
         entry.call.state = 'running';
         entry.call.startedAt ??= this.now();
-        entry.call.text = resultText(partial.content, this.mask(event.toolCallId));
-        if (partial.details !== undefined) entry.call.details = this.details(event.toolCallId, partial.details);
+        if (!KNOWLEDGE_TOOL_NAMES.includes(entry.call.name)) {
+          entry.call.text = resultText(partial.content, this.mask(event.toolCallId));
+          if (partial.details !== undefined) entry.call.details = this.details(event.toolCallId, partial.details);
+        }
         this.touch(entry);
         break;
       }

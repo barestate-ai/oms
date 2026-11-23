@@ -763,13 +763,9 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
           if (next.done) break;
           const event = next.value;
           if (event.type === 'error') {
-            // Operator diagnostics only (never in the transcript): the raw cause behind the plain user-facing message.
             const errorMessage = (event as { error?: { errorMessage?: string } }).error?.errorMessage;
             if (process.env.OMS_STREAM_DEBUG)
-              console.error(
-                'oms stream error',
-                JSON.stringify({ reason: event.reason, message: errorMessage }).slice(0, 600),
-              );
+              console.error('oms stream error', JSON.stringify({ reason: event.reason }));
             if (releaseUnsent() || releaseRejected()) return;
             // A failed attempt that carries provider-reported usage settles at that usage.
             const observedSettled = settleObserved(event.error);

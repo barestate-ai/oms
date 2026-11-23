@@ -122,7 +122,7 @@ test('a custom program error is decoded from the local IDL first, and from decod
     },
   });
   assert.deepEqual(asked, [['6001', PROGRAM]]);
-  assert.match(remote!, /0x1771 \(6001\) = Token: InsufficientFunds \[decode_error\]/);
+  assert.match(remote!, /0x1771 \(6001\) = <solana-knowledge-excerpt>Token: InsufficientFunds<\/solana-knowledge-excerpt> \[decode_error\]/);
 });
 
 test('ComputeBudgetExceeded reports the meter per program', async () => {

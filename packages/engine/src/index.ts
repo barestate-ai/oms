@@ -43,6 +43,8 @@ export {
   wrapUntrusted,
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_TOOL_NAMES,
+  hideKnowledgeBlocks,
+  knowledgeTopic,
   type KnowledgeConfig,
 } from './runtime/knowledge-service.ts';
 export {

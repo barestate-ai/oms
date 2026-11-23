@@ -673,7 +673,7 @@ test('/error decodes locally across Anchor, System and Token tables, local IDLs,
       },
     },
   });
-  assert.match(await text('4242 ProgramX', served), /BadThing/);
+  assert.equal(await text('4242 ProgramX', served), 'fetched Solana knowledge: error 4242');
   assert.deepEqual(asked, [['4242', 'ProgramX']]);
   await text('3012', served);
   assert.equal(asked.length, 1, 'a locally known code never calls the service');

@@ -20,6 +20,7 @@ export interface McpEndpoint {
 }
 export interface KnowledgeConfig extends McpEndpoint {
   token: string;
+  guidance?: true;
 }
 /** A fixed config, or a function read at every call so a sign-in or sign-out takes effect mid-session. */
 export type KnowledgeSource = KnowledgeConfig | (() => KnowledgeConfig | undefined);
@@ -115,6 +116,19 @@ const TOOLS = [
 
 export const KNOWLEDGE_TOOL_NAMES: string[] = TOOLS.map((tool) => tool.name);
 
+export function knowledgeTopic(input: unknown): string {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const topic = args.topic ?? args.name ?? args.program ?? args.code ?? args.query ?? args.id;
+  return (typeof topic === 'string' ? topic.replace(/\s+/g, ' ').trim().slice(0, 70) : '') || 'Solana';
+}
+
+export function hideKnowledgeBlocks(text: string): string {
+  return text
+    .replace(/(?:\[Untrusted reference data[^\n]*\]\n)?<untrusted-knowledge tool="([^"]+)">[\s\S]*?(?:<\/untrusted-knowledge>|$)/g,
+      (block, tool: string) => KNOWLEDGE_TOOL_NAMES.includes(tool) ? 'fetched Solana knowledge: Solana' : block)
+    .replace(/<solana-knowledge-excerpt>[\s\S]*?(?:<\/solana-knowledge-excerpt>|$)/g, 'fetched Solana knowledge: error');
+}
+
 /** UTF-8 safe truncation to a byte budget. */
 function capBytes(text: string, limit: number): { text: string; truncated: boolean } {
   const bytes = Buffer.from(text, 'utf8');
@@ -176,6 +190,11 @@ export async function fetchMcpText(
   // The raw body is never echoed into errors: a failing service must not be able to smuggle text past the untrusted framing.
   if (response.status === 401 || response.status === 403)
     throw new Error(`${label} rejected the credential (HTTP ${response.status})`);
+  if (response.status === 429 && label === 'knowledge service') {
+    const retry = response.headers.get('retry-after');
+    const delay = retry && /^\d{1,5}$/.test(retry) ? ` Try again in ${Math.ceil(Number(retry) / 60)} minute(s).` : '';
+    throw new KnowledgeLimitError(`Solana knowledge rate limit reached.${delay}`);
+  }
   if (!response.ok) throw new Error(`${label} error (HTTP ${response.status})`);
   return parseMcpText(await response.text(), label);
 }
@@ -445,6 +464,17 @@ export async function knowledgePrimer(
   taskText: string,
 ): Promise<{ text: string; injection: KnowledgeInjection; fallback?: string; built?: string }> {
   if (!config?.token) return { text: '', injection: 'search-v0' };
+  if (config.guidance) {
+    const query = [...solanaPackages(root), taskText].join(' ').replace(/\s+/g, ' ').trim().slice(0, 2_000);
+    try {
+      const result = await fetchMcpText(config, 'search_docs', { query, limit: 3 });
+      if (!result.isError && result.text.trim()) {
+        const guidance = wrapUntrusted('search_docs', result.text, KNOWLEDGE_PRIMER_LIMIT - Buffer.byteLength(KNOWLEDGE_RULE) - 2);
+        return { text: `${KNOWLEDGE_RULE}\n\n${guidance}`, injection: 'search-v0' };
+      }
+    } catch { /* the task can start without guidance */ }
+    return { text: KNOWLEDGE_RULE, injection: 'search-v0', fallback: 'Hosted Solana guidance unavailable' };
+  }
   let fallback = '';
   const topics = await topicCards(config, root, taskText).catch((error: unknown) => {
     // Recorded so a fallback is never silent; our own fixed messages or a timeout/network error name, never service text.
@@ -485,6 +515,7 @@ export async function knowledgePrimer(
 }
 
 const LOOKUP_UNAVAILABLE = 'Reference lookup is unavailable right now. Continue without it.';
+class KnowledgeLimitError extends Error {}
 
 /** Registers the knowledge tools. Absent configuration means absent tools; with a function source the session
  * lists the tools only while it returns a config, and a call that finds none fails with a neutral message. */
@@ -502,7 +533,7 @@ export function createKnowledgeExtension(source: KnowledgeSource | undefined): E
             text = await callKnowledgeTool(config, tool.name, params, signal);
           } catch (error) {
             // A service-reported tool error is already wrapped as untrusted text; every transport or status failure becomes one neutral message.
-            if (error instanceof Error && error.message.startsWith('[Untrusted reference data')) throw error;
+            if (error instanceof KnowledgeLimitError) throw error;
             throw new Error(LOOKUP_UNAVAILABLE);
           }
           return { content: [{ type: 'text', text }], details: undefined };
@@ -555,6 +586,6 @@ export function accountKnowledgeSource(inputs: {
     const { OMS_KNOWLEDGE_URL: endpoint, OMS_KNOWLEDGE_TOKEN: token } = inputs.env ?? process.env;
     if (endpoint && token) return { endpoint, token };
     const credential = inputs.account();
-    return credential ? { endpoint: `${credential.origin}/api/knowledge/mcp`, token: credential.token } : undefined;
+    return credential ? { endpoint: `${credential.origin}/api/knowledge/mcp`, token: credential.token, guidance: true } : undefined;
   };
 }

@@ -199,6 +199,7 @@ test('OMS_KNOWLEDGE_URL plus OMS_KNOWLEDGE_TOKEN win over the account; one of th
   assert.deepEqual(accountKnowledgeSource({ env: { OMS_KNOWLEDGE_TOKEN: ENV_TOKEN }, account: () => account })(), {
     endpoint: 'http://127.0.0.1:1/api/knowledge/mcp',
     token: ACCOUNT,
+    guidance: true,
   });
   assert.equal(
     accountKnowledgeSource({ env: { OMS_KNOWLEDGE_URL: 'http://svc.test/mcp' }, account: () => undefined })(),
