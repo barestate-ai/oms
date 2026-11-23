@@ -410,18 +410,13 @@ export function receiptRows(s: Style, r: Receipt, width: number): string[] {
   const cash = (microUsd: number | undefined, approx = '') =>
     microUsd === undefined ? '' : approx + dollars(microUsd);
   const priced = r.omsMicroUsd !== undefined && r.rivalMicroUsd !== undefined;
-  const rows: (readonly [string, string, string])[] =
-    r.kind === 'milestone'
-      ? []
-      : [
-          [`This task · ${r.model}`, `${compact(r.inputTokens)} input tokens`, cash(r.omsMicroUsd)],
-          [`Same model in ${r.rival} (est.)`, `~${compact(r.rivalTokens)} input tokens`, cash(r.rivalMicroUsd, '~')],
-          [
-            'You kept',
-            `~${compact(r.rivalTokens - r.inputTokens)} tokens (${r.percent}%)`,
-            priced ? cash(r.rivalMicroUsd! - r.omsMicroUsd!, '~') : '',
-          ],
-        ];
+  const kept = `~${compact(r.rivalTokens - r.inputTokens)} tokens`;
+  const keptCash = priced ? cash(r.rivalMicroUsd! - r.omsMicroUsd!, '~') : '';
+  const rows: (readonly [string, string, string])[] = [
+    [`This task · ${r.model}`, `${compact(r.inputTokens)} input tokens`, cash(r.omsMicroUsd)],
+    [`Same model in ${r.rival} (est.)`, `~${compact(r.rivalTokens)} input tokens`, cash(r.rivalMicroUsd, '~')],
+    ['You kept', `${kept} (${r.percent}%)`, keptCash],
+  ];
   const jokes: (readonly [string, string])[] =
     r.kind === 'first'
       ? [
@@ -438,6 +433,11 @@ export function receiptRows(s: Style, r: Receipt, width: number): string[] {
   const title = `${s.g.rule}${s.g.rule} OMS receipt `;
   const out = [
     pad + s.accent(s.bold(title)) + s.faint(s.g.rule.repeat(Math.max(0, Math.min(inner, 52) - visibleWidth(title)))),
+    ...wrapTextWithAnsi(
+      `You just saved ${kept}${keptCash ? ` (${keptCash})` : ''}. Same model, less context.`,
+      inner,
+    ).map((row) => pad + s.success(s.bold(row))),
+    '',
   ];
   rows.forEach(([label, value, money], index) => {
     const paint = index === rows.length - 1 ? (text: string) => s.success(s.bold(text)) : s.muted;
@@ -452,8 +452,8 @@ export function receiptRows(s: Style, r: Receipt, width: number): string[] {
   });
   if (r.kind !== 'first') {
     const { tasks, keptTokens, keptMicroUsd } = r.total;
-    const total = `~${compact(keptTokens)} tokens${keptMicroUsd > 0 ? ` (~${dollars(keptMicroUsd)})` : ''} kept so far, over ${tasks} ${tasks === 1 ? 'task' : 'tasks'}`;
-    out.push(pad + (r.kind === 'milestone' ? s.success(s.bold(total)) : s.muted(total)));
+    const total = `~${compact(keptTokens)} tokens${keptMicroUsd > 0 ? ` (~${dollars(keptMicroUsd)})` : ''} kept so far, over ${tasks} tasks`;
+    out.push('', pad + s.success(s.bold(total)));
   }
   if (jokes.length) {
     out.push('');
@@ -464,7 +464,7 @@ export function receiptRows(s: Style, r: Receipt, width: number): string[] {
   }
   const note =
     `Estimate: on Oh My Sol's fresh Solana tasks, ${r.rival} used ${r.ratio.toFixed(1)}× the input tokens per solved task on ${r.model}.` +
-    `${priced ? ' Dollars at API list prices.' : ''} ${BENCHMARK_URL} · /savings off`;
+    `${priced ? ' Dollars at API list prices.' : ''} ${BENCHMARK_URL}`;
   out.push('', ...wrapTextWithAnsi(note, inner).map((row) => pad + s.faint(row)));
   return out;
 }

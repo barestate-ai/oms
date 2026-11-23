@@ -1360,13 +1360,6 @@ export async function runOmsInterface(
     openConnectors,
     connectors: options.connectors,
     changeTheme,
-    savings: {
-      get: latestSavings,
-      setShown(shown) {
-        const { off: _, ...rest } = latestSavings();
-        keepSavings(shown ? rest : { ...rest, off: true });
-      },
-    },
     art: {
       setMode(mode) {
         artMode = mode;

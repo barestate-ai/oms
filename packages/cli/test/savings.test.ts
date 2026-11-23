@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { stripTerminalSequences } from '@earendil-works/pi-tui';
-import { emptySavings, parseSavings, recordTurn, savingsSummary, type TurnUsage } from '../src/tui/savings.ts';
+import { emptySavings, parseSavings, recordTurn, type TurnUsage } from '../src/tui/savings.ts';
 import { interfacePreferences, readTuiPreferences } from '../src/tui/preferences.ts';
 import { getTheme } from '../src/tui/theme.ts';
 import { Conversation } from '../src/tui/transcript.ts';
@@ -35,28 +35,23 @@ test('the Claude Code adapter names count as the same model', () => {
   assert.equal(recordTurn(emptySavings(), [{ ...opus(50_000), model: 'opus' }]).receipt?.model, 'Opus 5.5');
 });
 
-test('questions, unbenchmarked models and a turned-off receipt show nothing', () => {
+test('questions and unbenchmarked models show nothing', () => {
   assert.equal(recordTurn(emptySavings(), [opus(5_000)]).receipt, undefined);
   assert.equal(recordTurn(emptySavings(), [opus(5_000)]).state.tasks, 0);
   const other = recordTurn(emptySavings(), [{ ...opus(90_000), model: 'deepseek-v4-pro' }]);
   assert.deepEqual(other, { state: emptySavings() });
-  const off = recordTurn({ ...emptySavings(), off: true }, [opus(100_000)]);
-  assert.equal(off.receipt, undefined);
-  assert.equal(off.state.tasks, 1, 'the total still counts');
 });
 
-test('after the first, the receipt comes back on the fifth task and then only at milestones', () => {
+test('the receipt shows on tasks 1, 12 and 15, then every 25th', () => {
   let state = emptySavings();
   const kinds: string[] = [];
-  for (let task = 1; task <= 12; task++) {
+  for (let task = 1; task <= 75; task++) {
     const turn = recordTurn(state, [opus(150_000)]);
     state = turn.state;
     if (turn.receipt) kinds.push(`${task}:${turn.receipt.kind}`);
   }
-  // Each task keeps ~240k, so the 1M mark falls on the fifth task (shown as the repeat) and nothing until 5M.
-  assert.deepEqual(kinds, ['1:first', '5:repeat']);
-  state = { ...state, keptTokens: 4_900_000 };
-  assert.equal(recordTurn(state, [opus(150_000)]).receipt?.milestone, 5_000_000);
+  assert.deepEqual(kinds, ['1:first', '12:repeat', '15:repeat', '25:repeat', '50:repeat', '75:repeat']);
+  assert.equal(state.tasks, 75);
 });
 
 test('a saved total survives only when well formed', () => {
@@ -64,11 +59,9 @@ test('a saved total survives only when well formed', () => {
     tasks: 2,
     keptTokens: 10,
     keptMicroUsd: 3,
-    off: true,
   });
   assert.equal(parseSavings({ tasks: -1, keptTokens: 0, keptMicroUsd: 0 }), undefined);
   assert.equal(parseSavings('x'), undefined);
-  assert.match(savingsSummary(emptySavings()), /No finished tasks/);
 });
 
 test('the receipt draws under the footer of a turn that worked', () => {
@@ -98,6 +91,7 @@ test('the receipt draws under the footer of a turn that worked', () => {
   assert.ok(rows.some((row) => row.includes('OMS receipt')));
   assert.ok(rows.some((row) => /This task · Opus 5\.5 +182k input tokens +\$0\.19/.test(row)));
   assert.ok(rows.some((row) => /You kept +~291k tokens \(62%\)/.test(row)));
+  assert.ok(rows.some((row) => /You just saved ~291k tokens \(~\$0\.18\)/.test(row)));
   assert.ok(rows.some((row) => row.includes('barestate.xyz/oh-my-sol')));
   assert.ok(conversation.render(40).length > 0, 'a narrow terminal still draws it');
 });
@@ -106,12 +100,6 @@ test('hour-long cache writes are priced at the long-write rate', () => {
   const short = recordTurn(emptySavings(), [{ ...opus(0), cacheWrite: 100_000 }]).receipt!;
   const long = recordTurn(emptySavings(), [{ ...opus(0), cacheWrite: 100_000, cacheWrite1h: 100_000 }]).receipt!;
   assert.ok(long.omsMicroUsd! > short.omsMicroUsd!);
-});
-
-test('milestones before the fifth task wait for the fifth-task receipt', () => {
-  const early = recordTurn({ tasks: 2, keptTokens: 900_000, keptMicroUsd: 0 }, [opus(150_000)]);
-  assert.equal(early.receipt, undefined);
-  assert.equal(early.state.tasks, 3);
 });
 
 const settle = (stopReason: string, ms: number) => {

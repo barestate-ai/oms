@@ -15,11 +15,10 @@ import { agentsCommand, teamCommand } from './agent-commands.ts';
 import { acceptsConnectors, connectorCommandNames, connectorsCommand, contextCommand } from './connector-commands.ts';
 import type { Connectors } from '../connectors/runtime.ts';
 import { clearConversation, goalCommand } from './conversation-commands.ts';
-import { acceptsArt, acceptsLayout, acceptsPanel, acceptsWeb, acceptsSavings, uiCommands } from './ui-commands.ts';
+import { acceptsArt, acceptsLayout, acceptsPanel, acceptsWeb, uiCommands } from './ui-commands.ts';
 import { refuseWith, type Prepared } from './prepared.ts';
 import type { Goal } from './goal.ts';
 import type { StartupArtMode } from './startup-art.ts';
-import type { SavingsState } from './savings.ts';
 import type { Conversation } from './transcript.ts';
 import type { WorkbenchPane } from './workbench.ts';
 import type { TerminalPane } from './terminal-pane.ts';
@@ -71,8 +70,6 @@ export interface CommandContext {
   /** False, with a notice, for an unknown theme. */
   changeTheme(id: string): boolean;
   art: { setMode(mode: StartupArtMode): void; next(): void; title(): string; reload(): void };
-  /** The OMS receipt's running total; absent in tests that do not need it. */
-  readonly savings?: { get(): SavingsState; setShown(shown: boolean): void };
   goal: { get(): Goal | undefined; set(goal: Goal | undefined): void };
   startGoal(text: string, check: string | undefined, draft: string | undefined): void;
   /** Send text to the agent as the user's next message. */
@@ -342,15 +339,6 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     accepts: acceptsArt,
     whileBusy: 'accepted',
     run: uiCommands.art,
-  },
-  {
-    name: 'savings',
-    group: 'Setup',
-    description: 'Tokens and dollars OMS kept you',
-    argument: '[on|off]',
-    accepts: acceptsSavings,
-    whileBusy: 'accepted',
-    run: uiCommands.savings,
   },
   {
     name: 'web',

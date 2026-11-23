@@ -45,9 +45,10 @@ const BENCHMARK: Readonly<
 export const BENCHMARK_URL = 'barestate.xyz/oh-my-sol';
 /** A turn with less input than this was a question, not a task. */
 export const TASK_INPUT_TOKENS = 20_000;
-/** The receipt shows on the first task, again on this one, then only when the running total crosses a milestone. */
-const REPEAT_AT_TASK = 5;
-const MILESTONES = [1_000_000, 5_000_000, 10_000_000, 25_000_000, 50_000_000, 100_000_000];
+/** The receipt shows after these finished tasks, then after every `EVERY`th. */
+const SHOW_AT = [1, 12, 15];
+const EVERY = 25;
+const shows = (task: number) => SHOW_AT.includes(task) || task % EVERY === 0;
 
 /** One model's usage over a turn, as the provider reported it. */
 export interface TurnUsage {
@@ -65,11 +66,10 @@ export interface SavingsState {
   tasks: number;
   keptTokens: number;
   keptMicroUsd: number;
-  off?: true;
 }
 
 export interface Receipt {
-  kind: 'first' | 'repeat' | 'milestone';
+  kind: 'first' | 'repeat';
   model: string;
   rival: string;
   /** Rival input tokens over OMS input tokens on the benchmark. */
@@ -83,7 +83,6 @@ export interface Receipt {
   omsMicroUsd?: number;
   rivalMicroUsd?: number;
   total: SavingsState;
-  milestone?: number;
 }
 
 export const emptySavings = (): SavingsState => ({ tasks: 0, keptTokens: 0, keptMicroUsd: 0 });
@@ -155,22 +154,12 @@ export function recordTurn(
     keptTokens: state.keptTokens + kept,
     keptMicroUsd: state.keptMicroUsd + Math.round(found.keptMicroUsd ?? 0),
   };
-  if (state.off) return { state: next };
-  const milestone = MILESTONES.findLast((mark) => state.keptTokens < mark && next.keptTokens >= mark);
-  const kind =
-    next.tasks === 1
-      ? 'first'
-      : next.tasks === REPEAT_AT_TASK
-        ? 'repeat'
-        : milestone && next.tasks > REPEAT_AT_TASK
-          ? 'milestone'
-          : undefined;
-  if (!kind) return { state: next };
+  if (!shows(next.tasks)) return { state: next };
   const { bench } = found;
   return {
     state: next,
     receipt: {
-      kind,
+      kind: next.tasks === 1 ? 'first' : 'repeat',
       model: bench.name,
       rival: bench.rival,
       ratio: bench.rivalTokens / bench.oms,
@@ -186,7 +175,6 @@ export function recordTurn(
             rivalMicroUsd: Math.round(found.omsMicroUsd + found.keptMicroUsd),
           }),
       total: next,
-      ...(milestone ? { milestone } : {}),
     },
   };
 }
@@ -200,24 +188,8 @@ export function dollars(microUsd: number): string {
 /** A saved running total, or undefined for anything malformed. */
 export function parseSavings(value: unknown): SavingsState | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const { tasks, keptTokens, keptMicroUsd, off } = value as Record<string, unknown>;
+  const { tasks, keptTokens, keptMicroUsd } = value as Record<string, unknown>;
   const whole = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
   if (!whole(tasks) || !whole(keptTokens) || !whole(keptMicroUsd)) return undefined;
-  return { tasks, keptTokens, keptMicroUsd, ...(off === true ? { off: true as const } : {}) };
-}
-
-/** What /savings says. */
-export function savingsSummary(state: SavingsState): string {
-  const models = Object.values(BENCHMARK)
-    .map((bench) => `${bench.name} vs ${bench.rival}`)
-    .join(', ');
-  const tally =
-    state.tasks === 0
-      ? 'No finished tasks on a benchmarked model yet.'
-      : `~${(state.keptTokens / 1_000_000).toFixed(2)}M input tokens${state.keptMicroUsd > 0 ? ` (~${dollars(state.keptMicroUsd)} at API list prices)` : ''} kept over ${state.tasks} ${state.tasks === 1 ? 'task' : 'tasks'}, estimated.`;
-  return [
-    tally,
-    `Compared with the same model in its own lab's harness, at the input-token ratio measured on Oh My Sol's fresh Solana tasks: ${models}. Other models are not compared. ${BENCHMARK_URL}`,
-    `Receipts ${state.off ? 'off · /savings on' : 'on · /savings off'}`,
-  ].join('\n');
+  return { tasks, keptTokens, keptMicroUsd };
 }
