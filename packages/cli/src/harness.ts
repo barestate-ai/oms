@@ -260,7 +260,7 @@ export async function runHarnessCommand(
     // Every other run resolves it in the session: OMS_KNOWLEDGE_URL plus OMS_KNOWLEDGE_TOKEN, else the signed-in account.
     const pinnedToken = parsed.values.has('--knowledge') ? process.env.OMS_KNOWLEDGE_TOKEN : undefined;
     const knowledge = pinnedToken
-      ? { endpoint: process.env.OMS_KNOWLEDGE_URL ?? 'https://knowledge.barestate.xyz/mcp', token: pinnedToken }
+      ? { endpoint: process.env.OMS_KNOWLEDGE_URL ?? 'https://barestate.xyz/oms/api/knowledge/mcp', token: pinnedToken }
       : undefined;
     const options: HarnessSessionOptions = {
       workspace,

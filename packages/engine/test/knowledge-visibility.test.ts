@@ -19,12 +19,14 @@ import {
   hideKnowledgeBlocks,
   hideKnowledgeInSession,
   KNOWLEDGE_TOOL_NAMES,
+  knowledgeRequestMessages,
   promptWithKnowledge,
   wrapUntrusted,
   type KnowledgeConfig,
 } from '../src/runtime/knowledge-service.ts';
 import { createHarnessSettings } from '../src/runtime/settings-controls.ts';
 import { knowledgeHint } from '../src/runtime/session.ts';
+import { measuredInputBound } from '../src/runtime/usage.ts';
 
 const ACCOUNT = 'synthetic-account-token-7c1d';
 const ENV_TOKEN = 'synthetic-env-token-91ab';
@@ -226,6 +228,10 @@ test('the real agent sends the primer and persists only the redacted prompt', as
     assert.doesNotMatch(entries, /private primer text/);
     assert.match(entries, /quoted example/);
     assert.match(entries, /fetched Solana knowledge: Solana/);
+    const history = await r.session.agent.convertToLlm(r.session.sessionManager.buildSessionContext().messages);
+    const request = knowledgeRequestMessages(r.session.sessionManager, history);
+    const model = r.session.model!;
+    assert.ok(measuredInputBound(model, { messages: request })! > measuredInputBound(model, { messages: history })!);
   } finally {
     r.cleanup();
   }
