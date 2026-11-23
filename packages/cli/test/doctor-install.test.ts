@@ -71,13 +71,19 @@ test('replaces the pinned executable without changing the previous inode', async
 test('follows a custom install symlink whether or not its executable already exists', async () => {
   await withServer(async (base) => {
     const target = join(dir, 'surfpool-link');
-    const executable = join(dir, 'linked-surfpool');
-    symlinkSync('linked-surfpool', target);
+    const other = join(dir, 'linked-surfpool');
+    const executable = join(dir, 'real', 'linked-surfpool');
+    const link = 'shortcut/../linked-surfpool';
+    mkdirSync(join(dir, 'real', 'nested'), { recursive: true });
+    writeFileSync(other, 'unrelated file');
+    symlinkSync('real/nested', join(dir, 'shortcut'));
+    symlinkSync(link, target);
     for (const existing of [false, true]) {
       if (existing) writeFileSync(executable, 'previous executable');
       await installSurfpool({ url: `${base}/surfpool.tar.gz`, sha256 }, target);
-      assert.equal(readlinkSync(target), 'linked-surfpool');
+      assert.equal(readlinkSync(target), link);
       assert.match(readFileSync(executable, 'utf8'), /surfpool 1\.7\.0/);
+      assert.equal(readFileSync(other, 'utf8'), 'unrelated file');
     }
   });
 });

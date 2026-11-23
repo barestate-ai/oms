@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { privateDirectory } from '@oms/engine';
 
@@ -29,16 +29,18 @@ export interface SurfpoolArchive {
 function installPath(target: string): string {
   for (let depth = 0; depth < 40; depth++) {
     try {
-      return realpathSync(target);
+      return realpathSync.native(target);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
+    const parent = realpathSync.native(dirname(target));
+    const path = join(parent, basename(target));
     try {
       // A fresh target may itself be a link whose executable has yet to be installed.
-      const link = readlinkSync(target);
-      target = resolve(realpathSync(dirname(target)), link);
+      const link = readlinkSync(path);
+      target = isAbsolute(link) ? link : parent + sep + link;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return path;
       throw error;
     }
   }
