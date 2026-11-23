@@ -145,3 +145,25 @@ test('two chats on the same state root both add to the saved total', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a narrow later receipt wraps its running total rather than clipping it', () => {
+  const clock = { now: 0 };
+  const conversation = new Conversation([], undefined, {
+    now: () => clock.now,
+    receipt: (usage) => recordTurn({ tasks: 11, keptTokens: 2_900_000, keptMicroUsd: 1_800_000 }, usage).receipt,
+  });
+  const reply = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Done.' }],
+    stopReason: 'stop',
+    usage: { input: 20_000, output: 4000, cacheRead: 162_000, cacheWrite: 0, totalTokens: 186_000, cost: {} },
+    model: 'claude-opus-5-5',
+    timestamp: 1,
+  };
+  conversation.accept({ type: 'agent_start' } as never);
+  conversation.accept({ type: 'message_end', message: reply } as never);
+  clock.now += 60_000;
+  conversation.accept({ type: 'agent_settled', aborted: false } as never);
+  const text = plain(conversation.render(46)).join(' ').replace(/\s+/g, ' ');
+  for (const part of ['kept so far, over 12 tasks', '~$0.37', '~$0.18']) assert.ok(text.includes(part), part);
+});
