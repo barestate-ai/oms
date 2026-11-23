@@ -16,7 +16,7 @@ import { KNOWLEDGE_TOOL_NAMES } from '../knowledge-service.ts';
 import type { SessionApiParts } from '../session-api.ts';
 import { createSessionHooks } from '../session-hooks.ts';
 import { readingExtensions } from '../session-tools.ts';
-import { sessionToolNames, withModelUsage } from '../session-model.ts';
+import { modelUsageObserver, sessionToolNames } from '../session-model.ts';
 import { harnessPolicySettings } from '../settings-controls.ts';
 import { KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
 import { withToolExecutionModes } from '../tool-execution.ts';
@@ -340,7 +340,8 @@ export async function runHelper(parts: SessionApiParts, run: HelperRun): Promise
     session.agent.toolExecution = 'parallel';
     const original: StreamFn = session.agent.streamFunction;
     const metered = createMeteredStream({
-      streamFunction: withModelUsage(original, parts.account.searchCredential),
+      streamFunction: original,
+      observeModelUsage: modelUsageObserver(parts.account.searchCredential),
       ledger: env.budget,
       allocate: env.allocate,
       executionMode: env.executionMode,

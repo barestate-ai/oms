@@ -29,7 +29,7 @@ import type { CommonSessionOptions } from './session-types.ts';
 import { createHarnessSettings } from './settings-controls.ts';
 import { RAW_OUTPUT_TOOL } from './solana-diagnosis.ts';
 import { withToolExecutionModes } from './tool-execution.ts';
-import { createMeteredStream } from './usage.ts';
+import { createMeteredStream, type ModelUsageObserver } from './usage.ts';
 
 /** Registered tools pi would otherwise drop: deps_fetch is part of the build profile. */
 export function sessionToolNames(
@@ -65,16 +65,14 @@ export interface SessionModel {
 
 type ModelUsageCredential = () => { origin: string; token: string } | undefined;
 
-export function withModelUsage(streamFunction: StreamFn, readCredential?: ModelUsageCredential): StreamFn {
-  if (process.env.OMS_SHARE_MODEL_USAGE !== '1' || !readCredential) return streamFunction;
-  return async (model, context, streamOptions) => {
+export function modelUsageObserver(readCredential?: ModelUsageCredential): ModelUsageObserver | undefined {
+  if (process.env.OMS_SHARE_MODEL_USAGE !== '1' || !readCredential) return undefined;
+  return (model) => {
     const credential = readCredential();
-    const stream = await streamFunction(model, context, streamOptions);
-    if (credential?.origin === 'https://barestate.xyz/oms') {
-      void stream
-        .result()
-        .then((message) => {
-          if (message.stopReason === 'aborted') return;
+    if (credential?.origin !== 'https://barestate.xyz/oms') return undefined;
+    return (outcome) => {
+      void Promise.resolve()
+        .then(() => {
           return fetch(credential.origin + '/api/telemetry/model', {
             method: 'POST',
             redirect: 'error',
@@ -84,13 +82,12 @@ export function withModelUsage(streamFunction: StreamFn, readCredential?: ModelU
             body: JSON.stringify({
               provider: model.provider,
               model: model.id,
-              outcome: message.stopReason === 'error' ? 'error' : 'ok',
+              outcome,
             }),
           }).then((response) => response.body?.cancel());
         })
         .catch(() => {});
-    }
-    return stream;
+    };
   };
 }
 
@@ -232,7 +229,8 @@ export async function createSessionModel(
   session.agent.toolExecution = 'parallel';
   const originalSdkStream: StreamFn = session.agent.streamFunction;
   const directStream = createMeteredStream({
-    streamFunction: withModelUsage(originalSdkStream, telemetryCredential),
+    streamFunction: originalSdkStream,
+    observeModelUsage: modelUsageObserver(telemetryCredential),
     ledger: env.budget,
     allocate: env.allocate,
     executionMode: env.executionMode,

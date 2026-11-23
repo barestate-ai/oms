@@ -20,7 +20,7 @@ import { isRetryableAssistantError } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createBudgetLedger, type BudgetLedgerEvent } from '@oms/core';
 import { createMeteredStream, openBudgetJournal, modelReadiness } from '../src/runtime/usage.ts';
-import { withModelUsage } from '../src/runtime/session-model.ts';
+import { modelUsageObserver } from '../src/runtime/session-model.ts';
 import { modelReservationBound, normalizePiUsage } from '@oms/core/usage';
 import { createDispatchAllocator } from '@oms/core/dispatch';
 
@@ -59,12 +59,7 @@ function message(): AssistantMessage {
   };
 }
 
-test('local model reporting requires opt-in and sends only model metadata to Barestate', async (t) => {
-  const streamFunction: StreamFn = () => {
-    const stream = createAssistantMessageEventStream();
-    stream.end(message());
-    return stream;
-  };
+test('local model reporting counts metered provider requests and sends only model metadata to Barestate', async (t) => {
   const credential = { origin: 'https://barestate.xyz/oms', token: 'synthetic-credential' };
   const report = t.mock.method(
     globalThis,
@@ -77,23 +72,47 @@ test('local model reporting requires opt-in and sends only model metadata to Bar
     else process.env.OMS_SHARE_MODEL_USAGE = previous;
   });
   process.env.OMS_SHARE_MODEL_USAGE = '0';
-  assert.equal(
-    withModelUsage(streamFunction, () => credential),
-    streamFunction,
-  );
-  process.env.OMS_SHARE_MODEL_USAGE = '1';
   const context = normalizeContext({ messages: [{ role: 'user', content: 'private prompt', timestamp: 0 }] });
-  const run = async (origin: string) => {
-    const stream = await withModelUsage(streamFunction, () => ({ ...credential, origin }))(model, context);
-    assert.equal((await stream.result()).stopReason, 'stop');
+  const providerFetch = t.mock.fn(async () => new Response());
+  const run = async (origin: string, mode: 'ok' | 'oversized' | 'mismatch' = 'ok') => {
+    const metered = createMeteredStream({
+      observeModelUsage: modelUsageObserver(() => ({ ...credential, origin })),
+      ledger: createBudgetLedger({ caps, clock: Date.now, persist() {} }),
+      allocate: createDispatchAllocator(),
+      maxOutputTokens: 50,
+      maxInputTokens: 20_000,
+      logicalTurnId: () => 'telemetry-test',
+      async streamFunction(selected, _context, options) {
+        await options?.onPayload?.(
+          { model: selected.id, messages: mode === 'oversized' ? 'x'.repeat(25_000) : [] },
+          selected,
+        );
+        await options?.fetch?.(selected.baseUrl);
+        const stream = createAssistantMessageEventStream();
+        const result = mode === 'mismatch' ? { ...message(), responseModel: 'different-model' } : message();
+        stream.push({ type: 'done', reason: 'stop', message: result });
+        stream.end();
+        return stream;
+      },
+    });
+    const stream = await metered(model, context, { fetch: providerFetch });
+    return await stream.result();
   };
-  await run('https://example.com/oms');
+  const optedOut = await run(credential.origin);
+  assert.equal(optedOut.stopReason, 'stop', optedOut.errorMessage);
+  process.env.OMS_SHARE_MODEL_USAGE = '1';
+  assert.equal((await run('https://example.com/oms')).stopReason, 'stop');
+  assert.match((await run(credential.origin, 'oversized')).errorMessage ?? '', /No provider request sent/);
+  assert.equal(providerFetch.mock.callCount(), 2);
   assert.equal(report.mock.callCount(), 0);
-  await run(credential.origin);
-  assert.equal(report.mock.callCount(), 1);
-  const [url, init] = report.mock.calls[0]!.arguments;
-  assert.equal(url, credential.origin + '/api/telemetry/model');
-  assert.deepEqual(JSON.parse(String(init?.body)), { provider: model.provider, model: model.id, outcome: 'ok' });
+  assert.equal((await run(credential.origin)).stopReason, 'stop');
+  assert.match((await run(credential.origin, 'mismatch')).errorMessage ?? '', /without trustworthy final usage/);
+  assert.equal(report.mock.callCount(), 2);
+  for (const [index, outcome] of ['ok', 'error'].entries()) {
+    const [url, init] = report.mock.calls[index]!.arguments;
+    assert.equal(url, credential.origin + '/api/telemetry/model');
+    assert.deepEqual(JSON.parse(String(init?.body)), { provider: model.provider, model: model.id, outcome });
+  }
 });
 function fixture(streamFunction?: StreamFn, customCaps = caps, onBareBadRequest?: () => void) {
   const events: BudgetLedgerEvent[] = [];
