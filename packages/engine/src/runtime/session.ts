@@ -17,7 +17,7 @@ export type {
   OmsSession,
 } from './session-types.ts';
 export { parseHarnessTaskDefinition, prepareHarnessTask } from './task-definition.ts';
-export { knowledgeHint, omsSystemPrompt } from './system-prompt.ts';
+export { coAuthorTrailerHint, CO_AUTHOR_TRAILER, knowledgeHint, omsSystemPrompt } from './system-prompt.ts';
 
 /**
  * One live task owner. UI views consume it; replacing a view never replaces this runtime.

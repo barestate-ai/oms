@@ -18,7 +18,7 @@ import { createSessionHooks } from '../session-hooks.ts';
 import { readingExtensions } from '../session-tools.ts';
 import { modelUsageObserver, sessionToolNames } from '../session-model.ts';
 import { harnessPolicySettings } from '../settings-controls.ts';
-import { KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
+import { coAuthorTrailerHint, KEY_SAFETY, omsChatPrompt } from '../system-prompt.ts';
 import { withToolExecutionModes } from '../tool-execution.ts';
 import { createMeteredStream, measuredInputBound, modelReadiness, requestBound } from '../usage.ts';
 import { hostSandbox } from '@oms/sandbox';
@@ -257,7 +257,11 @@ function helperPrompt(parts: SessionApiParts, def: AgentDefinition): string {
   const folder = parts.tools.taskRoot;
   const framing = `You are a helper of another agent. Do only the task you are given, in ${folder}, and answer with your report.`;
   if (def.tools === 'edit') {
-    return omsChatPrompt(folder, parts.tools.toolchainSummary, `\n\n${framing}\n${def.instructions}`);
+    return omsChatPrompt(
+      folder,
+      parts.tools.toolchainSummary,
+      `${coAuthorTrailerHint(parts.options)}\n\n${framing}\n${def.instructions}`,
+    );
   }
   return [framing, def.instructions, KEY_SAFETY].join('\n\n');
 }

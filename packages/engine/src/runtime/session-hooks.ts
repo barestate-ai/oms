@@ -10,6 +10,7 @@ import type { CommonSessionOptions } from './session-types.ts';
 import {
   CLAUDE_CAPPED_WORK,
   CLAUDE_DEPLOYMENT_KNOWLEDGE,
+  coAuthorTrailerHint,
   knowledgeHint,
   omsChatPrompt,
   omsSystemPrompt,
@@ -61,7 +62,7 @@ export function createSessionHooks(
     (env.contract ? omsSystemPrompt : omsChatPrompt)(
       taskRoot,
       tools.toolchainSummary,
-      `${knowledgeHint(options, config)}${web ? (config ? WEB_PROMPT : WEB_PROMPT_NO_KNOWLEDGE) : ''}`,
+      `${knowledgeHint(options, config)}${web ? (config ? WEB_PROMPT : WEB_PROMPT_NO_KNOWLEDGE) : ''}${coAuthorTrailerHint(options)}`,
     );
   const policy: ExtensionFactory = (pi) => {
     pi.on('before_agent_start', (event, ctx) => {
