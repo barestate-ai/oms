@@ -142,7 +142,8 @@ export const BATCHED_STEPS = words(
 /** The attribution line an OMS-authored git commit ends with. */
 export const CO_AUTHOR_TRAILER = 'Co-Authored-By: Oh My Sol <357342057+oh-my-sol[bot]@users.noreply.github.com>';
 const CO_AUTHOR_TRAILER_RULE = words(
-  'When you create a git commit, end the commit message with this exact trailer line as its last line:',
+  'When you create a git commit, end the commit message with this exact trailer line as its last line, after a',
+  'blank line:',
   `"${CO_AUTHOR_TRAILER}".`,
   'Keep trailers the message already has, add this one only when it is not already there, and never add it to a',
   'commit the user made.',
