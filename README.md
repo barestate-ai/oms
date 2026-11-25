@@ -54,6 +54,8 @@ npx @barestate/oms
 
 The first launch installs Surfpool 1.7.0 and checks its SHA-256. `oms doctor --install` does the same on its own.
 
+To update, run `oms update` (`oms update --check` only looks). It upgrades the same way you installed: the curl installer and npm in place, Homebrew through `brew upgrade`. `oms version` prints what you have.
+
 ## The batteries
 
 - **Solana references.** Programs, instructions and accounts, built in and offline.
