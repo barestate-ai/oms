@@ -77,7 +77,7 @@ test('the release workflow only runs from main, publishes through a gated enviro
   assert.match(release, /github\.ref == 'refs\/heads\/main'/);
   assert.match(release, /environment: npm/);
   assert.match(release, /id-token: write/);
-  assert.match(release, /npm publish "\.\/dist\/.*--provenance --access public/); // a bare dist/x.tgz is read as a GitHub repo
+  assert.match(release, /npm publish "\.\/dist\/.*--provenance --access public/);
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|secrets\./);
   assert.doesNotMatch(release, /pull_request|master/);
   // Only the publish job may write; the build job stays read-only.
