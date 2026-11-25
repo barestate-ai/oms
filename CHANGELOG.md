@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.4
 
 - `oms update` installs the latest release the way you installed OMS (curl installer, npm or Homebrew), `oms update --check` only reports, and `oms update --version <x.y.z>` picks one. `oms version` prints the version.
 

@@ -4,7 +4,7 @@
 
 Everyday work goes through pull requests into `master`. `main` is the release branch: it only takes merges from `master`, and a merge to `main` releases.
 
-1. Set `releaseVersion` in the root `package.json` (currently **0.1.3**) and add a `## <version>` section to `CHANGELOG.md`. That field is the only place the version lives, and the workspaces stay at 0.0.1. The release is refused if the changelog section is missing or empty.
+1. Set `releaseVersion` in the root `package.json` (currently **0.1.4**) and add a `## <version>` section to `CHANGELOG.md`. That field is the only place the version lives, and the workspaces stay at 0.0.1. The release is refused if the changelog section is missing or empty.
 2. Open a pull request from `master` into `main`. CI runs on it.
 3. Merge it. `.github/workflows/release.yml` runs on the push to `main` (never from `master`, forks or other branches): it typechecks, tests and packs the archive, then waits for the owner to approve the `npm` environment.
 4. After approval it publishes the exact archive it tested with `npm publish --provenance` through npm trusted publishing (no npm token is stored), checks that the registry's tarball has the same SHA-256, creates the `v<version>` tag and GitHub Release with the tarball, its checksum and the changelog section as notes, and smoke-tests the npm package and `curl -fsSL https://barestate.xyz/oms/install | sh`.
@@ -22,13 +22,13 @@ A run for a version that is already on npm and already released does nothing, so
 
 The workflow does this for you; the steps below are for a local check.
 
-- Confirm `releaseVersion` in the root `package.json` (currently **0.1.3**). The root `package.json` and the private workspaces stay at 0.0.1; the generated public archive carries the release version.
+- Confirm `releaseVersion` in the root `package.json` (currently **0.1.4**). The root `package.json` and the private workspaces stay at 0.0.1; the generated public archive carries the release version.
 - Run `npm ci --ignore-scripts`, `npm run typecheck` and `npm test`. Keep missing-infrastructure results (no Surfpool, no Docker) distinct from passes. No model call is needed for these checks.
 - Run `npm run pack:release`. It stages the `cli`, `engine`, `core`, `contract`, `surfnet`, `sandbox` and `review` packages; `packages/signer` and `bench/` stay in the repository and are not shipped. It stages only runtime source, the launcher, documentation, licenses, the runtime manifest and startup art. TypeScript is compiled to JavaScript because Node cannot strip TypeScript from installed `node_modules`. Internal workspace imports resolve within the archive. External runtime dependencies are installed from npm under the root dependency overrides and bundled; their `scripts` sections are removed so installing the package cannot run third-party install code, and the `oms` entry file is made executable.
 
 The script runs `npm pack --ignore-scripts --json` and rejects a compressed archive above **25,000,000 bytes**.
 
-Output: `.tmp/release/barestate-oms-0.1.3.tgz`. The staging allowlist does not copy `.env`, `.keys`, `.oms` or local state. Keep provider configuration and credentials outside the archive.
+Output: `.tmp/release/barestate-oms-0.1.4.tgz`. The staging allowlist does not copy `.env`, `.keys`, `.oms` or local state. Keep provider configuration and credentials outside the archive.
 
 ## Clean-machine smoke test
 
@@ -36,7 +36,7 @@ Use an ordinary user account with Node >=22.19.0 and npm. Copy the archive to th
 
 ```sh
 npm init -y
-npm install /absolute/path/to/barestate-oms-0.1.3.tgz --ignore-scripts --no-audit --no-fund
+npm install /absolute/path/to/barestate-oms-0.1.4.tgz --ignore-scripts --no-audit --no-fund
 npx --no-install oms --help
 npx --no-install oms doctor
 ```
