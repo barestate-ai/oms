@@ -2,17 +2,24 @@ import { DEFAULT_OPTIONS, renderText, runChecks, summarize } from './doctor/chec
 import { nodeEnv } from './doctor/node-env.ts';
 import { installPinnedSurfpool } from './doctor/install.ts';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { configuredBackend, defaultHarnessEnvironment, omsCommand } from '@oms/engine';
 import { runHarnessCommand } from './harness.ts';
 import { toolchainCommand } from './toolchain.ts';
 import { runReviewCommand } from './review.ts';
 import { startLocal } from '../../../scripts/start-local.ts';
+import { runUpdate, updateDeps } from './update.ts';
+
+const installRoot = new URL('../../../', import.meta.url);
+// The packed archive's root package.json carries the release version.
+const version = (): string => JSON.parse(readFileSync(new URL('package.json', installRoot), 'utf8')).version;
 
 const HELP = `oms · Solana coding agent
 
   ${omsCommand()}                 Start in the current folder (any folder works)
   ${omsCommand()} doctor          Check your setup
   ${omsCommand()} review [path]   Offline security review of a Solana program
+  ${omsCommand()} update          Update to the latest release (--check to only look)
   ${omsCommand()} --version       Print the version
 
 Options
@@ -46,6 +53,7 @@ Usage:
           [--sandbox host|docker] [--host-approval deny|allow]
 
 Commands:
+  update      Install the latest release (--check only reports; --version <x.y.z> picks one)
   review      Run a local offline Phase A security review
   doctor      Check local prerequisites; does not launch an agent
   workspace   Initialize local repository identity and ignored OMS storage
@@ -100,9 +108,10 @@ async function doctor(args: string[]): Promise<number> {
 
 const [cmd, ...rest] = process.argv.slice(2);
 try {
-  if (cmd === '--version' || cmd === '-v') {
-    // The packed archive's root package.json carries the release version.
-    console.log(JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version);
+  if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    console.log(version());
+  } else if (cmd === 'update') {
+    process.exitCode = await runUpdate(rest, updateDeps(fileURLToPath(installRoot), version()));
   } else if (cmd === undefined || cmd === 'start' || (cmd.startsWith('--') && cmd !== '--help')) {
     await startLocal(cmd === undefined || cmd === 'start' ? rest : [cmd, ...rest]);
   } else if (cmd === 'toolchain') {
