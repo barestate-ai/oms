@@ -133,7 +133,7 @@ jobs:
         if: env.NPM_STATE == 'missing'
         run: |
           (cd dist && sha256sum -c "barestate-oms-$VERSION.tgz.sha256")
-          npm publish "dist/barestate-oms-$VERSION.tgz" --provenance --access public
+          npm publish "./dist/barestate-oms-$VERSION.tgz" --provenance --access public
 
       - name: Fetch the published archive and check its checksum
         run: |
