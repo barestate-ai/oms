@@ -2,6 +2,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rm
 import { dirname, join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
+import { releaseVersion } from './release.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const output = join(root, '.tmp', 'release');
@@ -79,9 +80,10 @@ for (const file of compiledFiles) {
       throw new Error(`Missing compiled URL in ${relative(stage, file)}: ${match[1]}`);
   }
 }
-// The release version lives here, not in the root package.json, so the private workspaces stay at 0.0.1.
-const version = '0.1.3';
-const { overrides } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+// The release version is the root package.json `releaseVersion` field, so the private workspaces stay at 0.0.1.
+const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const version = releaseVersion(rootManifest);
+const { overrides } = rootManifest;
 
 writeFileSync(
   join(stage, 'package.json'),
@@ -105,6 +107,8 @@ writeFileSync(
         'rust',
         'llm',
       ],
+      // npm provenance checks this against the repository the workflow runs in.
+      repository: { type: 'git', url: 'git+https://github.com/barestate-ai/oms.git' },
       homepage: 'https://barestate.xyz/oh-my-sol',
       bugs: { url: 'https://barestate.xyz/contact' },
       author: 'Barestate (https://barestate.xyz)',

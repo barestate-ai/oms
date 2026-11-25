@@ -1,0 +1,184 @@
+name: Release
+
+# A merge to main publishes @barestate/oms to npm (with provenance) and creates the GitHub Release.
+# The version is the `releaseVersion` field in package.json; if it is already on npm and released, a run changes nothing.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test and pack
+    if: github.repository == 'barestate-ai/oms' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      npm: ${{ steps.state.outputs.npm }}
+      needed: ${{ steps.state.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Read the release version
+        id: version
+        run: echo "version=$(node scripts/release.ts version)" >> "$GITHUB_OUTPUT"
+
+      - name: Check what is already published
+        id: state
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out=$(npm view "@barestate/oms@$VERSION" version 2>&1); then
+            npm_state=published
+          elif printf '%s' "$out" | grep -q E404; then
+            npm_state=missing
+          else
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            release_state=present
+          else
+            release_state=missing
+          fi
+          needed=false
+          if [ "$npm_state" = missing ] || [ "$release_state" = missing ]; then needed=true; fi
+          echo "npm=$npm_state" >> "$GITHUB_OUTPUT"
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          echo "$VERSION: npm $npm_state, GitHub Release $release_state"
+
+      - name: Install dependencies
+        if: steps.state.outputs.needed == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        if: steps.state.outputs.needed == 'true'
+        run: npm run typecheck
+
+      - name: Install the pinned Surfpool
+        if: steps.state.outputs.needed == 'true'
+        run: node packages/cli/src/bin.ts doctor --install || true
+
+      - name: Test
+        if: steps.state.outputs.needed == 'true'
+        run: |
+          export SURFPOOL_BINARY="$(ls -d "$HOME"/.oms/tools/surfpool-*/surfpool | head -1)"
+          npm test
+
+      - name: Build the release archive
+        if: steps.state.outputs.needed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm run pack:release
+          mkdir dist
+          cp ".tmp/release/barestate-oms-$VERSION.tgz" dist/
+          (cd dist && sha256sum "barestate-oms-$VERSION.tgz" > "barestate-oms-$VERSION.tgz.sha256")
+          node scripts/release.ts notes "$VERSION" > dist/notes.md
+
+      - uses: actions/upload-artifact@v4
+        if: steps.state.outputs.needed == 'true'
+        with:
+          name: release
+          path: dist
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    if: needs.build.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The npm environment requires the owner's approval before this job starts.
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      NPM_STATE: ${{ needs.build.outputs.npm }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - name: Update npm
+        run: npm install -g "npm@^11.5.1"
+
+      - name: Publish to npm
+        if: env.NPM_STATE == 'missing'
+        run: |
+          (cd dist && sha256sum -c "barestate-oms-$VERSION.tgz.sha256")
+          npm publish "dist/barestate-oms-$VERSION.tgz" --provenance --access public
+
+      - name: Fetch the published archive and check its checksum
+        run: |
+          for _ in $(seq 1 20); do
+            npm view "@barestate/oms@$VERSION" version >/dev/null 2>&1 && break
+            sleep 6
+          done
+          mkdir registry
+          (cd registry && npm pack "@barestate/oms@$VERSION" --ignore-scripts >/dev/null)
+          (cd registry && sha256sum "barestate-oms-$VERSION.tgz" > "barestate-oms-$VERSION.tgz.sha256")
+          if [ "$NPM_STATE" = missing ]; then
+            [ "$(cut -d' ' -f1 "registry/barestate-oms-$VERSION.tgz.sha256")" = "$(cut -d' ' -f1 "dist/barestate-oms-$VERSION.tgz.sha256")" ] ||
+              { echo 'The published archive differs from the one that was tested.'; exit 1; }
+          fi
+
+      - name: Create the GitHub Release
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists."
+          else
+            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "oms $VERSION" --notes-file dist/notes.md \
+              "registry/barestate-oms-$VERSION.tgz" "registry/barestate-oms-$VERSION.tgz.sha256"
+          fi
+
+      - name: Smoke-test the published package and the installer
+        run: |
+          smoke=$(mktemp -d)
+          (cd "$smoke" && npm init -y >/dev/null && npm install "@barestate/oms@$VERSION" --ignore-scripts --no-audit --no-fund &&
+            [ "$(npx --no-install oms --version)" = "$VERSION" ])
+          export OMS_HOME="$RUNNER_TEMP/oms" OMS_VERSION="$VERSION" OMS_NO_MODIFY_PATH=1 OMS_SKIP_SOLANA=1
+          curl -fsSL https://barestate.xyz/oms/install | sh
+          [ "$("$OMS_HOME/bin/oms" --version)" = "$VERSION" ]
+
+      - name: Summary
+        run: |
+          sha=$(cut -d' ' -f1 "registry/barestate-oms-$VERSION.tgz.sha256")
+          url=$(npm view "@barestate/oms@$VERSION" dist.tarball)
+          {
+            echo "## oms $VERSION"
+            echo
+            echo "Published to npm with provenance and released as v$VERSION."
+            echo
+            echo "**Still manual:** bump \`Formula/oms.rb\` in barestate-ai/homebrew-tap."
+            echo
+            echo "- url: $url"
+            echo "- sha256: $sha"
+          } >> "$GITHUB_STEP_SUMMARY"

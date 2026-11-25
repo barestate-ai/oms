@@ -39,6 +39,7 @@ npm run pack:release
 
 ## Pull requests
 
+- Open pull requests against `master`. `main` is the release branch: a release is a pull request from `master` into `main` (see [docs/release.md](docs/release.md)).
 - One topic per pull request, with a short description of what changed and why.
 - Make sure typecheck and tests pass.
 - By contributing, you agree that your contribution is licensed under the project's MIT licence.
