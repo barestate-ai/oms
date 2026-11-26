@@ -59,6 +59,6 @@ export async function assembleSession(
     extras.endRunOnProposal,
     extras.helpers,
   );
-  const model = await createSessionModel(options, life, env, tools, hooks, extensions, initiallyKnown);
+  const model = await createSessionModel(options, life, env, tools, hooks, extensions, initiallyKnown, account);
   return { options, life, env, tools, model, account, owner: extras.owner };
 }

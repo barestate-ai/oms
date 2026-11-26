@@ -131,5 +131,155 @@
       "id": "legacy-transaction-compiler",
       "sha256": "ba53a5fe605921490769d396431bc62bd9eb97da0f76dd7ba08d1b11d8d1e747"
     }
-  ]
+  ],
+  "v2": {
+    "version": 2,
+    "seed": "blend-solana-hard-v1-2026-11-20",
+    "stratified_by": "theme",
+    "dev": [
+      {
+        "id": "epoch-fee-route",
+        "sha256": "26b66e3f3ccfa55ad8805b331cb6915f52000d825631232c3428ea2fc29adad4"
+      },
+      {
+        "id": "withheld-fee-journal",
+        "sha256": "881982f66a5d35508c9c81b1174fdb0e0325839072ed881075b9a32bd15a9c7d"
+      },
+      {
+        "id": "v0-signed-activation",
+        "sha256": "1d650164f90ffeb7ad08de5d9f295081eb1bb974ae5d7172f708bab9592ed6b7"
+      },
+      {
+        "id": "v0-account-compiler",
+        "sha256": "4c721b0868973ee9b0a31cd6198970fa57d2acb8b63b87161700d07c6727f0d1"
+      },
+      {
+        "id": "cpi-frame-journal",
+        "sha256": "b6a32c5a0dd9bf4526b1d00a560fb52c16792fea73e093cef43ffc298a5130e6"
+      },
+      {
+        "id": "cpi-privilege-closure",
+        "sha256": "57d84d694a4348183ba019e4f4a58339cda67e5928fe0605b989527038339a04"
+      },
+      {
+        "id": "registry-extension-migration",
+        "sha256": "743b314344860e766170deca8a4c29597c006346b86a0707fe3f15710a6c3e9f"
+      },
+      {
+        "id": "borsh-action-log-upgrade",
+        "sha256": "e04070c5455220e604052566e95ec04deb86a1bf7507d0446638902d7352ae8b"
+      }
+    ],
+    "heldout": [
+      {
+        "id": "mint-extension-fee-audit",
+        "sha256": "0ad88bff85b3dcc0730c6b3218cb5245ef5e0b1148ba7843434aeca0f076f48b"
+      },
+      {
+        "id": "hook-slice-dependencies",
+        "sha256": "6e0c9a95ae3cf8a83fa1cb911b81e361f9fb802c3c8c3b6f9840802999b7d18c"
+      },
+      {
+        "id": "alt-bank-window",
+        "sha256": "354fbd383a3918c3d3ae5113ec8b77b194af51e00ad2bfddae84e344895b7e5c"
+      },
+      {
+        "id": "v0-static-relocation",
+        "sha256": "6d62d31557bb5211a7a12ca6afa9451d9d7255e9e3beee617add5cfbc9b31853"
+      },
+      {
+        "id": "cpi-compute-rollback",
+        "sha256": "8245155805ef7b341762b6295ca176eb215b1f17786437e1551bf10fb7728055"
+      },
+      {
+        "id": "account-realloc-journal",
+        "sha256": "fde8f72cd9b2383e28435af55cf1b115fc5cfb6117b0134967db0db8a1994576"
+      },
+      {
+        "id": "anchor-domain-upgrade",
+        "sha256": "4da6590b251ae77b20cdf2ddc296c503bd320c59666dbe9709cbe1181ef46248"
+      },
+      {
+        "id": "vesting-layout-migration",
+        "sha256": "5c058f115a2bb4e7c609a4448b8549caa0f474b6b29ae7ec383aea6e38af7a33"
+      }
+    ],
+    "archive": "/home/ubuntu/blend-sealed/hard/sealed.tar",
+    "archive_sha256": "15fc3e93e6b8ec8ea8e65c870f88cac7d741c03f97626f1e40ac8372115ff7df"
+  },
+  "v3": {
+    "version": 3,
+    "seed": "blend-solana-expert-v1-2026-11-20",
+    "stratified_by": "theme",
+    "dev": [
+      {
+        "id": "extension-reallocation-budget",
+        "sha256": "5aaaf38f5e3de2e217856081f8cb2dcf2a61bcde2b2135530886f3272f0e15b5"
+      },
+      {
+        "id": "hook-privilege-commitment",
+        "sha256": "8af4c03ab1a35f7f6ad2bd042ed3eade3bca0e5963c37fc72c569e382326dcb8"
+      },
+      {
+        "id": "alt-minimum-cover",
+        "sha256": "d4f21a16554a16e9f709a70e7693fa7ae439c792258838d57269d6f368eac4b2"
+      },
+      {
+        "id": "v0-packet-rebase",
+        "sha256": "e8d7de798be02a9484722ec7e6d66da5b3dfd2672a02dcb83d5a665ba9190d71"
+      },
+      {
+        "id": "cpi-meta-plan-cache",
+        "sha256": "f72d1a40bd5b7ed56b4e203846253f03581e5dd95c8a1687436e82fd0848840b"
+      },
+      {
+        "id": "cpi-return-data-journal",
+        "sha256": "901de369c48435017276869142a88c0499ff96511d6bad6bd6c5bf33d198a015"
+      },
+      {
+        "id": "borsh-capability-graph",
+        "sha256": "efdce73da7a262c6c30417a56e74251a12c4cacac46e252d0533fab7228b4641"
+      },
+      {
+        "id": "anchor-account-patchproof",
+        "sha256": "d991419ce4c6bb7cb276f747fe5a2f1f5680dc679ceddec6ff5888c11294cb2d"
+      }
+    ],
+    "heldout": [
+      {
+        "id": "fee-route-frontier",
+        "sha256": "be856f4f8589f96708a23e9b53b58a69dc61ad8ce7d14aab775ee298aa16ec7a"
+      },
+      {
+        "id": "fee-netting-invoices",
+        "sha256": "4b9514a2723eaf430280aebf4cd2dd56a9a184dde11b44bf80322ea0f16d8433"
+      },
+      {
+        "id": "nonce-signature-domains",
+        "sha256": "5bf6c08c79e3948ce630949eda5aaf560b0e7d06fbb53b4604b7768c5a4e6a3a"
+      },
+      {
+        "id": "lookup-rotation-proof",
+        "sha256": "9e8a594fd441299a4e4bb62e10dfc6d5592ddb506aa6ccde1c3efd51eeaba481"
+      },
+      {
+        "id": "rent-escrow-finalizer",
+        "sha256": "e7969843d5b4e0ae87c7a9238658e3ea183b5e7fc3350e7732f2fcb9369848f0"
+      },
+      {
+        "id": "cpi-borrow-stack",
+        "sha256": "9ef734d7b555ed85578aa3f4e8a864492813d0d8de3be27d3dc6aa6655bbb807"
+      },
+      {
+        "id": "anchor-checkpoint-pages",
+        "sha256": "56a4709558398b0ddb892f92c51b557366c6c55d4a2a01de4f770bc24ec6c3d1"
+      },
+      {
+        "id": "anchor-enum-bimap",
+        "sha256": "30144bb209d6536321566d62670b0f097bbf1c67cf4ea56b616bc7ded619c7c2"
+      }
+    ],
+    "archive": "/home/ubuntu/blend-sealed/expert/sealed.tar",
+    "archive_sha256": "0bc4147d002fdf372c97e42c7a93e7be0ca7c5678c9963c589a1066352657d35"
+  }
 }

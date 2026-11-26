@@ -19,7 +19,24 @@ The cells compared:
 
 The OMS Claude Code cell runs OMS on the host, so `claude` must be on `PATH` (an absolute, non-`node_modules` directory) there, not in the container. The runner stages the Claude login into a private `home/` in the run directory (refresh token removed) and points the CLI at it with `OMS_CLAUDE_CODE_HOME`; the cell refuses to start if any `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH*`, `CLAUDE_CODE_USE_*` or `AWS_BEARER_TOKEN_BEDROCK` variable is set. OMS applies no input-token cap to Claude Code, and Claude Code usage is a subscription charge, so the API-dollar cap never applies. Its run directories are named `<prefix>-solbh-oms3-web-opus-sub-<variant>`.
 
-Only subscription logins are used. The staged login files have their refresh tokens removed and any API key deleted, so a run can never rotate your login or spend a provider key.
+The existing cells use subscription logins. Their staged login files have refresh tokens and API keys removed. The separate `oms3:blend/<profile>` cells use API dollars through a loopback Blend router, never a subscription login.
+
+### Blend API cells
+
+Every ID in `deploy/blend-worker/profiles.json`, including experimental profiles and all single-model profiles, is accepted as `oms3:blend/<id>`. These cells use the same OMS production headless harness and fork/workspace/goal, with isolated empty auth and agent directories, no web/search/knowledge credentials, 131,072 input tokens and at most 32,000 output tokens per request. They are **not** the online subscription treatment and must be labelled separately when compared.
+
+Bind the four provider keys in the trusted host environment; they stay outside the agent container. A separate loopback router is created per attempt. Router JSONL is the dollar/token authority; `oms-record.json` also retains OMS accounting. `--max-usd` (default 4) caps the entire prefix's API series, including reruns, not each attempt. The append-only `<prefix>-blend-budget.jsonl` records holds before dispatch and settlements afterward; interrupted holds remain charged on resume. Successful calls refund unused holds; failed calls retain only outstanding billing exposure. Do not remove this ledger to resume a capped series.
+
+The agent image must be compatible with the host glibc libraries OMS mounts into it. The supplied Ubuntu 22.04 base is compatible with this VM's glibc 2.35; its Dockerfile accepts `BASE_IMAGE` for an equivalent registry mirror. API launches probe the shell with those mounts before any model call, so an incompatible image fails without spending dollars.
+
+```sh
+SOLBENCH_HARNESS_SURFPOOL=/path/to/verified/surfpool-0.10.4 \
+SOLBENCH_HARNESS_DEPS=/path/to/installed/workspace-deps \
+node bench/src/run.ts --cell oms3:blend/claude-haiku-5-5 --variant basic \
+  --runs 1 --prefix devblend --max-submissions 10 --max-usd 1 --out-root /path/to/results
+```
+
+Each result includes `usd`, `billingUpperUsd`, router tokens, wall time and `forkFailures`. At least three fork RPC health/transport failures, or a dead fork, set the attempt aside as `paused.json` with reason `fork-failure`. Terminal provider 429/usage limits and native `capped:usd` with zero dispatches are also set aside, never scored as zeros. The runner archives each excluded attempt and retries the same slot on a fresh fork at most twice; usage/USD retries back off 60 then 120 seconds and retain the same dollar ledger. A prefix-specific `attempts.jsonl` records dispositions and attempt numbers. Program/transaction failures do not count as fork failures. Set-aside and API-budget-truncated attempts are excluded from tables and paired tests but their costs remain counted.
 
 ## Prerequisites
 
@@ -58,7 +75,7 @@ export SOLBENCH_HARNESS_SURFPOOL=/path/to/surfpool-0.10.4
 node bench/src/run.ts --cell codex-web:gpt-sol --variant basic --runs 5 --out-root ./runs
 ```
 
-Pass several `--cell` flags to run cells interleaved, run by run (cell A run 0, cell B run 0, cell A run 1, ...). A run directory that already has a `result.json` is skipped, so the command resumes. A usage limit stops the series and sets that run aside as `paused.json`; rerun the same command after the limit resets. Scored series use 50 submissions; series whose prefix starts with `dev` are for tuning and may use at most 10 (`--prefix dev1 --max-submissions 10`). Create a file named `STOP` in the out-root to stop between runs.
+Pass several `--cell` flags to run cells interleaved, run by run (cell A run 0, cell B run 0, cell A run 1, ...). A run directory that already has a `result.json` is skipped, so the command resumes. A usage limit exhausts at most two backed-off retries, then stops the series with the slot set aside as `paused.json`; rerun the same command after the limit resets. Scored series use 50 submissions; series whose prefix starts with `dev` are for tuning and may use at most 10 (`--prefix dev1 --max-submissions 10`). Create a file named `STOP` in the out-root to stop between runs.
 
 Each run directory holds `result.json`, `submissions.jsonl` (every signed transaction), the Surfpool log, the agent's logs and a workspace trace.
 

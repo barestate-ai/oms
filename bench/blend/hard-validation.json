@@ -1,0 +1,27 @@
+{
+  "node": "v22.23.4",
+  "tasks": 16,
+  "reference_hidden_passed": 256,
+  "reference_hidden_total": 256,
+  "reference_visible_passed": 32,
+  "starters_failing_strict_majority": 16,
+  "starter_passes_min": 3,
+  "starter_passes_max": 5,
+  "independent_vectors": 256,
+  "crosscheck": {
+    "tasks": 16,
+    "independent_vectors": 256,
+    "method": "Python standard-library integer/struct/hashlib codecs and affine Edwards arithmetic versus independent Node 22 implementations",
+    "rfc8032_section_7_1_test_1": true
+  },
+  "single_defect_mutations_detected": 48,
+  "single_defect_mutations_total": 48,
+  "dev": 8,
+  "heldout": 8,
+  "theme_counts": {
+    "dev": 2,
+    "heldout": 2
+  },
+  "seed": "blend-solana-hard-v1-2026-11-20",
+  "archive_sha256": "15fc3e93e6b8ec8ea8e65c870f88cac7d741c03f97626f1e40ac8372115ff7df"
+}

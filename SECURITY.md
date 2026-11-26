@@ -21,7 +21,7 @@ These are documented in https://barestate.xyz/docs/security/overview:
 
 - **Linux host mode has no operating system sandbox.** By default, OMS asks you to approve every model shell command; `--yolo` or `/yolo` disables approvals and sandboxing. Use `--sandbox docker` for confinement.
 - **The shell guard is best effort**: commands can construct paths at runtime. The sandbox is the real control.
-- **The signer is not connected to the shipped app.** OMS 0.1.2 has no built-in signing or transaction-sending flow; `packages/signer` is excluded from the npm package. Approved shell commands can run project code that signs or sends transactions.
+- **The signer is not connected to the shipped app.** OMS 0.1.3 has no built-in signing or transaction-sending flow; `packages/signer` is excluded from the npm package. Approved shell commands can run project code that signs or sends transactions.
 - "Verified" means the pinned checks passed for the captured source. It is not a security audit, and the offline review (`oms review --phase A`) is not one either.
 
 ## Supported versions

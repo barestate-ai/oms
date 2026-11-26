@@ -80,7 +80,7 @@ for (const file of compiledFiles) {
   }
 }
 // The release version lives here, not in the root package.json, so the private workspaces stay at 0.0.1.
-const version = '0.1.2';
+const version = '0.1.3';
 const { overrides } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 writeFileSync(

@@ -2,30 +2,20 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { hashTaskDirectory } from './tree.ts';
+export { hashTaskDirectory } from './tree.ts';
 
 export const FIXED_SEED = 'blend-solana-v1-2026-11-20';
+export const HARD_SEED = 'blend-solana-hard-v1-2026-11-20';
+export const EXPERT_SEED = 'blend-solana-expert-v1-2026-11-20';
+export const HARD_THEMES = [
+  'token2022-fee-hook',
+  'v0-alt-signatures',
+  'cpi-rollback-conservation',
+  'anchor-borsh-layouts',
+] as const;
 export type Entry = { id: string; sha256: string };
 export type Manifest = { seed: string; dev: Entry[]; heldout: Entry[] };
-
-export async function hashTaskDirectory(directory: string): Promise<string> {
-  const paths: string[] = [];
-  async function visit(relative: string) {
-    for (const entry of await readdir(join(directory, relative), { withFileTypes: true })) {
-      const path = relative ? `${relative}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) throw new Error(`Task contains symlink: ${path}`);
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) paths.push(path);
-      else throw new Error(`Task contains nonregular file: ${path}`);
-    }
-  }
-  await visit('');
-  const hash = createHash('sha256');
-  for (const path of paths.sort()) {
-    const bytes = await readFile(join(directory, path));
-    hash.update(path, 'utf8').update('\0').update(String(bytes.length)).update('\0').update(bytes);
-  }
-  return hash.digest('hex');
-}
 
 function randomIndex(seed: string) {
   let counter = 0;
@@ -68,12 +58,60 @@ export async function createManifest(directory: string, seed = FIXED_SEED): Prom
   return manifest;
 }
 
+export async function createHardManifest(
+  directory: string,
+  seed = HARD_SEED,
+): Promise<Manifest & { stratified_by: 'theme' }> {
+  return createThemedManifest(directory, seed, 4);
+}
+
+export async function createExpertManifest(
+  directory: string,
+  seed = EXPERT_SEED,
+): Promise<Manifest & { stratified_by: 'theme' }> {
+  return createThemedManifest(directory, seed, 5);
+}
+
+async function createThemedManifest(
+  directory: string,
+  seed: string,
+  difficulty: number,
+): Promise<Manifest & { stratified_by: 'theme' }> {
+  if (!seed) throw new Error('Seed must not be empty');
+  const groups = new Map<string, Entry[]>(HARD_THEMES.map((theme) => [theme, []]));
+  const entries = (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+  for (const entry of entries) {
+    if (!entry.isDirectory()) throw new Error('Expected task directory');
+    const path = join(directory, entry.name),
+      meta = JSON.parse(await readFile(join(path, 'meta.json'), 'utf8'));
+    if (meta.id !== entry.name || meta.difficulty !== difficulty || !groups.has(meta.theme))
+      throw new Error('Invalid hard-task metadata');
+    groups.get(meta.theme)!.push({ id: meta.id, sha256: await hashTaskDirectory(path) });
+  }
+  if ([...groups.values()].some((group) => group.length !== 4))
+    throw new Error('Hard split requires four tasks per theme');
+  const manifest: Manifest & { stratified_by: 'theme' } = { seed, stratified_by: 'theme', dev: [], heldout: [] };
+  for (const [theme, group] of groups) {
+    const index = randomIndex(`${seed}:theme:${theme}`);
+    for (let i = group.length - 1; i > 0; i--) {
+      const j = index(i + 1);
+      [group[i], group[j]] = [group[j], group[i]];
+    }
+    manifest.dev.push(...group.slice(0, 2));
+    manifest.heldout.push(...group.slice(2));
+  }
+  return manifest;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const root = dirname(fileURLToPath(import.meta.url));
   const [, , seed = FIXED_SEED, tasks = join(root, 'tasks'), output = join(root, 'manifest.json'), ...extra] =
     process.argv;
   if (extra.length) throw new Error('Usage: node split.ts [seed] [tasks-directory] [manifest-path]');
-  const manifest = await createManifest(resolve(tasks), seed);
+  const create = seed === EXPERT_SEED ? createExpertManifest : seed === HARD_SEED ? createHardManifest : createManifest;
+  const manifest = await create(resolve(tasks), seed);
   await writeFile(resolve(output), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`Split seed ${seed}: ${manifest.dev.length} dev / ${manifest.heldout.length} held-out`);
 }

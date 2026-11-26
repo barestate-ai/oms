@@ -1,0 +1,200 @@
+{
+  "blend-auto": {
+    "type": "escalate",
+    "cheap": "muse-ember-1.0",
+    "strong": "claude-fable-5-2",
+    "trigger": {
+      "tool_failures": 2,
+      "assistant_turns": 20,
+      "retry_on_error_or_empty": true
+    }
+  },
+  "blend-pro": {
+    "type": "escalate",
+    "cheap": "muse-ember-1.0",
+    "strong": "claude-fable-5-2",
+    "trigger": {
+      "tool_failures": 2,
+      "assistant_turns": 20,
+      "retry_on_error_or_empty": true
+    }
+  },
+  "blend-flash": {
+    "type": "deescalate",
+    "strong": "claude-fable-5-2",
+    "cheap": "muse-ember-1.0",
+    "handoff_after_turns": 16,
+    "return_after_failures": 2,
+    "cooldown_turns": 8
+  },
+  "claude-fable-5-2": {
+    "type": "single",
+    "model": "claude-fable-5-2"
+  },
+  "claude-opus-5-5": {
+    "type": "single",
+    "model": "claude-opus-5-5"
+  },
+  "claude-sonnet-5-5": {
+    "type": "single",
+    "model": "claude-sonnet-5-5"
+  },
+  "claude-haiku-5-5": {
+    "type": "single",
+    "model": "claude-haiku-5-5"
+  },
+  "grok-4.7": {
+    "type": "single",
+    "model": "grok-4.7"
+  },
+  "grok-4.3": {
+    "type": "single",
+    "model": "grok-4.3"
+  },
+  "deepseek-v4-pro": {
+    "type": "single",
+    "model": "deepseek-v4-pro"
+  },
+  "deepseek-v4.1-flash": {
+    "type": "single",
+    "model": "deepseek-v4.1-flash"
+  },
+  "mimo-v2.6-pro": {
+    "type": "single",
+    "model": "mimo-v2.6-pro"
+  },
+  "mimo-v2.6-flash": {
+    "type": "single",
+    "model": "mimo-v2.6-flash"
+  },
+  "qwen3.8-flash": {
+    "type": "single",
+    "model": "qwen3.8-flash"
+  },
+  "muse-wonder-1.0": {
+    "type": "single",
+    "model": "muse-wonder-1.0"
+  },
+  "muse-spark-1.3": {
+    "type": "single",
+    "model": "muse-spark-1.3"
+  },
+  "muse-spark-1.3-contributor": {
+    "type": "single",
+    "model": "muse-spark-1.3-contributor"
+  },
+  "muse-ember-1.0": {
+    "type": "single",
+    "model": "muse-ember-1.0"
+  },
+  "blend-escalate": {
+    "type": "escalate",
+    "cheap": "mimo-v2.6-flash",
+    "strong": "claude-haiku-5-5",
+    "trigger": {
+      "tool_failures": 1,
+      "assistant_turns": 8,
+      "retry_on_error_or_empty": true
+    }
+  },
+  "blend-ember-fable": {
+    "type": "escalate",
+    "cheap": "muse-ember-1.0",
+    "strong": "claude-fable-5-2",
+    "trigger": {
+      "tool_failures": 2,
+      "retry_on_error_or_empty": true
+    }
+  },
+  "blend-ember-opus": {
+    "type": "escalate",
+    "cheap": "muse-ember-1.0",
+    "strong": "claude-opus-5-5",
+    "trigger": {
+      "tool_failures": 2,
+      "retry_on_error_or_empty": true
+    }
+  },
+  "blend-lwv-wonder": {
+    "type": "orchestrate",
+    "defer_plan_until_tools": true,
+    "planners": ["muse-wonder-1.0"],
+    "worker": "muse-ember-1.0",
+    "validator": "grok-4.7",
+    "repair": "claude-opus-5-5"
+  },
+  "blend-lwv-opus": {
+    "type": "orchestrate",
+    "defer_plan_until_tools": true,
+    "planners": ["claude-opus-5-5"],
+    "worker": "muse-ember-1.0",
+    "validator": "grok-4.7",
+    "repair": "claude-opus-5-5"
+  },
+  "blend-compete": {
+    "type": "orchestrate",
+    "defer_plan_until_tools": true,
+    "planners": ["muse-wonder-1.0", "claude-opus-5-5"],
+    "judge": "grok-4.7",
+    "worker": "muse-ember-1.0",
+    "validator": "grok-4.7",
+    "repair": "claude-opus-5-5"
+  },
+  "blend-plan-exec": {
+    "type": "plan-exec",
+    "planner": "claude-haiku-5-5",
+    "executor": "mimo-v2.6-flash",
+    "replan_every": 4
+  },
+  "blend-classify": {
+    "type": "classify",
+    "classifier": "mimo-v2.6-flash",
+    "routes": {
+      "easy": "mimo-v2.6-flash",
+      "medium": "claude-haiku-5-5",
+      "hard": "claude-sonnet-5-5"
+    }
+  },
+  "blend-opus-ember": {
+    "type": "deescalate",
+    "strong": "claude-opus-5-5",
+    "cheap": "muse-ember-1.0",
+    "handoff_after_turns": 16,
+    "return_after_failures": 2,
+    "cooldown_turns": 8
+  },
+  "blend-fable-ember": {
+    "type": "deescalate",
+    "strong": "claude-fable-5-2",
+    "cheap": "muse-ember-1.0",
+    "handoff_after_turns": 16,
+    "return_after_failures": 2,
+    "cooldown_turns": 8
+  },
+  "blend-opus-grok": {
+    "type": "deescalate",
+    "strong": "claude-opus-5-5",
+    "cheap": "grok-4.7",
+    "handoff_after_turns": 16,
+    "return_after_failures": 2,
+    "cooldown_turns": 8
+  },
+  "blend-fable-grok": {
+    "type": "deescalate",
+    "strong": "claude-fable-5-2",
+    "cheap": "grok-4.7",
+    "handoff_after_turns": 16,
+    "return_after_failures": 2,
+    "cooldown_turns": 8
+  },
+  "blend-ember-grok": {
+    "type": "escalate",
+    "cheap": "muse-ember-1.0",
+    "strong": "grok-4.7",
+    "trigger": {
+      "tool_failures": 2,
+      "assistant_turns": 20,
+      "retry_on_error_or_empty": true
+    }
+  }
+}

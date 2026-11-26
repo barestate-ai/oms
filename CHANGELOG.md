@@ -2,6 +2,7 @@
 
 ## 0.1.3 (unreleased)
 
+- Blend routes coding requests across models through your signed-in, invited OMS account. `/blend` selects Auto; `/blend pro|flash|auto` switches profiles, `/blend off` returns to your previous model, and `/model` lists the Blend profiles. Usage includes the router's settled cost, including retries. Profiles are benchmark-selected on Solana Bench: Auto/Pro route Ember to Fable on real tool failures (score 266, $3.84 per 50-submission run); Flash hands routine work to Ember after Fable's opening turns (230, $2.81). See [Blend](docs/blend.md).
 - Selecting text in OMS with the mouse copies it to the clipboard, the same way as in other coding CLIs. Before, the mouse selection did nothing and Cmd+C had nothing to copy.
 
 ## 0.1.2

@@ -19,6 +19,7 @@ const HELP = `oms: the Solana coding agent
 Inside OMS:
   /connect   Sign in (ChatGPT, Claude Code, or an API key)
   /model     Pick a model
+  /blend     Use Blend (auto|pro|flash|off; invited OMS account, /login)
   /help      Every command and key
 
 Options:

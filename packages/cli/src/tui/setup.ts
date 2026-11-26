@@ -139,7 +139,7 @@ export class SetupPane {
     this.list = undefined;
     const providers = this.harness.listProviders();
     if (this.options.mode === 'model') {
-      for (const provider of providers.filter((provider) => provider.configured)) {
+      for (const provider of providers.filter((provider) => provider.configured || provider.id === 'blend')) {
         if (!this.harness.listModels().some((model) => model.provider === provider.id)) continue;
         this.choices.push({
           value: JSON.stringify([provider.id, 'configured']),
@@ -150,7 +150,9 @@ export class SetupPane {
                 ? 'Claude Code'
                 : provider.id === 'xai'
                   ? 'Grok models'
-                  : `${line(provider.name)} models`,
+                  : provider.id === 'blend'
+                    ? 'Blend'
+                    : `${line(provider.name)} models`,
           description: provider.id === 'claude-code' ? 'Sonnet, Opus or Haiku' : '',
           keywords: provider.id,
         });
@@ -197,13 +199,18 @@ export class SetupPane {
           },
         });
       }
-      if (!provider.apiKey && !provider.oauth && !provider.oauthUnavailable && provider.configured) {
+      if (
+        !provider.apiKey &&
+        !provider.oauth &&
+        !provider.oauthUnavailable &&
+        (provider.configured || provider.id === 'blend')
+      ) {
         rows.push({
           rank: 4,
           choice: {
             value: JSON.stringify([provider.id, 'configured']),
             label: line(provider.name),
-            description: 'Connected',
+            description: provider.configured ? 'Connected' : 'Signed-in invited OMS account required · /login',
             keywords: provider.id,
           },
         });

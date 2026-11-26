@@ -1,0 +1,9 @@
+{
+  "id": "cpi-privilege-closure",
+  "title": "Audit nested CPI privilege unions and caller-bound signer grants",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "cpi-rollback-conservation",
+  "topics": ["cpi", "privileges", "aliasing", "signer-seeds"]
+}

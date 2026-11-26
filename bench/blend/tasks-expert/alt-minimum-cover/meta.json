@@ -1,0 +1,9 @@
+{
+  "id": "alt-minimum-cover",
+  "title": "Compile the minimum-size v0 ALT cover with stable roles and byte-exact tie breaks",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "v0-alt-signatures",
+  "topics": ["v0-alt-signatures", "multi-module", "boundary-invariants"]
+}

@@ -235,7 +235,12 @@ export async function inspectClaudeCode(signal?: AbortSignal): Promise<ClaudeCod
   return getClaudeCodeStatus();
 }
 
-const NATIVE_MODELS = { sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5', haiku: 'claude-haiku-5-5' } as const;
+const NATIVE_MODELS = {
+  sonnet: 'claude-sonnet-5-5',
+  opus: 'claude-opus-5-5',
+  haiku: 'claude-haiku-5-5',
+  fable: 'claude-fable-5-2',
+} as const;
 type NativeAlias = keyof typeof NATIVE_MODELS;
 const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -1153,7 +1158,9 @@ export async function createClaudeCodeProvider(
 ): Promise<ClaudeCodeSession> {
   await inspectClaudeCode();
   const models = (Object.entries(NATIVE_MODELS) as [NativeAlias, string][]).flatMap(([alias, id]) => {
-    const original = runtime.getModel('anthropic', id);
+    const original =
+      runtime.getModel('anthropic', id) ??
+      (alias === 'fable' ? runtime.getModel('anthropic', 'claude-opus-5-5') : undefined);
     return original
       ? [
           {
@@ -1165,6 +1172,13 @@ export async function createClaudeCodeProvider(
             baseUrl: CLAUDE_CODE_BASE_URL,
             input: ['text'] as 'text'[],
             reasoning: false,
+            ...(alias === 'fable'
+              ? {
+                  cost: { input: 8, output: 40, cacheRead: 0.8, cacheWrite: 10 },
+                  contextWindow: 1_000_000,
+                  maxTokens: 128_000,
+                }
+              : {}),
           },
         ]
       : [];

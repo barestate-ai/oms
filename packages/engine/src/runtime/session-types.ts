@@ -1,5 +1,6 @@
 import type { AgentSession, AgentSessionRuntime, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { EvaluateResult, Evaluator, TaskContract } from '@oms/contract';
 import type { BudgetCaps, BudgetLedger, ExecutionMode } from '@oms/core';
 import type { SandboxResult } from '@oms/sandbox';
@@ -55,6 +56,8 @@ export interface CommonSessionOptions {
   /** Trusted host/test injection, never repository-discovered executable code. */
   modelRuntime?: ModelRuntime;
   model?: Model<Api>;
+  /** Trusted host pricing for a routed request; the routing backend must also reserve each physical call. */
+  requestCost?: (model: Model<Api>, context: Parameters<StreamFn>[1]) => Model<Api>['cost'];
   modelSelection?: { provider: string; id: string };
   /** Trusted host configuration for the Solana knowledge service, for the benchmark harness. Absent: the session uses
    * OMS_KNOWLEDGE_URL plus OMS_KNOWLEDGE_TOKEN when both are set, else the signed-in OMS account, else the tools are hidden. */

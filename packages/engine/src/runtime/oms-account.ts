@@ -19,13 +19,13 @@ export interface OmsAccountSnapshot {
   origin: string;
   message?: string;
 }
-/** The OMS account exists only so hosted web search can authenticate; it never selects a model or carries inference. */
+/** The signed-in OMS account authenticates hosted OMS services, including search and Blend. */
 export interface OmsAccountControls {
   snapshot(): OmsAccountSnapshot;
   login(interaction: AccountInteraction, signal: AbortSignal): Promise<void>;
   logout(signal: AbortSignal): Promise<{ serverRevoked: boolean }>;
   refresh(signal?: AbortSignal): Promise<void>;
-  /** Origin and token for the hosted search routes, only while signed in. */
+  /** Origin and bearer token for hosted OMS services, only while signed in. */
   searchCredential(): { origin: string; token: string } | undefined;
 }
 export interface OmsAccountOptions {

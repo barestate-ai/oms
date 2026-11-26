@@ -1,11 +1,75 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { grade } from './grade.ts';
-import { createManifest, FIXED_SEED, hashTaskDirectory } from './split.ts';
+import { grade, VISIBLE_TEST_COMMAND } from './grade.ts';
+import {
+  createManifest,
+  createHardManifest,
+  createExpertManifest,
+  EXPERT_SEED,
+  HARD_SEED,
+  HARD_THEMES,
+  FIXED_SEED,
+  hashTaskDirectory,
+} from './split.ts';
+
+test('expert split is deterministic, d5-only, disjoint and two per theme', async () => {
+  await fixture(async (root) => {
+    for (const [i, theme] of HARD_THEMES.entries())
+      for (let n = 0; n < 4; n++) {
+        const id = `expert-${i}-${n}`,
+          path = join(root, id);
+        await mkdir(path);
+        await writeFile(join(path, 'meta.json'), JSON.stringify({ id, theme, difficulty: 5 }));
+      }
+    const a = await createExpertManifest(root);
+    assert.equal(a.seed, EXPERT_SEED);
+    assert.deepEqual(a, await createExpertManifest(root));
+    assert.equal(new Set([...a.dev, ...a.heldout].map((e) => e.id)).size, 16);
+    for (const split of [a.dev, a.heldout])
+      for (let i = 0; i < 4; i++) assert.equal(split.filter((e) => e.id.startsWith(`expert-${i}-`)).length, 2);
+    await writeFile(
+      join(root, 'expert-0-0/meta.json'),
+      JSON.stringify({ id: 'expert-0-0', theme: HARD_THEMES[0], difficulty: 4 }),
+    );
+    await assert.rejects(createExpertManifest(root), /metadata/);
+    await rm(join(root, 'expert-0-0'), { recursive: true });
+    await assert.rejects(createExpertManifest(root), /four tasks/);
+  });
+});
+
+test('hard split uses fixed seeded shuffle, two per theme on each side, and rejects invalid strata', async () => {
+  await fixture(async (root) => {
+    for (const [themeIndex, theme] of HARD_THEMES.entries()) {
+      for (let n = 0; n < 4; n++) {
+        const id = `t-${themeIndex}-${n}`,
+          path = join(root, id);
+        await mkdir(path);
+        await writeFile(join(path, 'meta.json'), JSON.stringify({ id, theme, difficulty: 4 }));
+      }
+    }
+    const first = await createHardManifest(root);
+    assert.equal(first.seed, HARD_SEED);
+    assert.equal(first.dev.length, 8);
+    assert.equal(first.heldout.length, 8);
+    assert.deepEqual(first, await createHardManifest(root));
+    for (const themeIndex of HARD_THEMES.keys())
+      for (const split of [first.dev, first.heldout])
+        assert.equal(split.filter((entry) => entry.id.startsWith(`t-${themeIndex}-`)).length, 2);
+    assert.equal(new Set([...first.dev, ...first.heldout].map((entry) => entry.id)).size, 16);
+    await writeFile(
+      join(root, 't-0-0', 'meta.json'),
+      JSON.stringify({ id: 't-0-0', theme: HARD_THEMES[0], difficulty: 3 }),
+    );
+    await assert.rejects(createHardManifest(root), /metadata/);
+    await rm(join(root, 't-0-0'), { recursive: true });
+    await assert.rejects(createHardManifest(root), /four tasks/);
+  });
+});
 
 async function fixture(run: (root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'blend-tools-test-'));
@@ -47,6 +111,30 @@ test('grader returns partial score', async () => {
   await fixture(async (root) => {
     const { task, workspace } = await graderFixture(root, 'export const value=3;');
     assert.deepEqual(await grade(task, workspace), { passed: 3, total: 8, score: 3 / 8 });
+  });
+});
+
+test('hidden grader and visible gate transform enums and parameter properties', async () => {
+  await fixture(async (root) => {
+    const implementation = (value: number) =>
+      `enum Count { Eight = ${value} }\nclass Counter { constructor(public value: number) {} }\nexport const value = new Counter(Count.Eight).value;`;
+    const { task, workspace } = await graderFixture(root, implementation(8));
+    await writeFile(
+      join(workspace, 'visible.test.ts'),
+      "import assert from 'node:assert/strict'; import { value } from './index.ts'; assert.equal(value, 8);",
+    );
+    const environment = { ...process.env, NODE_OPTIONS: '' };
+    delete environment.NODE_TEST_CONTEXT;
+    const visible = () =>
+      spawnSync(process.execPath, VISIBLE_TEST_COMMAND.slice(1), { cwd: workspace, env: environment }).status;
+    assert.deepEqual(await grade(task, workspace), { passed: 8, total: 8, score: 1 });
+    assert.equal(visible(), 0);
+    await writeFile(join(workspace, 'index.ts'), implementation(3));
+    assert.deepEqual(await grade(task, workspace), { passed: 3, total: 8, score: 3 / 8 });
+    assert.notEqual(visible(), 0);
+    await rm(join(workspace, 'index.ts'));
+    assert.deepEqual(await grade(task, workspace), { passed: 0, total: 8, score: 0 });
+    assert.notEqual(visible(), 0);
   });
 });
 

@@ -28,6 +28,8 @@ test('the short help says oms works in any folder', () => {
   const help = spawnSync(process.execPath, [bin, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Start in the current folder \(any folder works\)/);
+  assert.match(help.stdout, /\/blend.*auto\|pro\|flash\|off/);
+  assert.match(help.stdout, /invited OMS account, \/login/);
 });
 
 test('bare CLI follows local launch and refuses noninteractive use before preparing state', () => {

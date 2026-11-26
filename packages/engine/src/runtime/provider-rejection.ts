@@ -1,4 +1,5 @@
 const PROVIDER_NAMES: Record<string, string> = {
+  blend: 'Blend',
   xai: 'xAI',
   openai: 'OpenAI',
   anthropic: 'Anthropic',
@@ -51,6 +52,8 @@ function messageFrom(value: unknown): string | undefined {
 /** One plain sentence for a rejected request: the provider's own reason, never raw JSON and never a key. */
 export function describeRejection(provider: string, status: number, body: string): string {
   const name = providerName(provider);
+  if (provider === 'blend' && (status === 401 || status === 403))
+    return 'Blend needs a signed-in invited OMS account. Use /login to sign in.';
   if (status === 401 || status === 403) return `${name} says the API key is invalid. /connect to fix it.`;
   let reason: string | undefined;
   try {

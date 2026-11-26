@@ -1,4 +1,5 @@
 import { catalogThinking, type ContenderModel, type Rates } from './contenders.ts';
+import { BLEND_MODELS } from './blend-router.ts';
 
 /**
  * The Solana Bench cells, each a whole harness as shipped, run online on a subscription login:
@@ -32,9 +33,13 @@ export const SUBSCRIPTION_MODELS: Record<Harness, Record<string, ContenderModel>
     'gpt-sol': sub('openai-codex', 'gpt-6.1-sol', 272_000),
     // OMS drives the installed Claude Code CLI as its model (provider `claude-code`, alias `opus` = Claude Opus 5.5).
     'opus-sub': sub('claude-code', 'opus', 1_000_000, 'anthropic-messages'),
+    'fable-sub': sub('claude-code', 'fable', 1_000_000, 'anthropic-messages'),
   },
   codex: { 'gpt-sol': sub('openai', 'gpt-6.1-sol', 272_000) },
-  'claude-code': { 'opus-sub': sub('anthropic', 'claude-opus-5-5', 1_000_000, 'anthropic-messages') },
+  'claude-code': {
+    'opus-sub': sub('anthropic', 'claude-opus-5-5', 1_000_000, 'anthropic-messages'),
+    'fable-sub': sub('anthropic', 'claude-fable-5-2', 1_000_000, 'anthropic-messages'),
+  },
 };
 
 export type OnlineLabel = 'web + Solana MCP';
@@ -44,10 +49,15 @@ const ONLINE: Record<string, OnlineLabel> = {
   'oms3-web:gpt-sol': 'web + Solana MCP',
   'oms3-web:opus-sub': 'web + Solana MCP',
   'claude-code-web:opus-sub': 'web + Solana MCP',
+  'claude-code-web:fable-sub': 'web + Solana MCP',
 };
 
 /** `oms3-web:gpt-sol` -> harness `oms3`, model key `gpt-sol`, online label. Anything else is not a cell. */
-export function parseContender(id: string): { harness: Harness; modelKey: string; online: OnlineLabel } | null {
+export function parseContender(
+  id: string,
+): { harness: Harness; modelKey: string; online: OnlineLabel | undefined } | null {
+  if (id.startsWith('oms3:blend/') && Object.hasOwn(BLEND_MODELS, id.slice('oms3:blend/'.length)))
+    return { harness: 'oms3', modelKey: id.slice(6), online: undefined };
   const online = ONLINE[id];
   if (!online) return null;
   const at = id.indexOf(':');

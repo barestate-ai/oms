@@ -1,0 +1,9 @@
+{
+  "id": "borsh-capability-graph",
+  "title": "Migrate cyclic Anchor graphs with canonical SCC order and remapped Borsh references",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "anchor-borsh-layouts",
+  "topics": ["anchor-borsh-layouts", "multi-module", "boundary-invariants"]
+}

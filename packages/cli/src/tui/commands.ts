@@ -20,6 +20,7 @@ import type { StartupArtMode } from './startup-art.ts';
 import type { Conversation } from './transcript.ts';
 import type { WorkbenchPane } from './workbench.ts';
 import type { TerminalPane } from './terminal-pane.ts';
+import { acceptsBlend, blendCommand } from './blend.ts';
 
 export type FocusTarget = 'input' | 'requirements' | 'conversation' | 'editor' | 'terminal' | 'actions';
 export type ViewName = 'harness' | 'workbench';
@@ -120,6 +121,7 @@ const KEYBOARD_HELP =
 const CHAT_HELP = [
   'connect',
   'model',
+  'blend',
   'yolo',
   'web',
   'goal',
@@ -218,6 +220,15 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     accepts: any,
     whileBusy: 'accepted',
     run: uiCommands.model,
+  },
+  {
+    name: 'blend',
+    group: 'Setup',
+    description: 'Use Blend routing or return to the previous model',
+    argument: '[auto|pro|flash|off]',
+    accepts: acceptsBlend,
+    whileBusy: 'never',
+    run: blendCommand,
   },
   {
     name: 'connect',

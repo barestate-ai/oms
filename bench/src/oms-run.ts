@@ -2,7 +2,16 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { omsBase, parseRunRecord, registerOmsCatalog, SEARCH_BACKENDS, type RunRecord } from '@oms/engine';
+import {
+  omsBase,
+  parseRunRecord,
+  registerOmsCatalog,
+  SEARCH_BACKENDS,
+  type RunRecord,
+  type HarnessSessionOptions,
+} from '@oms/engine';
+import { runHeadlessHarness } from '../../packages/cli/src/headless.ts';
+import { blendModel } from '../../packages/engine/src/runtime/blend.ts';
 import type { ContenderModel } from './contenders.ts';
 import type { CodexCredential } from './subscription.ts';
 import { parseContender } from './matrix.ts';
@@ -22,6 +31,7 @@ export interface OmsContenderRun {
   jsonOut: string;
   /** Headless `oms run` arguments other than provider, model and JSON output. */
   args: string[];
+  apiOptions?: HarnessSessionOptions;
 }
 
 /**
@@ -113,9 +123,13 @@ export async function runOmsContender(o: OmsContenderRun): Promise<number> {
   try {
     const authPath = join(scratch, 'auth.json');
     const claude = isClaudeCodeCell(o.selection);
-    if (claude ? !o.claudeHome : !o.subscriptionCredential) throw new Error(`${o.contender} has no subscription login`);
+    const api = o.selection.provider === 'blend';
+    if (api && (o.subscriptionCredential || o.claudeHome || !o.apiOptions || !o.modelDefinition))
+      throw Error('Blend requires isolated API options, not a subscription login');
+    if (!api && (claude ? !o.claudeHome : !o.subscriptionCredential))
+      throw new Error(`${o.contender} has no subscription login`);
     if (claude) assertNoAnthropicCredential();
-    writeFileSync(authPath, JSON.stringify(claude ? {} : { 'openai-codex': o.subscriptionCredential }), {
+    writeFileSync(authPath, JSON.stringify(claude || api ? {} : { 'openai-codex': o.subscriptionCredential }), {
       mode: 0o600,
     });
     const runtime = await ModelRuntime.create({
@@ -127,32 +141,42 @@ export async function runOmsContender(o: OmsContenderRun): Promise<number> {
     if (!o.args.includes('--task') || !o.args[o.args.indexOf('--task') + 1]) throw new Error('Cell runs need --task');
     registerOmsCatalog(runtime);
     // The native Claude Code provider registers itself inside the OMS session, so the session resolves that model.
-    const model = claude ? o.selection : runtime.getModel(o.selection.provider, o.selection.id);
+    const model = claude || api ? o.selection : runtime.getModel(o.selection.provider, o.selection.id);
     if (!model) throw new Error(`Unknown model ${o.selection.provider}/${o.selection.id}`);
     const headlessOut = join(scratch, 'record.json');
     if (claude) process.env.OMS_CLAUDE_CODE_HOME = o.claudeHome;
-    const exitCode = await runHarnessCommand(
-      'run',
-      [
-        '--headless',
-        ...o.args,
-        '--subscription-spend-exempt',
-        '--provider',
-        model.provider,
-        '--model',
-        model.id,
-        '--json-out',
-        headlessOut,
-      ],
-      { modelRuntime: runtime },
-    ).finally(() => {
-      delete process.env.OMS_CLAUDE_CODE_HOME;
-    });
+    const exitCode = api
+      ? await runHeadlessHarness(
+          {
+            ...o.apiOptions!,
+            modelRuntime: runtime,
+            modelSelection: o.selection,
+            model: { ...blendModel(o.selection.id, process.env.OMS_BLEND_URL!), cost: o.modelDefinition!.cost },
+          },
+          headlessOut,
+        )
+      : await runHarnessCommand(
+          'run',
+          [
+            '--headless',
+            ...o.args,
+            '--subscription-spend-exempt',
+            '--provider',
+            model.provider,
+            '--model',
+            model.id,
+            '--json-out',
+            headlessOut,
+          ],
+          { modelRuntime: runtime },
+        ).finally(() => {
+          delete process.env.OMS_CLAUDE_CODE_HOME;
+        });
     const record = parseRunRecord({
       ...JSON.parse(readFileSync(headlessOut, 'utf8')),
       contender: o.contender,
       runIndex: o.runIndex,
-      funding: 'subscription',
+      funding: api ? 'api' : 'subscription',
       ...stamp,
     });
     mkdirSync(dirname(o.jsonOut), { recursive: true, mode: 0o700 });

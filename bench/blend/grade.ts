@@ -5,6 +5,8 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export type Grade = { passed: number; total: number; score: number };
+export const NODE_TEST_FLAGS = ['--experimental-transform-types', '--test'] as const;
+export const VISIBLE_TEST_COMMAND = ['node', ...NODE_TEST_FLAGS, 'visible.test.ts'] as const;
 
 async function copyWorkspace(source: string, target: string): Promise<void> {
   if (!(await lstat(source)).isDirectory()) throw new Error('Workspace must be a directory');
@@ -40,7 +42,7 @@ export async function grade(
     const environment: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
     delete environment.NODE_TEST_CONTEXT;
     const result = await new Promise<{ output: string; interrupted: boolean }>((accept, reject) => {
-      const child = spawn(process.execPath, ['--test', '--test-reporter=tap', 'grade.test.ts'], {
+      const child = spawn(process.execPath, [...NODE_TEST_FLAGS, '--test-reporter=tap', 'grade.test.ts'], {
         cwd: workspace,
         env: environment,
         stdio: ['ignore', 'pipe', 'pipe'],
