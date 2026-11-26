@@ -1,0 +1,9 @@
+{
+  "id": "v0-signed-activation",
+  "title": "Verify v0 signatures against bank-relative ALT activation",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "v0-alt-signatures",
+  "topics": ["ed25519", "v0", "alt-lifecycle"]
+}

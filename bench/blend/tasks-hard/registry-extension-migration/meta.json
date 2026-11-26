@@ -1,0 +1,9 @@
+{
+  "id": "registry-extension-migration",
+  "title": "Migrate Borsh extension directories into canonical permission bitmaps",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "anchor-borsh-layouts",
+  "topics": ["anchor", "borsh", "tlv", "permissions", "migration"]
+}

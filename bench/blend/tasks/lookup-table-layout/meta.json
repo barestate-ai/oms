@@ -1,0 +1,7 @@
+{
+  "id": "lookup-table-layout",
+  "title": "Decode address lookup table account state",
+  "kind": "implement",
+  "difficulty": 2,
+  "topics": ["alt", "account-layout", "slots"]
+}

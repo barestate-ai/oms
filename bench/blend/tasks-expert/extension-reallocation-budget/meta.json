@@ -1,0 +1,9 @@
+{
+  "id": "extension-reallocation-budget",
+  "title": "Plan canonical Token-2022 extension growth with aligned size, withheld rent and alias funders",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "token2022-fee-hook",
+  "topics": ["token2022-fee-hook", "multi-module", "boundary-invariants"]
+}

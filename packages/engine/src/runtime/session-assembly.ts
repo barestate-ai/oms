@@ -71,6 +71,7 @@ export async function assembleSession(
     hooks,
     extensions,
     initiallyKnown,
+    account,
     extras.extensionTools,
     account.searchCredential,
   );

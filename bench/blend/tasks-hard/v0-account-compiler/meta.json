@@ -1,0 +1,9 @@
+{
+  "id": "v0-account-compiler",
+  "title": "Compile privilege unions into a canonical v0 message and ALT index space",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "v0-alt-signatures",
+  "topics": ["v0", "alt", "account-order", "signatures"]
+}

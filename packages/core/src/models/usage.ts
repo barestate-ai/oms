@@ -30,7 +30,7 @@ export function isClaudeCodeModel(model: Model<Api>): boolean {
     model.provider === 'claude-code' &&
     model.api === 'claude-code' &&
     model.baseUrl === 'claude-code://local' &&
-    ['sonnet', 'opus', 'haiku'].includes(model.id)
+    ['sonnet', 'opus', 'haiku', 'fable'].includes(model.id)
   );
 }
 
@@ -96,7 +96,10 @@ export function normalizePiUsage(
     rates.input * 2 * longWrite;
   const reported = usage.cost?.total;
   if (typeof reported !== 'number' || !Number.isFinite(reported) || reported < 0) return null;
-  const spendMicroUsd = Math.ceil(Math.max(calculated, reported * 1_000_000));
+  // Blend's aggregate receipt is authoritative; its model rates are admission bounds only.
+  const spendMicroUsd = Math.ceil(
+    model.provider === 'blend' ? reported * 1_000_000 : Math.max(calculated, reported * 1_000_000),
+  );
   return count(spendMicroUsd) ? { tokens, spendMicroUsd } : null;
 }
 

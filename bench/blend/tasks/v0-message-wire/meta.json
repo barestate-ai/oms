@@ -1,0 +1,7 @@
+{
+  "id": "v0-message-wire",
+  "title": "Version-0 message codec with loaded-key index space",
+  "kind": "implement",
+  "difficulty": 3,
+  "topics": ["v0-message", "alt", "short-vec"]
+}

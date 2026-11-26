@@ -1,0 +1,7 @@
+{
+  "id": "pda-ata-curve",
+  "title": "PDA and ATA derivation with Ed25519 decompression",
+  "kind": "implement",
+  "difficulty": 3,
+  "topics": ["pda", "ata", "ed25519", "bigint", "sha256"]
+}

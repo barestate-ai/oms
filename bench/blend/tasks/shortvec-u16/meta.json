@@ -1,0 +1,7 @@
+{
+  "id": "shortvec-u16",
+  "title": "Canonical Solana short-vec lengths",
+  "kind": "implement",
+  "difficulty": 1,
+  "topics": ["short-vec", "binary"]
+}

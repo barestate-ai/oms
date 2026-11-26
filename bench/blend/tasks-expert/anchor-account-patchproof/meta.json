@@ -1,0 +1,9 @@
+{
+  "id": "anchor-account-patchproof",
+  "title": "Migrate Anchor patch envelopes with original-coordinate aliases and verifiable span proofs",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "anchor-borsh-layouts",
+  "topics": ["anchor-borsh-layouts", "multi-module", "boundary-invariants"]
+}

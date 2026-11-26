@@ -1,0 +1,7 @@
+{
+  "id": "anchor-discriminators",
+  "title": "Anchor namespace discriminators",
+  "kind": "implement",
+  "difficulty": 1,
+  "topics": ["anchor", "sha256"]
+}

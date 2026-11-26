@@ -1,0 +1,9 @@
+{
+  "id": "cpi-return-data-journal",
+  "title": "Keep return-data domains and compute consumption outside nested CPI rollback journals",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "cpi-rollback-conservation",
+  "topics": ["cpi-rollback-conservation", "multi-module", "boundary-invariants"]
+}

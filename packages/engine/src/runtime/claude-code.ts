@@ -1654,7 +1654,9 @@ export async function createClaudeCodeProvider(
     if (value !== undefined && (!isCount(Number(value)) || !Number(value)))
       throw new Error(`${name} must be a positive token count`);
   const models = (Object.entries(NATIVE_MODELS) as [NativeAlias, string][]).flatMap(([alias, id]) => {
-    const original = runtime.getModel('anthropic', id);
+    const original =
+      runtime.getModel('anthropic', id) ??
+      (alias === 'fable' ? runtime.getModel('anthropic', 'claude-opus-5-5') : undefined);
     return original
       ? [
           {
@@ -1666,6 +1668,13 @@ export async function createClaudeCodeProvider(
             baseUrl: CLAUDE_CODE_BASE_URL,
             input: ['text'] as 'text'[],
             reasoning: false,
+            ...(alias === 'fable'
+              ? {
+                  cost: { input: 8, output: 40, cacheRead: 0.8, cacheWrite: 10 },
+                  contextWindow: 1_000_000,
+                  maxTokens: 128_000,
+                }
+              : {}),
           },
         ]
       : [];

@@ -15,7 +15,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit';
 import { createEnv, deployedPrograms, walletFromSeed, type SubmissionRecord } from '../src/solbench-harness/service.ts';
-import { parseTransaction } from '../src/solbench-harness/wire.ts';
+import { base58, parseTransaction } from '../src/solbench-harness/wire.ts';
 
 const SYSTEM = '11111111111111111111111111111111';
 const wallet = walletFromSeed(new Uint8Array(32).fill(7));
@@ -45,9 +45,16 @@ function unsigned(data: number[], payer = wallet.publicKey): string {
 }
 
 /** A fork stand-in: every sent transaction lands; data byte 0 = 9 fails. Records every method it receives. */
-async function fakeFork(): Promise<{ url: string; methods: string[]; sent: string[]; server: Server }> {
+async function fakeFork(): Promise<{
+  url: string;
+  methods: string[];
+  sent: string[];
+  server: Server;
+  requests: Array<{ method: string; params: unknown }>;
+}> {
   const methods: string[] = [];
   const sent: string[] = [];
+  const requests: Array<{ method: string; params: unknown }> = [];
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => {
@@ -55,6 +62,7 @@ async function fakeFork(): Promise<{ url: string; methods: string[]; sent: strin
     });
     req.on('end', () => {
       const { method, params } = JSON.parse(body);
+      requests.push({ method, params });
       methods.push(method);
       let result: unknown = 'ok';
       if (method === 'sendTransaction') {
@@ -75,7 +83,7 @@ async function fakeFork(): Promise<{ url: string; methods: string[]; sent: strin
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, methods, sent, server };
+  return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, methods, sent, server, requests };
 }
 
 const rpc = (method: string, params: unknown[] = []) => ({ jsonrpc: '2.0', id: 1, method, params });
@@ -213,3 +221,64 @@ function walletPublicBytes(): Uint8Array {
   for (const c of wallet.publicKey) value = value * 58n + BigInt(ALPHABET.indexOf(c));
   return Uint8Array.from(Buffer.from(value.toString(16).padStart(64, '0'), 'hex'));
 }
+
+test('valid base58 and explicit base64 simulation requests pass through unchanged', async () => {
+  const fork = await fakeFork();
+  const env = createEnv({ upstream: fork.url, wallet, deadlineMs: Date.now() + 60000, record: () => {} });
+  const encoded = unsigned([2, 0, 0, 0]);
+  const b58 = base58(Buffer.from(encoded, 'base64'));
+  const requests = [
+    [b58],
+    [b58, { encoding: 'base58', sigVerify: false }],
+    [b58, null],
+    [encoded, { encoding: 'base64', sigVerify: false, replaceRecentBlockhash: true }],
+  ];
+  try {
+    for (const params of requests)
+      assert.equal(((await env.handle(rpc('simulateTransaction', params))) as any).result, 'ok');
+    assert.deepEqual(
+      fork.requests,
+      requests.map((params) => ({ method: 'simulateTransaction', params })),
+    );
+    assert.equal(env.forkFailures(), 0);
+    assert.equal(env.status().submissionsLeft, 50);
+  } finally {
+    fork.server.closeAllConnections();
+    await new Promise<void>((r) => fork.server.close(() => r()));
+  }
+});
+
+test('simulation decode guard rejects malformed, empty, oversized and unsupported inputs without dispatch or score changes', async () => {
+  const fork = await fakeFork();
+  const records: SubmissionRecord[] = [];
+  const env = createEnv({ upstream: fork.url, wallet, deadlineMs: Date.now() + 60000, record: (r) => records.push(r) });
+  const before = env.score();
+  const invalid: unknown[][] = [
+    [],
+    [''],
+    ['0O+/'],
+    ['AAAA'],
+    ['AA==', { encoding: 'base64' }],
+    ['not base64!', { encoding: 'base64' }],
+    ['AAAA', { encoding: 'json' }],
+    ['AAAA', false],
+    ['AAAA', { encoding: 'base64' }, {}],
+    ['1'.repeat(1233)],
+    ['A'.repeat(1648), { encoding: 'base64' }],
+    [Buffer.alloc(1233).toString('base64'), { encoding: 'base64' }],
+  ];
+  try {
+    for (const params of invalid) {
+      const r = (await env.handle(rpc('simulateTransaction', params))) as any;
+      assert.equal(r.error?.code, -32602, JSON.stringify(params).slice(0, 100));
+    }
+    assert.equal(fork.requests.length, 0);
+    assert.equal(env.forkFailures(), 0);
+    assert.equal(records.length, 0);
+    assert.deepEqual(env.score(), before);
+    assert.equal(env.status().submissionsLeft, 50);
+  } finally {
+    fork.server.closeAllConnections();
+    await new Promise<void>((r) => fork.server.close(() => r()));
+  }
+});

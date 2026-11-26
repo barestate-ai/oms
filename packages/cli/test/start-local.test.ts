@@ -43,6 +43,8 @@ test('the short help says oms works in any folder', () => {
   const help = spawnSync(process.execPath, [bin, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Start in the current folder \(any folder works\)/);
+  assert.match(help.stdout, /\/blend.*auto\|pro\|flash\|off/);
+  assert.match(help.stdout, /invited OMS account, \/login/);
 });
 
 test('the short help lists the flags plain oms accepts, never the one it refuses, and ends no row with a period', () => {

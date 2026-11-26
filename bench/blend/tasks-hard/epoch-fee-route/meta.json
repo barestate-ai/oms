@@ -1,0 +1,9 @@
+{
+  "id": "epoch-fee-route",
+  "title": "Quote an exact two-leg Token-2022 fee route",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "token2022-fee-hook",
+  "topics": ["token2022", "transfer-fees", "inverse", "u64"]
+}

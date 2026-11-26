@@ -13,6 +13,9 @@ export interface RunResult {
   tokens: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null;
   /** False when some model call's usage is unknown (a cut stream), so `tokens` is a lower bound. */
   tokensComplete: boolean;
+  usd?: number;
+  billingUpperUsd?: number;
+  forkFailures?: number;
   identities: { commit: string; image: string; goal: string };
 }
 
@@ -25,7 +28,11 @@ const median = (values: readonly number[]) => {
 const fmt = (n: number) => (Number.isNaN(n) ? 'n/a' : Number.isInteger(n) ? String(n) : n.toFixed(1));
 const k = (n: number) => (Number.isNaN(n) ? 'n/a' : `${Math.round(n / 1000)}k`);
 
+const eligible = (r: RunResult) =>
+  !['fork-failure', 'usage-limit', 'infra-no-start', 'api-budget'].includes(r.reason ?? '') &&
+  !r.reason?.startsWith('oms-');
 export function summarize(runs: readonly RunResult[]) {
+  runs = runs.filter(eligible);
   const by = (pick: (r: RunResult) => number) => runs.map(pick);
   const headline = by((r) => r.score.headline);
   const known = runs.filter((r) => r.tokens && r.tokensComplete);
@@ -51,6 +58,7 @@ export function summarize(runs: readonly RunResult[]) {
 
 /** Run i of cell A against run i of cell B in the same variant: the interleaved schedule ran them back to back. */
 export function paired(runs: readonly RunResult[], a: string, b: string) {
+  runs = runs.filter(eligible);
   const pairs = runs
     .filter((r) => r.cell === a)
     .flatMap((x) => {
@@ -72,14 +80,16 @@ export function paired(runs: readonly RunResult[], a: string, b: string) {
 }
 
 export function renderSection(all: readonly RunResult[], cells: readonly string[]): string {
-  const isPaused = (r: RunResult) => r.reason === 'usage-limit' || r.reason === 'infra-no-start';
+  const isPaused = (r: RunResult) =>
+    r.reason === 'usage-limit' || r.reason === 'infra-no-start' || r.reason === 'fork-failure';
   // A provider/harness-truncated run (OMS infra ending with submissions) is not a score: raw number listed apart, outside every statistic.
-  const isTruncated = (r: RunResult) => !isPaused(r) && Boolean(r.reason?.startsWith('oms-'));
+  const isTruncated = (r: RunResult) =>
+    !isPaused(r) && (Boolean(r.reason?.startsWith('oms-')) || r.reason === 'api-budget');
   const runs = all.filter((r) => !isPaused(r) && !isTruncated(r));
   const lines = [
     '## Solana Bench, harness version (our environment)',
     '',
-    'solbench-harness runs the Solana Bench scoring rule against whole harnesses as shipped, each online.',
+    'solbench-harness runs the Solana Bench scoring rule against whole harnesses: labelled subscription cells online, Blend API cells without web credentials.',
     'Goal (one file, the same for every harness): maximise unique (program id, first instruction-data byte) pairs in successfully executed',
     'transactions, on a Surfpool 0.10.4 mainnet fork, at most 50 `submit-tx` calls and 30 minutes per run. The agent never holds a key: the',
     'environment signs with a fresh fork-only wallet. Filtered score = no Memo / Memo v1, no arbitrary-data program, no program the run',
@@ -145,6 +155,10 @@ export function renderSection(all: readonly RunResult[], cells: readonly string[
     lines.push(
       `${paused.length} run(s) paused (usage limit, or an OMS infra ending before any submission) are not counted: ${paused.map((r) => `${r.cell} ${r.variant} run ${r.runIndex} (${r.reason})`).join('; ')}.`,
       '',
+    );
+  for (const r of all.filter((r) => r.usd !== undefined))
+    lines.push(
+      `API usage (including set-aside attempts): ${r.cell} ${r.variant} run ${r.runIndex}: USD ${r.usd!.toFixed(8)}, billing upper ${(r.billingUpperUsd ?? r.usd)!.toFixed(8)}, fork failures ${r.forkFailures ?? 0}.`,
     );
   return lines.join('\n');
 }

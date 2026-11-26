@@ -37,6 +37,7 @@ import {
   prepareHarnessTask,
 } from '@oms/engine';
 import { ONLINE_NETWORK } from './contenders.ts';
+import { infraReason } from './infra.ts';
 import {
   AGENT_HOME,
   benchInputTokens,
@@ -59,6 +60,9 @@ import {
 } from './solbench-harness/workspace.ts';
 import { lostSubscriptionAuth, scrubCredentials, stageSubscriptionLogin } from './external.ts';
 import { isClaudeCodeCell, omsCellArgs, runOmsContender } from './oms-run.ts';
+import { BLEND_MODELS, BlendBudget, startBlendRouter, apiSandboxProbe } from './blend-router.ts';
+import { retryFork } from './solbench-harness/attempts.ts';
+import type { ContenderModel } from './contenders.ts';
 
 const IMAGE = 'oms-solbench-harness:1';
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -96,16 +100,26 @@ const PROMPT =
   'Your working directory contains GOAL.md. Read it and pursue that goal until you are done or the budget is spent.';
 
 /** The three cells of the brief; each runs as shipped and online. */
-const CELLS = {
+const CELLS: Record<string, { harness: 'oms3' | 'codex' | 'claude-code'; model: ContenderModel }> = {
   'oms3-web:gpt-sol': { harness: 'oms3', model: SUBSCRIPTION_MODELS.oms3!['gpt-sol']! },
   'codex-web:gpt-sol': { harness: 'codex', model: SUBSCRIPTION_MODELS.codex!['gpt-sol']! },
   'claude-code-web:opus-sub': { harness: 'claude-code', model: SUBSCRIPTION_MODELS['claude-code']!['opus-sub']! },
+  'claude-code-web:fable-sub': { harness: 'claude-code', model: SUBSCRIPTION_MODELS['claude-code']!['fable-sub']! },
   'oms3-web:opus-sub': { harness: 'oms3', model: SUBSCRIPTION_MODELS.oms3!['opus-sub']! },
-} as const;
+  'oms3:fable-sub': { harness: 'oms3', model: SUBSCRIPTION_MODELS.oms3!['fable-sub']! },
+  ...Object.fromEntries(
+    Object.entries(BLEND_MODELS).map(([id, model]) => [`oms3:blend/${id}`, { harness: 'oms3' as const, model }]),
+  ),
+};
 type Cell = keyof typeof CELLS;
 
 /** Run directories are named by cell; the two OMS cells share a harness prefix, so only their model tells them apart. */
-const cellDir = (cell: string) => (cell === 'oms3-web:opus-sub' ? 'oms3-web-opus-sub' : cell.split(':')[0]!);
+const cellDir = (cell: string) =>
+  cell.startsWith('oms3:blend/')
+    ? 'oms3-blend-' + cell.slice('oms3:blend/'.length)
+    : cell === 'oms3-web:opus-sub'
+      ? 'oms3-web-opus-sub'
+      : cell.split(':')[0]!;
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -303,8 +317,17 @@ async function runVendor(
 }
 
 /** OMS through its production headless path; its sandbox's one Surfpool port is the env (through the shim). */
-async function runOms(cell: Cell, runIndex: number, runDir: string, repo: string, envUrl: string, imageId: string) {
-  const { model } = CELLS[cell];
+async function runOms(
+  cell: Cell,
+  runIndex: number,
+  runDir: string,
+  repo: string,
+  envUrl: string,
+  imageId: string,
+  budget: BlendBudget,
+) {
+  const { model } = CELLS[cell]!;
+  const api = model.provider === 'blend';
   const wrapper = join(runDir, 'surfpool');
   writeFileSync(wrapper, `#!/bin/sh\nexec ${process.execPath} ${SHIM} ${envUrl} "$@"\n`);
   chmodSync(wrapper, 0o755);
@@ -342,53 +365,113 @@ async function runOms(cell: Cell, runIndex: number, runDir: string, repo: string
     mkdirSync(home, { recursive: true, mode: 0o700 });
     stageSubscriptionLogin('claude-code', home);
   }
-  const exit = await runOmsContender({
-    contender: cell,
-    runIndex,
-    selection: { provider: model.provider, id: model.id },
-    modelDefinition: model,
-    jsonOut,
-    ...(claude
-      ? { claudeHome: home }
-      : { subscriptionCredential: codexCredential(join(homedir(), '.codex/auth.json')) }),
-    args: omsCellArgs({
-      cell,
-      model,
-      repo,
-      stateRoot,
-      taskId: task.id,
-      surfpoolWrapper: wrapper,
-      wallMinutes: RUN_WALL_MS / 60_000,
-      outputTokens: benchOutputTokens(model),
-      inputTokens: benchInputTokens({ modelDefinition: model, funding: 'subscription' }),
-    }),
-  }).finally(() => scrubCredentials(home));
-  const record = JSON.parse(readFileSync(jsonOut, 'utf8')) as {
-    status: string;
-    reason: string | null;
-    accounting: 'known' | 'unknown';
-    dispatches: Array<{ usage: Tokens | null }>;
-  };
-  const sum = (key: keyof Tokens) => record.dispatches.reduce((total, d) => total + (d.usage?.[key] ?? 0), 0);
-  // A request the local input cap refused was never sent (not_dispatched); only an uncertain dispatch leaves usage unknown.
-  const unknown = record.accounting === 'unknown';
-  const usageLimited = /usage.?limit|429/i.test(record.reason ?? '');
-  // A provider stream cut ends the OMS run as infra/usage-unknown; like the other bench tiers it is scored by its final state, and named.
-  return {
-    exit,
-    reason: usageLimited ? 'usage-limit' : record.status === 'infra' ? `oms-${record.reason}` : null,
-    tokensComplete: !unknown,
-    omsStatus: record.status,
-    omsReason: record.reason,
-    knowledge: Boolean(process.env.OMS_KNOWLEDGE_TOKEN),
-    tokens: {
-      inputTokens: sum('inputTokens'),
-      outputTokens: sum('outputTokens'),
-      cacheReadTokens: sum('cacheReadTokens'),
-      cacheWriteTokens: sum('cacheWriteTokens'),
-    },
-    turns: record.dispatches.length,
-  };
+  const previousUrl = process.env.OMS_BLEND_URL,
+    previousToken = process.env.OMS_BLEND_TOKEN;
+  const router = api ? await startBlendRouter(join(runDir, 'router.jsonl'), budget) : undefined;
+  const before = budget.used;
+  if (router) {
+    process.env.OMS_BLEND_URL = router.url;
+    process.env.OMS_BLEND_TOKEN = 'local-solbench';
+  }
+  try {
+    const exit = await runOmsContender({
+      contender: cell,
+      runIndex,
+      selection: { provider: model.provider, id: model.id },
+      modelDefinition: model,
+      jsonOut,
+      ...(api
+        ? {
+            apiOptions: {
+              workspace,
+              task,
+              environment,
+              hostApprovalPolicy: 'deny' as const,
+              executionMode: 'bounded' as const,
+              caps: {
+                tokens: 20000000,
+                spendMicroUsd: Math.floor(budget.remainingUsd * 1e6),
+                wallClockMs: RUN_WALL_MS,
+              },
+              maxInputTokens: 131072,
+              maxOutputTokens: 32000,
+              requestCost: router!.requestCost,
+              knowledgeHint: false,
+              knowledgeInject: false,
+            },
+          }
+        : claude
+          ? { claudeHome: home }
+          : { subscriptionCredential: codexCredential(join(homedir(), '.codex/auth.json')) }),
+      args: omsCellArgs({
+        cell,
+        model,
+        repo,
+        stateRoot,
+        taskId: task.id,
+        surfpoolWrapper: wrapper,
+        wallMinutes: RUN_WALL_MS / 60_000,
+        outputTokens: benchOutputTokens(model),
+        inputTokens: benchInputTokens({ modelDefinition: model, funding: 'subscription' }),
+      }),
+    }).finally(() => scrubCredentials(home));
+    const record = JSON.parse(readFileSync(jsonOut, 'utf8')) as {
+      status: string;
+      reason: string | null;
+      accounting: 'known' | 'unknown';
+      dispatches: Array<{ usage: Tokens | null }>;
+    };
+    const sum = (key: keyof Tokens) => record.dispatches.reduce((total, d) => total + (d.usage?.[key] ?? 0), 0);
+    // A request the local input cap refused was never sent (not_dispatched); only an uncertain dispatch leaves usage unknown.
+    const unknown = record.accounting === 'unknown';
+    const usageLimited = /usage.?limit|429/i.test(record.reason ?? '');
+    const infra = infraReason(record, router?.logs.flatMap((line) => line.calls) ?? []);
+    // A provider stream cut ends the OMS run as infra/usage-unknown; like the other bench tiers it is scored by its final state, and named.
+    return {
+      exit,
+      reason:
+        api && (budget.blocked || (record.status === 'capped' && record.reason === 'capped:usd'))
+          ? 'api-budget'
+          : infra
+            ? infra
+            : usageLimited
+              ? 'usage-limit'
+              : record.status === 'infra'
+                ? `oms-${record.reason}`
+                : null,
+      ...(router
+        ? {
+            usd: router.logs.reduce((sum, line) => sum + line.total_usd, 0),
+            billingUpperUsd: (budget.used - before) / 1e6,
+            routerLog: join(runDir, 'router.jsonl'),
+          }
+        : {}),
+      tokensComplete: !unknown,
+      omsStatus: record.status,
+      omsReason: record.reason,
+      knowledge: Boolean(process.env.OMS_KNOWLEDGE_TOKEN),
+      tokens: router
+        ? {
+            inputTokens: router.logs.flatMap((l) => l.calls).reduce((s, c) => s + c.in - c.cached, 0),
+            cacheReadTokens: router.logs.flatMap((l) => l.calls).reduce((s, c) => s + c.cached, 0),
+            cacheWriteTokens: 0,
+            outputTokens: router.logs.flatMap((l) => l.calls).reduce((s, c) => s + c.out, 0),
+          }
+        : {
+            inputTokens: sum('inputTokens'),
+            outputTokens: sum('outputTokens'),
+            cacheReadTokens: sum('cacheReadTokens'),
+            cacheWriteTokens: sum('cacheWriteTokens'),
+          },
+      turns: record.dispatches.length,
+    };
+  } finally {
+    await router?.close();
+    if (previousUrl === undefined) delete process.env.OMS_BLEND_URL;
+    else process.env.OMS_BLEND_URL = previousUrl;
+    if (previousToken === undefined) delete process.env.OMS_BLEND_TOKEN;
+    else process.env.OMS_BLEND_TOKEN = previousToken;
+  }
 }
 
 async function runOne(
@@ -396,9 +479,9 @@ async function runOne(
   variant: Variant,
   runIndex: number,
   runDir: string,
-  o: { maxSubmissions: number; imageId: string },
+  o: { maxSubmissions: number; imageId: string; budget: BlendBudget },
 ) {
-  if (existsSync(join(runDir, 'paused.json'))) renameSync(runDir, `${runDir}.paused-${Date.now()}`);
+  if (existsSync(runDir)) renameSync(runDir, `${runDir}.paused-${Date.now()}`);
   rmSync(runDir, { recursive: true, force: true });
   mkdirSync(runDir, { recursive: true });
   const fork = await startFork(join(runDir, 'fork'));
@@ -425,8 +508,8 @@ async function runOne(
     servers.push(...(await listenEnv(env, ['127.0.0.1', ONLINE_NETWORK.gateway], port)));
     const stopTrace = startWorkspaceTrace(repo, join(runDir, 'trace'));
     const ran = await (
-      CELLS[cell].harness === 'oms3'
-        ? runOms(cell, runIndex, runDir, repo, `http://127.0.0.1:${port}`, o.imageId)
+      CELLS[cell]!.harness === 'oms3'
+        ? runOms(cell, runIndex, runDir, repo, `http://127.0.0.1:${port}`, o.imageId, o.budget)
         : runVendor(cell, runDir, repo, `http://${ONLINE_NETWORK.gateway}:${port}`)
     ).finally(stopTrace);
     if (process.env.SOLBENCH_HARNESS_EGRESS_LOG) {
@@ -451,6 +534,7 @@ async function runOne(
       budget: { maxSubmissions: o.maxSubmissions, wallMs: RUN_WALL_MS },
       ...ran,
       score: env.score(),
+      forkFailures: env.forkFailures(),
       identities: {
         goal: sha256(readFileSync(join(WORKSPACE_SOURCE, 'GOAL.md'))),
         prompt: sha256(PROMPT),
@@ -459,8 +543,15 @@ async function runOne(
       },
     };
     // A usage limit, or an OMS infra ending before any submission, is not a score of 0: set aside as paused.json and rerun the slot.
-    const paused = ran.reason === 'usage-limit' || (ran.reason?.startsWith('oms-') && result.score.submissions === 0);
-    if (paused) result.reason = ran.reason === 'usage-limit' ? 'usage-limit' : 'infra-no-start';
+    const unhealthy = env.forkFailures() >= 3 || fork.child.exitCode !== null;
+    const paused =
+      unhealthy ||
+      ran.reason === 'usage-limit' ||
+      ran.reason === 'api-budget' ||
+      (ran.reason?.startsWith('oms-') && result.score.submissions === 0);
+    if (paused)
+      result.reason = ['usage-limit', 'api-budget'].includes(ran.reason ?? '') ? ran.reason : 'infra-no-start';
+    if (unhealthy) result.reason = 'fork-failure';
     writeFileSync(join(runDir, paused ? 'paused.json' : 'result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;
   } finally {
@@ -537,6 +628,7 @@ async function main(argv: string[]): Promise<number> {
       'out-root': { type: 'string' },
       prefix: { type: 'string' },
       'max-submissions': { type: 'string' },
+      'max-usd': { type: 'string' },
     },
   });
   const cells = (values.cell ?? []) as Cell[];
@@ -547,14 +639,22 @@ async function main(argv: string[]): Promise<number> {
     throw new Error(`--cell must be one of ${Object.keys(CELLS).join(', ')}`);
   if (variant !== 'basic' && variant !== 'swap') throw new Error('--variant basic|swap');
   if (!values['out-root'] || !values.runs) throw new Error('--out-root and --runs are required');
+  mkdirSync(resolve(values['out-root']), { recursive: true });
+  const budget = new BlendBudget(
+    join(resolve(values['out-root']), `${prefix}-blend-budget.jsonl`),
+    Number(values['max-usd'] ?? 4),
+  );
   // A series name keeps each build's runs in their own directories (main, dev, ...).
   if (!/^[a-z][a-z0-9]{0,11}$/.test(prefix)) throw new Error('--prefix must be a short lowercase series name');
   // Development series (names starting with dev) tune on a short budget; every other series is scored on the full one.
   if (!prefix.startsWith('dev') ? maxSubmissions !== MAX_SUBMISSIONS : maxSubmissions > 10)
     throw new Error('scored runs use 50 submissions; dev* runs at most 10');
+  if (cells.some((cell) => cell.startsWith('oms3:blend/'))) ensureOnlineNetwork();
   const imageId = execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}}', IMAGE], {
     encoding: 'utf8',
   }).trim();
+  if (cells.some((cell) => cell.startsWith('oms3:blend/')))
+    execFileSync('docker', apiSandboxProbe(imageId), { stdio: 'pipe', timeout: 60000 });
   for (let runIndex = Number(values.start ?? 0); runIndex < Number(values.runs); runIndex++) {
     for (const cell of cells) {
       if (existsSync(join(values['out-root']!, 'STOP'))) {
@@ -563,7 +663,31 @@ async function main(argv: string[]): Promise<number> {
       }
       const runDir = resolve(values['out-root'], `${prefix}-solbh-${cellDir(cell)}-${variant}`, `run-${runIndex}`);
       if (existsSync(join(runDir, 'result.json'))) continue;
-      const result = await runOne(cell, variant, runIndex, runDir, { maxSubmissions, imageId });
+      let attempt = 0;
+      const result = await retryFork(
+        async () => {
+          const result = await runOne(cell, variant, runIndex, runDir, { maxSubmissions, imageId, budget });
+          appendFileSync(
+            join(values['out-root']!, `${prefix}-attempts.jsonl`),
+            JSON.stringify({
+              cell,
+              variant,
+              runIndex,
+              attempt: attempt++,
+              reason: result.reason,
+              usd: (result as RunResult).usd ?? null,
+              at: new Date().toISOString(),
+            }) + '\n',
+            { mode: 0o600 },
+          );
+          return result;
+        },
+        {
+          canRetry: () => !budget.blocked && budget.remainingUsd > 0,
+          onRetry: (r) => console.log(`${cell} run ${runIndex}: set aside (${r.reason}); retrying same slot`),
+        },
+      );
+      if (result.reason === 'fork-failure') return 4;
       console.log(
         `${new Date().toISOString()} ${cell} ${variant} run ${runIndex}: headline ${result.score.headline} raw ${result.score.raw} ` +
           `submissions ${result.score.submissions} failed ${result.score.failed} wall ${Math.round(result.wallMs / 1000)}s reason ${result.reason}`,
@@ -571,6 +695,10 @@ async function main(argv: string[]): Promise<number> {
       if (result.reason === 'usage-limit') {
         console.log('usage limit: paused (the owner reset is never used)');
         return 3;
+      }
+      if (result.reason === 'api-budget') {
+        console.log('API dollar cap: stopping without launching another slot');
+        return 4;
       }
       if (result.reason === 'infra-no-start')
         console.log('infra ending before any submission: set aside, rerun this slot');
