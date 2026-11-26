@@ -65,7 +65,7 @@ export class BlendBudget {
   readonly file: string;
   readonly maximum: number;
   readonly scope: 'all' | 'anthropic-muse';
-  private readonly entries = new Map<string, { amount: number; charged?: number; retained?: number }>();
+  private readonly entries = new Map<string, { amount: number; charged?: number }>();
   constructor(file: string, maxUsd: number, scope: 'all' | 'anthropic-muse' = 'all') {
     this.file = file;
     this.scope = scope;
@@ -84,17 +84,20 @@ export class BlendBudget {
       this.entries.set(event.id, { amount: event.amount });
     } else if (event.kind === 'settle') {
       const entry = this.entries.get(event.id);
-      if (!entry || entry.charged !== undefined || !Number.isSafeInteger(event.retained) || event.retained! < 0)
+      if (
+        !entry ||
+        entry.charged !== undefined ||
+        (event.retained !== undefined && (!Number.isSafeInteger(event.retained) || event.retained < 0))
+      )
         throw Error('Invalid settlement');
       entry.charged = event.amount;
-      entry.retained = event.retained;
     } else throw Error('Unknown ledger event');
   }
   get used() {
-    return [...this.entries.values()].reduce(
-      (sum, e) => sum + (e.charged === undefined ? e.amount : e.charged + (e.retained ?? 0)),
-      0,
-    );
+    return [...this.entries.values()].reduce((sum, e) => sum + (e.charged ?? e.amount), 0);
+  }
+  get assessed() {
+    return [...this.entries.values()].reduce((sum, e) => sum + (e.charged ?? 0), 0);
   }
   get remainingUsd() {
     return Math.max(0, this.maximum - this.used) / 1e6;
@@ -113,11 +116,10 @@ export class BlendBudget {
     this.apply(event);
     return event.id;
   }
-  settle(id: string, usd: number, retain: boolean) {
+  settle(id: string, usd: number) {
     const entry = this.entries.get(id);
-    if (!entry) throw Error('Unknown reservation');
-    const amount = micro(usd),
-      event: Event = { id, kind: 'settle', amount, retained: retain ? Math.max(0, entry.amount - amount) : 0 };
+    if (!entry || entry.charged !== undefined) throw Error('Invalid settlement');
+    const event: Event = { id, kind: 'settle', amount: micro(usd) };
     appendFileSync(this.file, JSON.stringify(event) + '\n', { mode: 0o600 });
     this.apply(event);
   }
@@ -145,7 +147,7 @@ export async function startBlendRouter(logFile: string, budget: BlendBudget, tra
       return budget.reserve((estimatedInput(model, input) * inputRate + input.maxTokens * outputRate) / 1e6);
     },
     afterCall: async (call, ticket) => {
-      if (typeof ticket === 'string') budget.settle(ticket, call.usd, call.dispatched && call.status_class !== 'ok');
+      if (typeof ticket === 'string') budget.settle(ticket, call.usd);
     },
     log: (line) => {
       logs.push(line);

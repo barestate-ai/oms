@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -13,7 +13,7 @@ import {
   blendProfiles,
 } from '../src/blend-router.ts';
 import { normalizeContext } from '@earendil-works/pi-ai';
-import type { RequestLog } from '../../deploy/blend-worker/src/core/types.ts';
+import { UpstreamError, type RequestLog } from '../../deploy/blend-worker/src/core/types.ts';
 import { chatData } from '../../deploy/blend-worker/test/fixtures.ts';
 import { BLEND_PROFILES } from '../../packages/engine/src/runtime/blend.ts';
 import { parseContender } from '../src/matrix.ts';
@@ -254,22 +254,57 @@ test('router admits cheap requests under the strong bound, but reserves strong b
     }
   }
 });
-test('durable dollar cap refunds successful holds, retains failed exposure and includes interrupted attempts on resume', (t) => {
+test('a timeout without reported usage releases its unused reservation before retrying', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'solbench-timeout-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const previous = process.env.MUSE_API_KEY;
+  process.env.MUSE_API_KEY = 'fixture';
+  t.after(() => {
+    if (previous === undefined) delete process.env.MUSE_API_KEY;
+    else process.env.MUSE_API_KEY = previous;
+  });
+  const file = join(dir, 'ledger');
+  const budget = new BlendBudget(file, 0.06, 'anthropic-muse');
+  let attempts = 0;
+  const router = await startBlendRouter(join(dir, 'router.log'), budget, async () => {
+    if (++attempts === 1) throw new UpstreamError(504, 'timed out', 'timeout', true);
+    return Response.json(chatData());
+  });
+  t.after(() => router.close());
+  const response = await fetch(router.url + '/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'muse-ember-1.0', messages: [{ role: 'user', content: 'hi' }], max_tokens: 32000 }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(attempts, 2);
+  const [timedOut, succeeded] = router.logs[0]!.calls;
+  assert.equal(timedOut!.status_class, 'timeout');
+  assert.equal(timedOut!.usage_source, 'estimated');
+  assert.ok(timedOut!.usd > 0);
+  assert.equal(budget.used, Math.ceil(timedOut!.usd * 1e6) + Math.ceil(succeeded!.usd * 1e6));
+  assert.equal(new BlendBudget(file, 0.06).used, budget.used);
+});
+
+test('durable dollar cap counts settlement assessments and protects interrupted holds on resume', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'solbench-budget-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, 'ledger.jsonl');
   const budget = new BlendBudget(file, 1),
     a = budget.reserve(0.6);
   assert.throws(() => budget.reserve(0.5), /cap reached/);
-  budget.settle(a, 0.1, false);
+  budget.settle(a, 0.1);
   assert.equal(budget.remainingUsd, 0.9);
   const b = budget.reserve(0.5);
-  budget.settle(b, 0.2, true);
-  assert.equal(budget.used, 600000);
+  budget.settle(b, 0.2);
+  assert.equal(budget.used, 300000);
+  const old = budget.reserve(0.1);
+  appendFileSync(file, JSON.stringify({ id: old, kind: 'settle', amount: 50000, retained: 50000 }) + '\n');
   budget.reserve(0.3);
   const resumed = new BlendBudget(file, 1);
-  assert.equal(resumed.used, 900000);
-  assert.throws(() => resumed.reserve(0.2), /cap reached/);
+  assert.equal(resumed.used, 650000);
+  assert.equal(resumed.assessed, 350000);
+  assert.throws(() => resumed.reserve(0.36), /cap reached/);
   assert.ok(!readFileSync(file, 'utf8').includes('secret'));
   assert.equal(new BlendBudget(join(dir, 'empty.jsonl'), 1).used, 0);
   assert.throws(() => new BlendBudget(file, NaN), /Invalid/);

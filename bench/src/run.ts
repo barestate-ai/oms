@@ -372,7 +372,7 @@ async function runOms(
   const previousUrl = process.env.OMS_BLEND_URL,
     previousToken = process.env.OMS_BLEND_TOKEN;
   const router = api ? await startBlendRouter(join(runDir, 'router.jsonl'), budget) : undefined;
-  const before = budget.used;
+  const before = budget.assessed;
   if (router) {
     process.env.OMS_BLEND_URL = router.url;
     process.env.OMS_BLEND_TOKEN = 'local-solbench';
@@ -447,7 +447,7 @@ async function runOms(
       ...(router
         ? {
             usd: router.logs.reduce((sum, line) => sum + line.total_usd, 0),
-            billingUpperUsd: (budget.used - before) / 1e6,
+            budgetAssessedUsd: (budget.assessed - before) / 1e6,
             routerLog: join(runDir, 'router.jsonl'),
           }
         : {}),

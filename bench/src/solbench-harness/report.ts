@@ -15,6 +15,7 @@ export interface RunResult {
   tokensComplete: boolean;
   usd?: number;
   billingUpperUsd?: number;
+  budgetAssessedUsd?: number;
   forkFailures?: number;
   identities: { commit: string; image: string; goal: string };
 }
@@ -158,7 +159,7 @@ export function renderSection(all: readonly RunResult[], cells: readonly string[
     );
   for (const r of all.filter((r) => r.usd !== undefined))
     lines.push(
-      `API usage (including set-aside attempts): ${r.cell} ${r.variant} run ${r.runIndex}: USD ${r.usd!.toFixed(8)}, billing upper ${(r.billingUpperUsd ?? r.usd)!.toFixed(8)}, fork failures ${r.forkFailures ?? 0}.`,
+      `API usage (including set-aside attempts): ${r.cell} ${r.variant} run ${r.runIndex}: USD ${r.usd!.toFixed(8)}, ${r.budgetAssessedUsd !== undefined ? `assessed against cap ${r.budgetAssessedUsd.toFixed(8)}` : `billing upper ${(r.billingUpperUsd ?? r.usd)!.toFixed(8)}`}, fork failures ${r.forkFailures ?? 0}.`,
     );
   return lines.join('\n');
 }
