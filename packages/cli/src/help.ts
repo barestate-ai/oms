@@ -4,9 +4,12 @@ import { omsCommand } from '@oms/engine';
 export const COMMANDS: Record<string, { usage: string[]; about: string }> = {
   start: {
     usage: [
-      'start [--spend-usd <n>] [--tokens <n>] [--minutes <n>] [--output-tokens <n>] [--bounded] [--no-web] [--yolo]',
+      'start [--new] [--spend-usd <n>] [--tokens <n>] [--minutes <n>] [--output-tokens <n>] [--bounded] [--no-web]',
+      '      [--yolo]',
     ],
-    about: 'Open the chat in the current folder. Plain `oms` does the same.',
+    about:
+      'Open the chat in the current folder. Plain `oms` does the same, and takes the same options.\n' +
+      "It resumes this folder's newest conversation; --new starts a separate one and keeps the old ones.",
   },
   doctor: {
     usage: ['doctor [--json] [--programs] [--rpc <url>] [--surfpool-binary <path>] [--install]'],
@@ -26,14 +29,36 @@ export const COMMANDS: Record<string, { usage: string[]; about: string }> = {
       "Anchor, System and SPL tables and this project's target/idl/*.json, with no network.",
   },
   sessions: {
-    usage: ['sessions [--json]'],
-    about: 'List the folders that have saved conversations. Run oms in a folder to continue there.',
+    usage: ['sessions [--json]', 'sessions --prune [--yes]'],
+    about:
+      'List the folders that have saved conversations. Run oms in a folder to continue there.\n' +
+      '--prune deletes the saved state of folders that no longer exist, after asking.',
   },
   update: {
     usage: ['update [--check] [--version <x.y.z>]'],
     about: 'Install the latest release the way oms was installed. --check only reports.',
   },
   version: { usage: ['version'], about: 'Print the installed version.' },
+  config: {
+    usage: ['config [--json]'],
+    about: 'Show where OMS keeps its settings and state. Secret files are never opened.',
+  },
+  login: {
+    usage: ['login'],
+    about: 'Sign in to your Oh My Sol account for Solana knowledge. Model providers are set up with /connect.',
+  },
+  logout: { usage: ['logout'], about: 'Sign out of your Oh My Sol account on this device.' },
+  whoami: { usage: ['whoami'], about: 'Show the signed-in Oh My Sol account.' },
+  completion: {
+    usage: ['completion bash|zsh|fish'],
+    about: 'Print a shell completion script. Its first line says where to put it.',
+  },
+  uninstall: {
+    usage: ['uninstall [--purge] [--yes]'],
+    about:
+      'Remove oms the way it was installed, after asking. Your conversations, sign-ins and settings stay\n' +
+      'unless you pass --purge.',
+  },
   toolchain: {
     usage: ['toolchain check|fix [--project <path>] [--apply] [--verify]'],
     about: 'Find and repair Anchor and Kit version and build mismatches.',

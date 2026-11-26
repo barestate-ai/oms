@@ -5,6 +5,12 @@
 - Every command answers `--help`, and `oms help <command>` shows the same text. A mistyped command names the closest one.
 - `oms sessions` lists the folders that have saved conversations, newest first, and flags folders that were deleted.
 - `oms error <code> [program]` names a Solana program error from the shell, offline, using the built-in tables and the project's IDLs.
+- `oms login`, `oms logout` and `oms whoami` manage your Oh My Sol account from the shell.
+- `oms --new` starts a separate conversation instead of resuming the folder's newest one.
+- `oms sessions --prune` deletes the saved state of folders that no longer exist, after asking.
+- `oms config` shows where settings and state are kept, without opening secret files.
+- `oms completion bash|zsh|fish` prints a shell completion script.
+- `oms uninstall` removes OMS the way you installed it and keeps your data unless you add `--purge`.
 
 ## 0.1.4
 

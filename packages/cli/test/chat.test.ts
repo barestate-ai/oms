@@ -330,3 +330,26 @@ test('the chat starts with the saved theme and art and saves each change for the
     { theme: 'dracula', background: 'theme', startupArt: 'off' },
   ]);
 });
+
+test('--new starts a separate conversation without asking about the saved one', async (t) => {
+  const f = setup(t);
+  const saved = saveConversation(f);
+  writeFileSync(saved.journal, '{"type":"budget_open"', { mode: 0o600 });
+  const opened: Array<Record<string, unknown>> = [];
+  await capture(() =>
+    runInteractiveChat({
+      folder: f.project,
+      stateRoot: f.stateRoot,
+      environment: defaultHarnessEnvironment(),
+      launch,
+      fresh: true,
+      choose: async () => assert.fail('no question'),
+      start: async (options) => {
+        opened.push(options as unknown as Record<string, unknown>);
+        return fakeChat(options.folder, []);
+      },
+      run: async () => {},
+    }),
+  );
+  assert.equal('sessionId' in opened[0]!, false);
+});
