@@ -485,8 +485,8 @@ test('mouse: a click runs the slash popup row, the theme list row and an approva
   const { terminal, close } = start(f.harness, 100, 40);
   try {
     let screen = await terminal.until((s) => s.includes('/ commands'));
-    // The slash popup: type "/" and click a row.
-    terminal.send('/');
+    // The slash popup: narrow to the theme command and click its row.
+    terminal.send('/th');
     screen = await terminal.until((s) => s.includes('/theme'));
     clickText(terminal, screen, '/theme');
     screen = await terminal.until((s) => /OMS Ember/.test(s) && /Choose a theme/.test(s));

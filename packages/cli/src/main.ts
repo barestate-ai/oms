@@ -31,6 +31,7 @@ Inside oms
   /setup     Set up a model and web search
   /connect   Sign in: ChatGPT, Claude, Grok or an API key
   /model     Pick a model
+  /blend [auto|pro|flash|off]  Use Blend routing (invited OMS account, /login)
   /help      Commands and keys
 
 More: ${omsCommand()} help advanced
