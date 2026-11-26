@@ -475,6 +475,31 @@ test('cost log and Analytics Engine contain only allowlisted fields, never ident
   };
   assert.equal((await s.app(request(), s.env)).status, 200);
 });
+test('checkpoint switch reasons appear once alongside per-model cost, without conversation text', async () => {
+  const s = setup();
+  const messages = Array.from({ length: 6 }, () => [
+    { role: 'user', content: PRIVATE },
+    { role: 'assistant', content: PRIVATE },
+  ]).flat();
+  const res = await s.app(request({ profile: 'checkpoint-fable-glm', messages }), s.env);
+  assert.equal(res.status, 200);
+  const logs = s.logs.map((line) => JSON.parse(line));
+  assert.deepEqual(
+    logs.map((line) => [line.model, line.usd, line.policy_events]),
+    [
+      [
+        'glm-5.3-flash',
+        0.0000025,
+        [
+          { type: 'handoff', reason: 'turns' },
+          { type: 'return', reason: 'final' },
+        ],
+      ],
+      ['claude-fable-5-2', 0.00016, undefined],
+    ],
+  );
+  assert.ok(!JSON.stringify(logs).includes(PRIVATE));
+});
 test('oversized input, unknown routes and invalid configured limits fail closed without upstream requests', async () => {
   const s = setup();
   assert.equal(

@@ -4,7 +4,7 @@ import { estimatedInput } from './core/adapters.ts';
 import { validateProfiles } from './core/policies.ts';
 import { modelSpec } from './core/pricing.ts';
 import { BlendError, UpstreamError } from './core/types.ts';
-import type { SessionState, SessionStore, RequestLog } from './core/types.ts';
+import type { SessionState, SessionStore, RequestLog, PolicyEvent } from './core/types.ts';
 import { SqlStore, limit, micro, dailyCap } from './limits.ts';
 
 export interface Env {
@@ -56,6 +56,7 @@ function emit(
   usd: number,
   status: number,
   ms: number,
+  policyEvents?: PolicyEvent[],
 ) {
   const event = {
     user_hash: user,
@@ -67,6 +68,7 @@ function emit(
     usd,
     status,
     ms,
+    ...(policyEvents?.length ? { policy_events: policyEvents.map(({ type, reason }) => ({ type, reason })) } : {}),
   };
   deps.log(JSON.stringify(event));
   try {
@@ -311,8 +313,21 @@ export class BlendUser implements SessionStore {
             line.status,
             Math.max(0, this.deps.now() - start),
           );
-        for (const c of line.calls)
-          emit(this.env, this.deps, user, line.profile, c.model, c.in, c.cached, c.out, c.usd, line.status, c.ms);
+        for (const [i, c] of line.calls.entries())
+          emit(
+            this.env,
+            this.deps,
+            user,
+            line.profile,
+            c.model,
+            c.in,
+            c.cached,
+            c.out,
+            c.usd,
+            line.status,
+            c.ms,
+            i === 0 ? line.events : undefined,
+          );
       };
       return await handle(request, {
         fetch: this.deps.fetch,
