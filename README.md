@@ -160,6 +160,19 @@ Sign in with GitHub using `/login` to access Solana knowledge.
 
 ## Commands
 
+From your shell (`oms <command> --help` explains each one):
+
+| Command | What it does |
+|---|---|
+| `oms` | Chat in the current folder |
+| `oms doctor` | Check your setup |
+| `oms review [path]` | Offline security report for your program |
+| `oms error <code> [program]` | Name a program error, offline |
+| `oms sessions` | Folders with saved conversations |
+| `oms update` | Update to the latest release |
+
+Inside OMS:
+
 | Command | What it does |
 |---|---|
 | `/setup` | Set up a model and web search |

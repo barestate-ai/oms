@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Every command answers `--help`, and `oms help <command>` shows the same text. A mistyped command names the closest one.
+- `oms sessions` lists the folders that have saved conversations, newest first, and flags folders that were deleted.
+- `oms error <code> [program]` names a Solana program error from the shell, offline, using the built-in tables and the project's IDLs.
+
 ## 0.1.4
 
 - `oms update` installs the latest release the way you installed OMS (curl installer, npm or Homebrew), `oms update --check` only reports, and `oms update --version <x.y.z>` picks one. `oms version` prints the version.
