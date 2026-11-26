@@ -13,6 +13,7 @@ export type Tool = {
 export type ChatInput = {
   model: string;
   messages: Message[];
+  failedToolCalls?: readonly string[];
   stream: boolean;
   maxTokens: number;
   tools?: Tool[];
@@ -82,6 +83,14 @@ export type Policy =
     }
   | { type: 'plan-exec'; planner: Target; executor: Target; replan_every?: number }
   | {
+      type: 'checkpoint';
+      strong: string;
+      worker: string;
+      opening_turns?: number;
+      failure_streak?: number;
+      worker_turns?: number;
+    }
+  | {
       type: 'orchestrate';
       planners: Target[];
       judge?: string;
@@ -110,6 +119,7 @@ export type SessionState = {
     { plan: string; feedback: string; rejections: number; repair: boolean; goal?: string }
   >;
   deescalations?: Record<string, { cheap: boolean; until: number }>;
+  checkpoints?: Record<string, { workerTurns: number; reviewedFailure?: string }>;
 };
 export interface SessionStore {
   run<T>(key: string, operation: (state: SessionState) => Promise<T>): Promise<T>;
@@ -117,7 +127,7 @@ export interface SessionStore {
 export type PolicyEvent = {
   type: 'plan' | 'judge' | 'validate_pass' | 'validate_fail' | 'validate_unparsable' | 'repair' | 'handoff' | 'return';
   path: string;
-  reason?: 'turns' | 'cooldown' | 'tool_failures' | 'empty_or_error';
+  reason?: 'turns' | 'cooldown' | 'tool_failures' | 'empty_or_error' | 'checkpoint_interval' | 'final';
   tools?: string[];
 };
 export type RequestLog = {

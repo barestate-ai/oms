@@ -102,7 +102,13 @@ export const RunRecordSchema = Type.Object(
     ),
     caps: Type.Object({ tokens: count, spendMicroUsd: count, wallClockMs: count }, object),
     /** Set only on the online head-to-head cells; every other cell ran without web. */
-    online: Type.Optional(Type.Union([Type.Literal('web + Solana MCP'), Type.Literal('web: fetch only')])),
+    online: Type.Optional(
+      Type.Union([
+        Type.Literal('web + Solana MCP'),
+        Type.Literal('web: fetch only'),
+        Type.Literal('web: search + fetch'),
+      ]),
+    ),
     /** Web tool calls in the run (all zero when web is off, as in every offline bench cell). Optional so earlier records still parse.
      * searchBy / fetchBy: answered calls per backend, e.g. {"oms:searxng+tinyfish": 3}; also optional. */
     web: Type.Optional(

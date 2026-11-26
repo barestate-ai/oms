@@ -43,7 +43,7 @@ export const SUBSCRIPTION_MODELS: Record<Harness, Record<string, ContenderModel>
   },
 };
 
-export type OnlineLabel = 'web + Solana MCP';
+export type OnlineLabel = 'web + Solana MCP' | 'web: search + fetch';
 /** Every published cell is online: its own web search and fetch plus the official Solana MCP. */
 const ONLINE: Record<string, OnlineLabel> = {
   'codex-web:gpt-sol': 'web + Solana MCP',
@@ -57,6 +57,8 @@ const ONLINE: Record<string, OnlineLabel> = {
 export function parseContender(
   id: string,
 ): { harness: Harness; modelKey: string; online: OnlineLabel | undefined } | null {
+  if (id.startsWith('oms3-web:blend/') && Object.hasOwn(BLEND_MODELS, id.slice('oms3-web:blend/'.length)))
+    return { harness: 'oms3', modelKey: id.slice('oms3-web:'.length), online: 'web: search + fetch' };
   if (id.startsWith('oms3:blend/') && Object.hasOwn(BLEND_MODELS, id.slice('oms3:blend/'.length)))
     return { harness: 'oms3', modelKey: id.slice(6), online: undefined };
   const online = ONLINE[id];

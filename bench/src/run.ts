@@ -108,18 +108,22 @@ const CELLS: Record<string, { harness: 'oms3' | 'codex' | 'claude-code'; model: 
   'oms3-web:opus-sub': { harness: 'oms3', model: SUBSCRIPTION_MODELS.oms3!['opus-sub']! },
   'oms3:fable-sub': { harness: 'oms3', model: SUBSCRIPTION_MODELS.oms3!['fable-sub']! },
   ...Object.fromEntries(
-    Object.entries(BLEND_MODELS).map(([id, model]) => [`oms3:blend/${id}`, { harness: 'oms3' as const, model }]),
+    Object.entries(BLEND_MODELS).flatMap(([id, model]) =>
+      ['oms3', 'oms3-web'].map((harness) => [`${harness}:blend/${id}`, { harness: 'oms3' as const, model }]),
+    ),
   ),
 };
 type Cell = keyof typeof CELLS;
 
 /** Run directories are named by cell; the two OMS cells share a harness prefix, so only their model tells them apart. */
 const cellDir = (cell: string) =>
-  cell.startsWith('oms3:blend/')
-    ? 'oms3-blend-' + cell.slice('oms3:blend/'.length)
-    : cell === 'oms3-web:opus-sub'
-      ? 'oms3-web-opus-sub'
-      : cell.split(':')[0]!;
+  cell.startsWith('oms3-web:blend/')
+    ? 'oms3-web-blend-' + cell.slice('oms3-web:blend/'.length)
+    : cell.startsWith('oms3:blend/')
+      ? 'oms3-blend-' + cell.slice('oms3:blend/'.length)
+      : cell === 'oms3-web:opus-sub'
+        ? 'oms3-web-opus-sub'
+        : cell.split(':')[0]!;
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -390,7 +394,7 @@ async function runOms(
               executionMode: 'bounded' as const,
               caps: {
                 tokens: 20000000,
-                spendMicroUsd: Math.floor(budget.remainingUsd * 1e6),
+                spendMicroUsd: budget.scope === 'all' ? Math.floor(budget.remainingUsd * 1e6) : Number.MAX_SAFE_INTEGER,
                 wallClockMs: RUN_WALL_MS,
               },
               maxInputTokens: 131072,
@@ -398,6 +402,7 @@ async function runOms(
               requestCost: router!.requestCost,
               knowledgeHint: false,
               knowledgeInject: false,
+              ...(cell.startsWith('oms3-web:blend/') ? { web: { enabled: true } } : {}),
             },
           }
         : claude
@@ -577,7 +582,7 @@ function report(outRoot: string, prefix: string): string {
 }
 
 const USAGE = `solbench-harness: the Solana Bench harness environment (docs/solana-bench.md)
-usage: node bench/src/run.ts --cell <id>... --variant basic|swap --runs <n> --out-root <dir> [--prefix main|dev] [--max-submissions 50] [--start <run index>]
+usage: node bench/src/run.ts --cell <id>... --variant basic|swap --runs <n> --out-root <dir> [--prefix main|dev] [--max-submissions 50] [--start <run index>] [--max-usd <n>] [--usd-scope all|anthropic-muse]
        node bench/src/run.ts report --out-root <dir> [--prefix main|dev]
        node bench/src/run.ts egress [--log <file>]
 cells: ${Object.keys(CELLS).join(', ')}
@@ -629,6 +634,7 @@ async function main(argv: string[]): Promise<number> {
       prefix: { type: 'string' },
       'max-submissions': { type: 'string' },
       'max-usd': { type: 'string' },
+      'usd-scope': { type: 'string' },
     },
   });
   const cells = (values.cell ?? []) as Cell[];
@@ -640,20 +646,23 @@ async function main(argv: string[]): Promise<number> {
   if (variant !== 'basic' && variant !== 'swap') throw new Error('--variant basic|swap');
   if (!values['out-root'] || !values.runs) throw new Error('--out-root and --runs are required');
   mkdirSync(resolve(values['out-root']), { recursive: true });
+  const scope = values['usd-scope'] ?? 'all';
+  if (scope !== 'all' && scope !== 'anthropic-muse') throw new Error('--usd-scope all|anthropic-muse');
   const budget = new BlendBudget(
-    join(resolve(values['out-root']), `${prefix}-blend-budget.jsonl`),
+    join(resolve(values['out-root']), `${prefix}-blend-budget${scope === 'all' ? '' : '-anthropic-muse'}.jsonl`),
     Number(values['max-usd'] ?? 4),
+    scope,
   );
   // A series name keeps each build's runs in their own directories (main, dev, ...).
   if (!/^[a-z][a-z0-9]{0,11}$/.test(prefix)) throw new Error('--prefix must be a short lowercase series name');
   // Development series (names starting with dev) tune on a short budget; every other series is scored on the full one.
   if (!prefix.startsWith('dev') ? maxSubmissions !== MAX_SUBMISSIONS : maxSubmissions > 10)
     throw new Error('scored runs use 50 submissions; dev* runs at most 10');
-  if (cells.some((cell) => cell.startsWith('oms3:blend/'))) ensureOnlineNetwork();
+  if (cells.some((cell) => CELLS[cell]!.model.provider === 'blend')) ensureOnlineNetwork();
   const imageId = execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}}', IMAGE], {
     encoding: 'utf8',
   }).trim();
-  if (cells.some((cell) => cell.startsWith('oms3:blend/')))
+  if (cells.some((cell) => CELLS[cell]!.model.provider === 'blend'))
     execFileSync('docker', apiSandboxProbe(imageId), { stdio: 'pipe', timeout: 60000 });
   for (let runIndex = Number(values.start ?? 0); runIndex < Number(values.runs); runIndex++) {
     for (const cell of cells) {

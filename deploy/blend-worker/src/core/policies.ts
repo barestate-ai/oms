@@ -42,6 +42,11 @@ export function validateProfiles(value: unknown): Profiles {
       target(p.planner, depth + 1);
       target(p.executor, depth + 1);
       if (!threshold(p.replan_every)) throw new Error('Invalid replan interval');
+    } else if (p.type === 'checkpoint' && typeof p.strong === 'string' && typeof p.worker === 'string') {
+      modelSpec(p.strong);
+      modelSpec(p.worker);
+      if (!threshold(p.opening_turns) || !threshold(p.failure_streak) || !threshold(p.worker_turns))
+        throw new Error('Invalid checkpoint thresholds');
     } else if (p.type === 'orchestrate') {
       if (!Array.isArray(p.planners) || p.planners.length < 1 || p.planners.length > 3)
         throw new Error('Invalid planners');
@@ -173,6 +178,29 @@ const failingToolNames = (input: Pick<ChatInput, 'messages'>) => {
 };
 const empty = (completion: Completion) => !completion.message.content?.trim() && !completion.message.tool_calls?.length;
 
+function checkpointFailures(input: ChatInput, reviewedFailure: string | undefined): Message[] {
+  const calls = new Map(input.messages.flatMap((m) => (m.tool_calls ?? []).map((call) => [call.id, call] as const)));
+  const explicit = input.failedToolCalls && new Set(input.failedToolCalls);
+  const streak: Message[] = [];
+  for (const message of input.messages.filter((m) => m.role === 'tool').reverse()) {
+    const id = message.tool_call_id ?? '';
+    if (id === reviewedFailure || readOnlyCall(calls.get(id))) break;
+    let failed = explicit?.has(id);
+    if (failed === undefined) {
+      try {
+        const value = object(JSON.parse(message.content ?? ''));
+        const exit = [value.exit_code, value.exitCode, value.exit_status].find((code) => typeof code === 'number');
+        failed = exit === undefined ? value.success === false || value.isError === true : exit !== 0;
+      } catch {
+        failed = false;
+      }
+    }
+    if (!failed) break;
+    streak.push(message);
+  }
+  return streak;
+}
+
 export function escalationTriggered(
   policy: Extract<Policy, { type: 'escalate' }>,
   input: Pick<ChatInput, 'messages'>,
@@ -197,6 +225,42 @@ export async function executePolicy(
     executePolicy(target, state, input, invoke, `${path}.${suffix}`, event);
   if (typeof policy === 'string') return invoke(policy, input);
   if (policy.type === 'single') return invoke(policy.model, input);
+  if (policy.type === 'checkpoint') {
+    state.checkpoints ??= {};
+    const s = (state.checkpoints[path] ??= { workerTurns: 0 });
+    const turns = input.messages.filter((m) => m.role === 'assistant').length;
+    if (turns < (policy.opening_turns ?? 6)) return invoke(policy.strong, input);
+    const review = async (reason: NonNullable<PolicyEvent['reason']>, tools?: string[]) => {
+      event({ type: 'return', path, reason, ...(tools ? { tools } : {}) });
+      const result = await invoke(policy.strong, input);
+      s.workerTurns = 0;
+      return result;
+    };
+    const failed = checkpointFailures(input, s.reviewedFailure);
+    if (failed.length >= (policy.failure_streak ?? 2)) {
+      const tools = new Map(input.messages.flatMap((m) => (m.tool_calls ?? []).map((c) => [c.id, c.function.name])));
+      const result = await review(
+        'tool_failures',
+        failed.map((m) => tools.get(m.tool_call_id!) ?? 'unknown'),
+      );
+      s.reviewedFailure = failed[0]!.tool_call_id;
+      return result;
+    }
+    if (s.workerTurns >= (policy.worker_turns ?? 8)) return review('checkpoint_interval');
+    if (s.workerTurns === 0) event({ type: 'handoff', path, reason: 'turns' });
+    let result: Completion;
+    try {
+      result = await invoke(policy.worker, input);
+    } catch (error) {
+      if (!(error instanceof BlendError) || error.type === 'invalid_request_error' || error.status === 402) throw error;
+      return review('empty_or_error');
+    }
+    if (empty(result) || result.finishReason === 'length') return review('empty_or_error');
+    if (!result.message.tool_calls?.length || result.message.tool_calls.some((c) => c.function.name === 'propose_done'))
+      return review('final');
+    s.workerTurns++;
+    return result;
+  }
   if (policy.type === 'escalate') {
     const t = policy.trigger;
     if (escalationTriggered(policy, input)) state.escalated[path] = true;

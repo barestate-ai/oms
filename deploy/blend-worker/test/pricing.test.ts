@@ -6,8 +6,7 @@ const at = Date.parse('2026-11-20T12:00:00Z');
 function close(actual: number, expected: number) {
   assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
 }
-test('15 shortlisted models: cached, uncached and output cost at list rates', () => {
-  assert.equal(Object.keys(MODELS).length, 15);
+test('shortlisted models: cached, uncached and output cost at list rates', () => {
   const expected: Record<string, number[]> = {
     'claude-fable-5-2': [8, 40, 0.2],
     'claude-opus-5-5': [4, 20, 0.2],
@@ -19,12 +18,14 @@ test('15 shortlisted models: cached, uncached and output cost at list rates', ()
     'deepseek-v4.1-flash': [0.15, 0.6, 0.003],
     'mimo-v2.6-pro': [0.435, 0.87, 0.003625],
     'mimo-v2.6-flash': [0.14, 0.28, 0.0028],
+    'glm-5.3-flash': [0.15, 0.5, 0.03],
     'qwen3.8-flash': [0.15, 0.47, 0.016],
     'muse-wonder-1.0': [4, 20, 0.2],
     'muse-spark-1.3': [1.25, 4.25, 0.15],
     'muse-spark-1.3-contributor': [0.1, 0.2, 0.002],
     'muse-ember-1.0': [0.1, 0.5, 0.004],
   };
+  assert.equal(Object.keys(MODELS).length, Object.keys(expected).length);
   for (const [model, [i, o, c]] of Object.entries(expected))
     close(
       costUsd(model, { input: 1000, cached: 200, output: 300, cacheWrite: 0 }, at),

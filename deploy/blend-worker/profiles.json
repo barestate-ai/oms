@@ -67,6 +67,30 @@
     "type": "single",
     "model": "mimo-v2.6-flash"
   },
+  "glm-5.3-flash": {
+    "type": "single",
+    "model": "glm-5.3-flash"
+  },
+  "checkpoint-fable-glm": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "glm-5.3-flash"
+  },
+  "checkpoint-fable-mimo": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "mimo-v2.6-flash"
+  },
+  "checkpoint-fable-grok": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "grok-4.3"
+  },
+  "checkpoint-opus-grok": {
+    "type": "checkpoint",
+    "strong": "claude-opus-5-5",
+    "worker": "grok-4.3"
+  },
   "qwen3.8-flash": {
     "type": "single",
     "model": "qwen3.8-flash"

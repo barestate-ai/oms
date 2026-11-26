@@ -77,6 +77,12 @@ export function registerBlend(
         const source = streamSimple(model as Model<'openai-completions'>, context, {
           ...options,
           apiKey: key,
+          onPayload: async (payload, selected) => ({
+            ...(((await options?.onPayload?.(payload, selected)) ?? payload) as object),
+            oms_failed_tool_calls: context.messages.flatMap((message) =>
+              message.role === 'toolResult' && message.isError ? [message.toolCallId] : [],
+            ),
+          }),
           fetch: async (input, init) => {
             cost = undefined;
             settled = false;

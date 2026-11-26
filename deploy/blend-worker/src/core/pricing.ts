@@ -27,6 +27,7 @@ export const MODELS: Record<string, Spec> = {
   'deepseek-v4.1-flash': { provider: 'opencode-go', rates: rates(0.15, 0.6, 0.003), peak: true },
   'mimo-v2.6-pro': { provider: 'opencode-go', rates: rates(0.435, 0.87, 0.003625) },
   'mimo-v2.6-flash': { provider: 'opencode-go', rates: rates(0.14, 0.28, 0.0028) },
+  'glm-5.3-flash': { provider: 'opencode-go', rates: rates(0.15, 0.5, 0.03) },
   'qwen3.8-flash': { provider: 'opencode-go', rates: rates(0.15, 0.47, 0.016) },
   'muse-wonder-1.0': { provider: 'muse', rates: rates(4, 20, 0.2) },
   'muse-spark-1.3': { provider: 'muse', rates: rates(1.25, 4.25, 0.15) },

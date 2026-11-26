@@ -105,6 +105,51 @@ test('API preflight exercises the shell with the same host glibc overlays as the
   assert.equal(args[3], 'none');
 });
 
+test('online Blend cells explicitly require the hosted web route without changing the offline cells', () => {
+  const cell = 'oms3-web:blend/checkpoint-fable-glm';
+  assert.equal(parseContender(cell)?.online, 'web: search + fetch');
+  assert.deepEqual(omsWebArgs(cell, { OMS_SEARCH_URL: 'http://127.0.0.1:3189', OMS_SEARCH_TOKEN: 'fixture' }), [
+    '--web',
+  ]);
+  assert.deepEqual(onlineStamp(cell, ['--web']), { online: 'web: search + fetch' });
+  assert.throws(() => onlineStamp(cell, []));
+});
+
+test('Anthropic + Muse cap logs Go and xAI usage without reserving their spend', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'solbench-scoped-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const budget = new BlendBudget(join(dir, 'ledger'), 0.01, 'anthropic-muse');
+  const previous = { go: process.env.OPENCODE_GO_KEY, xai: process.env.XAI_API_KEY };
+  process.env.OPENCODE_GO_KEY = process.env.XAI_API_KEY = 'fixture';
+  t.after(() => {
+    if (previous.go === undefined) delete process.env.OPENCODE_GO_KEY;
+    else process.env.OPENCODE_GO_KEY = previous.go;
+    if (previous.xai === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = previous.xai;
+  });
+  const upstreams: string[] = [];
+  const router = await startBlendRouter(join(dir, 'router.log'), budget, async (url) => {
+    upstreams.push(String(url));
+    return Response.json(chatData());
+  });
+  t.after(() => router.close());
+  const run = (model: string) =>
+    fetch(router.url + '/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 32000 }),
+    });
+  assert.equal((await run('grok-4.3')).status, 200);
+  assert.equal((await run('glm-5.3-flash')).status, 200);
+  assert.equal((await run('claude-fable-5-2')).status, 402);
+  assert.equal(budget.used, 0);
+  assert.deepEqual(upstreams, [
+    'https://api.x.ai/v1/chat/completions',
+    'https://opencode.ai/zen/go/v1/chat/completions',
+  ]);
+  assert.ok(router.logs[0]!.total_usd > 0 && router.logs[1]!.total_usd > 0);
+});
+
 test('experimental escalation prices the next physical model, including tool triggers and sticky error/empty escalation', () => {
   const id = 'blend-ember-fable';
   assert.equal((BLEND_PROFILES as readonly string[]).includes(id), false);

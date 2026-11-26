@@ -70,6 +70,11 @@ export function parseInput(value: unknown): ChatInput {
     stream: input.stream === true,
     maxTokens: Number(input.max_completion_tokens ?? input.max_tokens ?? 1024),
   };
+  if (input.oms_failed_tool_calls !== undefined) {
+    const ids = input.oms_failed_tool_calls;
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || !id)) invalid();
+    result.failedToolCalls = ids;
+  }
   if (input.tools !== undefined) {
     if (!Array.isArray(input.tools)) invalid();
     result.tools = input.tools.map((raw) => {

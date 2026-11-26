@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createNodeServer } from '../../deploy/blend-worker/src/node-server.ts';
 import { escalationTriggered, validateProfiles } from '../../deploy/blend-worker/src/core/policies.ts';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import type { Message, Target } from '../../deploy/blend-worker/src/core/types.ts';
+import type { Message, Provider, Target } from '../../deploy/blend-worker/src/core/types.ts';
 import { estimatedInput } from '../../deploy/blend-worker/src/core/adapters.ts';
 import { MemorySessions } from '../../deploy/blend-worker/src/core/sessions.ts';
 import { MODELS, modelSpec } from '../../deploy/blend-worker/src/core/pricing.ts';
@@ -64,9 +64,11 @@ export class BlendBudget {
   blocked = false;
   readonly file: string;
   readonly maximum: number;
+  readonly scope: 'all' | 'anthropic-muse';
   private readonly entries = new Map<string, { amount: number; charged?: number; retained?: number }>();
-  constructor(file: string, maxUsd: number) {
+  constructor(file: string, maxUsd: number, scope: 'all' | 'anthropic-muse' = 'all') {
     this.file = file;
+    this.scope = scope;
     this.maximum = Math.floor(maxUsd * 1e6);
     if (!Number.isSafeInteger(this.maximum) || this.maximum <= 0) throw Error('Invalid --max-usd');
     if (existsSync(file)) {
@@ -97,6 +99,9 @@ export class BlendBudget {
   get remainingUsd() {
     return Math.max(0, this.maximum - this.used) / 1e6;
   }
+  covers(provider: Provider): boolean {
+    return this.scope === 'all' || provider === 'anthropic' || provider === 'muse';
+  }
   reserve(usd: number) {
     const amount = micro(usd);
     if (this.used + amount > this.maximum) {
@@ -126,20 +131,22 @@ export async function startBlendRouter(logFile: string, budget: BlendBudget, tra
     keys: {
       anthropic: process.env.ANTHROPIC_API_KEY,
       xai: process.env.XAI_API_KEY,
-      'opencode-go': process.env.OPENCODE_API_KEY,
+      'opencode-go': process.env.OPENCODE_GO_KEY ?? process.env.OPENCODE_API_KEY,
       muse: process.env.MUSE_API_KEY,
     },
     fetch: transport,
     beforeCall: async (model, input) => {
       const spec = modelSpec(model),
         factor = spec.peak ? 2 : 1;
+      if (!budget.covers(spec.provider)) return undefined;
       const inputRate =
           Math.max(spec.rates.input, spec.high?.input ?? 0) * factor * (spec.provider === 'anthropic' ? 1.25 : 1),
         outputRate = Math.max(spec.rates.output, spec.high?.output ?? 0) * factor;
       return budget.reserve((estimatedInput(model, input) * inputRate + input.maxTokens * outputRate) / 1e6);
     },
-    afterCall: async (call, ticket) =>
-      budget.settle(String(ticket), call.usd, call.dispatched && call.status_class !== 'ok'),
+    afterCall: async (call, ticket) => {
+      if (typeof ticket === 'string') budget.settle(ticket, call.usd, call.dispatched && call.status_class !== 'ok');
+    },
     log: (line) => {
       logs.push(line);
       appendFileSync(logFile, JSON.stringify(line) + '\n', { mode: 0o600 });
@@ -183,6 +190,9 @@ export function nextRequestCost(id: string, context: Parameters<StreamFn>[1], lo
       } else if (target.type === 'deescalate') {
         visit(target.strong);
         visit(target.cheap);
+      } else if (target.type === 'checkpoint') {
+        visit(target.strong);
+        visit(target.worker);
       } else if (target.type === 'classify') {
         visit(target.classifier);
         Object.values(target.routes).forEach(visit);

@@ -24,7 +24,7 @@ const toolResult = (content: string) => ({ role: 'tool' as const, tool_call_id: 
 
 test('default JSON profiles validate; Contributor is explicit single-profile opt-in only', async () => {
   const profiles = validateProfiles(JSON.parse(await readFile(new URL('../profiles.json', import.meta.url), 'utf8')));
-  assert.equal(Object.entries(profiles).filter(([id, p]) => p.type === 'single' && id === p.model).length, 15);
+  assert.equal(Object.entries(profiles).filter(([id, p]) => p.type === 'single' && id === p.model).length, 16);
   assert.deepEqual(profiles['blend-auto'], {
     type: 'escalate',
     cheap: 'muse-ember-1.0',
