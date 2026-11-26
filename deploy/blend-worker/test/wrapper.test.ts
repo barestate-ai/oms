@@ -435,18 +435,18 @@ test('sticky policy state is durable across DO recreation and isolated by user; 
     { role: 'tool', tool_call_id: 'one', content: 'exit code 1' },
     { role: 'tool', tool_call_id: 'two', content: 'exit code 1' },
   ];
-  assert.equal((await s.app(request({ profile: 'blend-auto', messages }), s.env)).status, 200);
+  assert.equal((await s.app(request({ profile: 'blend-ember-fable', messages }), s.env)).status, 200);
   assert.equal(model, 'claude-fable-5-2');
   const user = onlyUser(s);
   user.instance = new BlendUser(user.disk.state, s.env, s.deps);
-  assert.equal((await s.app(request({ profile: 'blend-auto' }), s.env)).status, 200);
+  assert.equal((await s.app(request({ profile: 'blend-ember-fable' }), s.env)).status, 200);
   assert.equal(model, 'claude-fable-5-2');
-  assert.equal((await s.app(request({ profile: 'blend-auto', token: OTHER }), s.env)).status, 200);
+  assert.equal((await s.app(request({ profile: 'blend-ember-fable', token: OTHER }), s.env)).status, 200);
   assert.equal(model, 'muse-ember-1.0');
   const stored = JSON.stringify(user.disk.db.prepare('SELECT * FROM blend_state').all());
   assert.ok(!stored.includes(PRIVATE));
   assert.ok(!stored.includes(TOKEN));
-  assert.ok(!stored.includes('session:blend-auto:session'));
+  assert.ok(!stored.includes('session:blend-ember-fable:session'));
 });
 test('cost log and Analytics Engine contain only allowlisted fields, never identity, bearer, prompt, response or arguments', async () => {
   const s = setup();

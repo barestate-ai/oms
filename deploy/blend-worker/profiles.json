@@ -1,31 +1,17 @@
 {
   "blend-auto": {
-    "type": "escalate",
-    "cheap": "muse-ember-1.0",
+    "type": "checkpoint",
     "strong": "claude-fable-5-2",
-    "trigger": {
-      "tool_failures": 2,
-      "assistant_turns": 20,
-      "retry_on_error_or_empty": true
-    }
+    "worker": "mimo-v2.6-flash"
   },
   "blend-pro": {
-    "type": "escalate",
-    "cheap": "muse-ember-1.0",
-    "strong": "claude-fable-5-2",
-    "trigger": {
-      "tool_failures": 2,
-      "assistant_turns": 20,
-      "retry_on_error_or_empty": true
-    }
+    "type": "single",
+    "model": "claude-fable-5-2"
   },
   "blend-flash": {
-    "type": "deescalate",
+    "type": "checkpoint",
     "strong": "claude-fable-5-2",
-    "cheap": "muse-ember-1.0",
-    "handoff_after_turns": 16,
-    "return_after_failures": 2,
-    "cooldown_turns": 8
+    "worker": "glm-5.3-flash"
   },
   "claude-fable-5-2": {
     "type": "single",

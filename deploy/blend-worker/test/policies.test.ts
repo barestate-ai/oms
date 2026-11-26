@@ -25,21 +25,15 @@ const toolResult = (content: string) => ({ role: 'tool' as const, tool_call_id: 
 test('default JSON profiles validate; Contributor is explicit single-profile opt-in only', async () => {
   const profiles = validateProfiles(JSON.parse(await readFile(new URL('../profiles.json', import.meta.url), 'utf8')));
   assert.equal(Object.entries(profiles).filter(([id, p]) => p.type === 'single' && id === p.model).length, 16);
-  assert.deepEqual(profiles['blend-auto'], {
+  assert.deepEqual(profiles['blend-ember-fable'], {
     type: 'escalate',
     cheap: 'muse-ember-1.0',
     strong: 'claude-fable-5-2',
-    trigger: { tool_failures: 2, assistant_turns: 20, retry_on_error_or_empty: true },
+    trigger: { tool_failures: 2, retry_on_error_or_empty: true },
   });
-  assert.deepEqual(profiles['blend-flash'], {
-    type: 'deescalate',
-    strong: 'claude-fable-5-2',
-    cheap: 'muse-ember-1.0',
-    handoff_after_turns: 16,
-    return_after_failures: 2,
-    cooldown_turns: 8,
-  });
-  assert.deepEqual(profiles['blend-pro'], profiles['blend-auto']);
+  assert.deepEqual(profiles['blend-auto'], profiles['checkpoint-fable-mimo']);
+  assert.deepEqual(profiles['blend-pro'], { type: 'single', model: 'claude-fable-5-2' });
+  assert.deepEqual(profiles['blend-flash'], profiles['checkpoint-fable-glm']);
   assert.deepEqual(profiles['muse-spark-1.3-contributor'], { type: 'single', model: 'muse-spark-1.3-contributor' });
   assert.equal(
     JSON.stringify(Object.values(profiles).filter((p) => p.type !== 'single')).includes('contributor'),

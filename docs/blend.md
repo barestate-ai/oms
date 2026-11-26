@@ -5,9 +5,8 @@ one underlying model for every coding request. The profile decides which model
 handles a request and may make additional routing or retry calls. You keep using
 the same OMS conversation and tools.
 
-Profiles were selected from a pre-registered Solana Bench tournament (November
-2025). Blend does not guarantee that it will be cheaper or more accurate than a
-single model; results below are from a fixed benchmark environment.
+Profiles were selected using two rounds of Solana Bench screening. Blend does
+not guarantee that it will be cheaper or more accurate than a single model.
 
 ## Sign in and select Blend
 
@@ -34,22 +33,22 @@ give OMS your own provider API keys to use hosted Blend.
 ## Profiles
 
 Auto, Pro and Flash are available by command and in the model picker. Scores
-are Solana Bench headline numbers from one run per config in the same batch
-(50 submissions, 30-minute wall clock, pinned Surfpool 0.10.4); single-run
-scores carry meaningful run-to-run variance.
+are means from Solana Bench basic runs with the same web and knowledge setup
+(up to 50 submissions and 30 minutes, Surfpool 0.10.4). These small samples
+show the trade-off, not a reliable prediction of future runs.
 
 <!-- profiles -->
 
-| Profile | Command | Policy | Bench score / cost per run |
+| Profile | Command | Policy | Mean score / mean cost (runs) |
 | --- | --- | --- | --- |
-| Auto (default) | `/blend auto` | Ember works; escalates to Fable on real tool failures or after 20 turns | 266 / $3.84 |
-| Pro | `/blend pro` | Same as Auto; best measured score | 266 / $3.84 |
-| Flash | `/blend flash` | Fable leads the first turns, then hands routine work to Ember; Fable returns on real failures | 230 / $2.81 |
+| Auto (default) | `/blend auto` | Fable opens; MiMo Flash works between Fable reviews | 149 / $3.70 (2) |
+| Pro | `/blend pro` | Fable handles every turn | 292 / $7.08 (1) |
+| Flash | `/blend flash` | Fable opens; GLM Flash works between Fable reviews | 91.5 / $2.10 (2) |
 
-References from the same batches: Opus alone scored 231 at $2.84, and an
-escalation config that never actually used the cheap model (now fixed) scored
-258–318 at $5.3–6.9 — effectively Fable alone at lower measured cost than
-first estimated.
+Auto and Flash use six Fable opening turns, return to Fable after two
+consecutive real tool failures or eight worker turns, and use Fable for the
+final proposal. The Ember → Fable control scored 252 at $7.07 in the same
+round as standalone Fable: lower score for essentially the same cost.
 
 ## Usage and privacy
 

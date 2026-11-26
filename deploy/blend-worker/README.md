@@ -158,16 +158,16 @@ eligibility must be reviewed before exposing it through a shared Worker.
 
 ## Profile policies
 
-<!-- Provisional: blend-auto, blend-pro and blend-flash policies in profiles.json are placeholders until benchmarks select them. -->
-
-The shipped `blend-auto` (default), `blend-pro` and `blend-flash` profiles are
-provisional placeholders, not benchmark-selected winners. Auto starts with MiMo
-Flash and escalates to Sonnet; Pro uses Sonnet and Flash uses MiMo Flash.
+`blend-auto` (default) uses Fable with MiMo Flash checkpoints. `blend-pro`
+uses Fable alone, the highest-scoring control. `blend-flash` uses Fable with
+GLM Flash checkpoints, the lowest-cost tested checkpoint. See
+[Blend](../../docs/blend.md#profiles) for the scores and costs.
 
 Targets can be catalog model IDs or nested policy objects (up to depth 12):
 
 - `{"type":"single","model":"..."}`
 - `{"type":"escalate","cheap":"...","strong":"...","trigger":{"tool_failures":2,"assistant_turns":8,"retry_on_error_or_empty":true}}`
+- `{"type":"checkpoint","strong":"...","worker":"...","opening_turns":6,"failure_streak":2,"worker_turns":8}`
 - `{"type":"plan-exec","planner":"...","executor":"...","replan_every":4}`
 - `{"type":"classify","classifier":"...","routes":{"easy":"...","medium":"...","hard":"..."}}`
 
