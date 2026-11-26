@@ -53,6 +53,8 @@ export function validateProfiles(value: unknown): Profiles {
           p.review_tools.some((name) => typeof name !== 'string' || !/^[\w-]+$/.test(name)))
       )
         throw new Error('Invalid checkpoint review tools');
+      if (p.hide_review_tools !== undefined && typeof p.hide_review_tools !== 'boolean')
+        throw new Error('Invalid checkpoint tool visibility');
     } else if (p.type === 'orchestrate') {
       if (!Array.isArray(p.planners) || p.planners.length < 1 || p.planners.length > 3)
         throw new Error('Invalid planners');
@@ -254,9 +256,14 @@ export async function executePolicy(
     }
     if (s.workerTurns >= (policy.worker_turns ?? 8)) return review('checkpoint_interval');
     if (s.workerTurns === 0) event({ type: 'handoff', path, reason: 'turns' });
+    const guardedTool = (name: string) => name === 'propose_done' || policy.review_tools?.includes(name);
+    const workerInput =
+      policy.hide_review_tools && input.tools && (input.toolChoice === undefined || input.toolChoice === 'auto')
+        ? { ...input, tools: input.tools.filter((tool) => !guardedTool(tool.function.name)) }
+        : input;
     let result: Completion;
     try {
-      result = await invoke(policy.worker, input);
+      result = await invoke(policy.worker, workerInput);
     } catch (error) {
       if (!(error instanceof BlendError) || error.type === 'invalid_request_error' || error.status === 402) throw error;
       return review('empty_or_error');

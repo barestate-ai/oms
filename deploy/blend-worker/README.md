@@ -176,6 +176,8 @@ strong model. Optional `review_tools` names tools the worker cannot dispatch.
 If one appears in a worker response, the strong model replaces the whole
 response before the client can execute any of its calls. The review benchmark
 profiles include `bash` and `shell` because shell scripts can submit indirectly.
+`hide_review_tools` also removes those tools and `propose_done` from the
+worker's tool list when tool selection is automatic.
 
 Escalation is sticky. Failure counts inspect consecutive tool results in the
 submitted full transcript, ignoring intervening assistant messages; success resets

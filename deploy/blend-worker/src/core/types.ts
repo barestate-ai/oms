@@ -90,6 +90,7 @@ export type Policy =
       failure_streak?: number;
       worker_turns?: number;
       review_tools?: string[];
+      hide_review_tools?: boolean;
     }
   | {
       type: 'orchestrate';

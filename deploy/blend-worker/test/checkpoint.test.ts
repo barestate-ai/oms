@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseInput } from '../src/core/input.ts';
 import { executePolicy, validateProfiles } from '../src/core/policies.ts';
-import { BlendError, type Completion, type PolicyEvent, type SessionState } from '../src/core/types.ts';
+import { BlendError, type ChatInput, type Completion, type PolicyEvent, type SessionState } from '../src/core/types.ts';
 import { call, completion, input } from './fixtures.ts';
 
 const strong = 'claude-fable-5-2';
@@ -16,7 +16,7 @@ const continuing = (name?: string): Completion => ({
   message: { role: 'assistant', content: null, tool_calls: [tool(name)] },
   finishReason: 'tool_calls',
 });
-function session(selected = policy) {
+function session(selected = policy, onWorkerInput?: (body: ChatInput) => void) {
   const body = input();
   const state: SessionState = { escalated: {}, labels: {}, executorTurns: {}, orchestrations: {} };
   const events: PolicyEvent[] = [];
@@ -36,7 +36,8 @@ function session(selected = policy) {
       state,
       body,
       async (model, received) => {
-        assert.equal(received, body);
+        if (model === worker && onWorkerInput) onWorkerInput(received);
+        else assert.equal(received, body);
         models.push(model);
         return model === worker ? result() : continuing();
       },
@@ -132,4 +133,28 @@ test('failure metadata is optional and validated separately from tool output', (
   assert.throws(() => parseInput({ ...raw, oms_failed_tool_calls: [1] }));
   assert.throws(() => validateProfiles({ x: { type: 'checkpoint', strong, worker, opening_turns: 0 } }));
   assert.throws(() => validateProfiles({ x: { type: 'checkpoint', strong, worker, review_tools: ['bash', 1] } }));
+  assert.throws(() => validateProfiles({ x: { type: 'checkpoint', strong, worker, hide_review_tools: 'true' } }));
+});
+
+test('workers can see only routine tools while strong still receives the complete tool list', async () => {
+  const selected = validateProfiles({
+    checkpoint: { ...policy, review_tools: ['bash'], hide_review_tools: true },
+  }).checkpoint!;
+  const { body, models, events, recordTool, step } = session(selected, (received) => {
+    assert.deepEqual(
+      received.tools?.map((t) => t.function.name),
+      ['edit'],
+    );
+  });
+  body.tools = ['edit', 'bash', 'propose_done'].map((name) => ({
+    type: 'function',
+    function: { name, parameters: {} },
+  }));
+  recordTool('ok');
+  const routine = continuing('edit');
+  assert.equal(await step(() => routine), routine);
+  await step(() => continuing('bash'));
+  assert.deepEqual(models, [worker, worker, strong]);
+  assert.equal(events.at(-1)?.reason, 'guarded_tool');
+  assert.equal(body.tools.length, 3);
 });

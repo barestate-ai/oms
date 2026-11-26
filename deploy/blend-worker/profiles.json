@@ -81,6 +81,16 @@
     "worker_turns": 3,
     "review_tools": ["bash", "shell"]
   },
+  "review-fable-ember-routine": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "muse-ember-1.0",
+    "opening_turns": 3,
+    "failure_streak": 1,
+    "worker_turns": 5,
+    "review_tools": ["bash", "shell"],
+    "hide_review_tools": true
+  },
   "review-fable-grok": {
     "type": "checkpoint",
     "strong": "claude-fable-5-2",
