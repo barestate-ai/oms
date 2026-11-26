@@ -104,7 +104,7 @@ jobs:
     needs: build
     if: needs.build.outputs.needed == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     # The npm environment requires the owner's approval before this job starts.
     environment: npm
     permissions:
@@ -133,13 +133,19 @@ jobs:
         if: env.NPM_STATE == 'missing'
         run: |
           (cd dist && sha256sum -c "barestate-oms-$VERSION.tgz.sha256")
-          npm publish "./dist/barestate-oms-$VERSION.tgz" --provenance --access public
+          # A re-run of this job must not publish twice.
+          if npm view "@barestate/oms@$VERSION" version --prefer-online >/dev/null 2>&1; then
+            echo "$VERSION is already on npm."
+          else
+            npm publish "./dist/barestate-oms-$VERSION.tgz" --provenance --access public
+          fi
 
       - name: Fetch the published archive and check its checksum
         run: |
-          for _ in $(seq 1 20); do
-            npm view "@barestate/oms@$VERSION" version >/dev/null 2>&1 && break
-            sleep 6
+          # npm can take several minutes to process a new release before it serves it.
+          for _ in $(seq 1 120); do
+            npm view "@barestate/oms@$VERSION" version --prefer-online >/dev/null 2>&1 && break
+            sleep 10
           done
           mkdir registry
           (cd registry && npm pack "@barestate/oms@$VERSION" --ignore-scripts >/dev/null)

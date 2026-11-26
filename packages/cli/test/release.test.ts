@@ -85,6 +85,16 @@ test('the release workflow only runs from main, publishes through a gated enviro
   assert.doesNotMatch(build, /contents: write|id-token/);
 });
 
+test('the publish job waits long enough for npm to serve a release, and can be re-run', () => {
+  const release = read('.github/workflows/release.yml');
+  const publish = release.slice(release.indexOf('  publish:'));
+  const [, tries, pause] = /seq 1 (\d+)\); do\s+npm view[^\n]+&& break\s+sleep (\d+)/.exec(publish)!;
+  const waitMinutes = (Number(tries) * Number(pause)) / 60;
+  assert.ok(waitMinutes >= 15, `waits only ${waitMinutes} minutes`);
+  assert.ok(Number(/timeout-minutes: (\d+)/.exec(publish)![1]) >= waitMinutes + 10);
+  assert.match(publish, /if npm view[^\n]+; then\s+echo [^\n]+already on npm[^\n]+\s+else\s+npm publish/);
+});
+
 test('CI runs on both branches so a release PR into main is checked too', () => {
   assert.match(read('.github/workflows/ci.yml'), /push:\s+branches: \[main, master\]/);
 });
