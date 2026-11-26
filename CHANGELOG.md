@@ -11,6 +11,8 @@
 - `oms config` shows where settings and state are kept, without opening secret files.
 - `oms completion bash|zsh|fish` prints a shell completion script.
 - `oms uninstall` removes OMS the way you installed it and keeps your data unless you add `--purge`.
+- `oms exec "<prompt>"` runs one prompt without the interface, for scripts and CI: the reply goes to stdout (`--json` for details) and progress to stderr. Commands that would need approval are refused unless you pass `--yolo`.
+- Set `OMS_UPDATE_CHECK=1` to be told about a newer release after you close OMS. It stays off by default.
 
 ## 0.1.4
 

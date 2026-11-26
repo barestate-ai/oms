@@ -18,11 +18,14 @@ export function omsHome(): string {
   return join(homedir(), '.oms');
 }
 
-export async function checkLocalPrerequisites(environment: HarnessEnvironment): Promise<void> {
+export async function checkLocalPrerequisites(
+  environment: HarnessEnvironment,
+  write: (text: string) => void = (text) => void process.stdout.write(text),
+): Promise<void> {
   try {
     accessSync(environment.binary, constants.X_OK);
   } catch {
-    process.stdout.write(`Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool} (local Solana network, one-time)…\n`);
+    write(`Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool} (local Solana network, one-time)…\n`);
     try {
       await installPinnedSurfpool(environment.binary);
     } catch (error) {

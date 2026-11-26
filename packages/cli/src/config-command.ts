@@ -42,6 +42,7 @@ export function runConfigCommand(
     ['stateFolder', 'State folder', stateRoot, true],
     ['settingsFile', existsSync(settings) ? 'Settings file' : 'Settings file (not created)', settings, true],
     ['webSearch', 'Web search', webSearch],
+    ['updateCheck', 'Update check', process.env.OMS_UPDATE_CHECK === '1' ? 'on' : 'off (OMS_UPDATE_CHECK=1)'],
     ['modelSignIns', 'Model sign-ins', saved('auth.json')],
     ['accountSignIn', 'OMS account', saved('oms-account.json')],
     ['surfpool', existsSync(surfpool) ? 'Surfpool' : 'Surfpool (not installed)', surfpool, true],

@@ -5,13 +5,15 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
+import { text } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
 import { configuredBackend, defaultHarnessEnvironment, omsCommand } from '@oms/engine';
 import { runHarnessCommand } from './harness.ts';
 import { toolchainCommand } from './toolchain.ts';
 import { runReviewCommand } from './review.ts';
-import { omsHome, startLocal } from '../../../scripts/start-local.ts';
-import { runUpdate, updateDeps } from './update.ts';
+import { checkLocalPrerequisites, omsHome, startLocal } from '../../../scripts/start-local.ts';
+import { runUpdate, updateDeps, updateNotice } from './update.ts';
+import { runExec } from './exec.ts';
 import { COMMANDS, commandHelp, suggestCommand, wantsHelp } from './help.ts';
 import { runErrorCommand } from './error-command.ts';
 import { runSessionsCommand } from './sessions.ts';
@@ -27,6 +29,7 @@ const version = (): string => JSON.parse(readFileSync(new URL('package.json', in
 const HELP = `oms · Solana coding agent
 
   ${omsCommand()}                 Start in the current folder (any folder works)
+  ${omsCommand()} exec "<prompt>"  Run one prompt and print the reply
   ${omsCommand()} doctor          Check your setup
   ${omsCommand()} review [path]   Offline security review of a Solana program
   ${omsCommand()} error <code>    Name a Solana program error
@@ -67,6 +70,7 @@ Usage:
           [--sandbox host|docker] [--host-approval deny|allow]
 
 Commands:
+  exec        Run one prompt without the interface, for scripts and CI
   update      Install the latest release (--check only reports; --version <x.y.z> picks one)
   review      Run a local offline Phase A security review
   error       Name a custom program error from the built-in tables and local IDLs
@@ -156,7 +160,22 @@ try {
   } else if (cmd === 'update') {
     process.exitCode = await runUpdate(rest, updateDeps(fileURLToPath(installRoot), version()));
   } else if (cmd === undefined || cmd === 'start' || (cmd.startsWith('--') && cmd !== '--help')) {
+    const notice = updateNotice(version());
     await startLocal(cmd === undefined || cmd === 'start' ? rest : [cmd, ...rest]);
+    const newer = notice();
+    if (newer) console.log(newer);
+  } else if (cmd === 'exec') {
+    const stop = new AbortController();
+    process.once('SIGINT', () => stop.abort());
+    process.exitCode = await runExec(rest, {
+      folder: process.cwd(),
+      stateRoot: omsHome(),
+      prepare: (environment) => checkLocalPrerequisites(environment, (text) => void process.stderr.write(text)),
+      readStdin: () => text(process.stdin),
+      out: log,
+      note: fail,
+      signal: stop.signal,
+    });
   } else if (cmd === 'toolchain') {
     process.exitCode = await toolchainCommand(rest);
   } else if (cmd === 'review') {
