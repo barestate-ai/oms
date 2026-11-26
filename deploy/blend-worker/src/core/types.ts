@@ -89,6 +89,7 @@ export type Policy =
       opening_turns?: number;
       failure_streak?: number;
       worker_turns?: number;
+      review_tools?: string[];
     }
   | {
       type: 'orchestrate';
@@ -127,7 +128,7 @@ export interface SessionStore {
 export type PolicyEvent = {
   type: 'plan' | 'judge' | 'validate_pass' | 'validate_fail' | 'validate_unparsable' | 'repair' | 'handoff' | 'return';
   path: string;
-  reason?: 'turns' | 'cooldown' | 'tool_failures' | 'empty_or_error' | 'checkpoint_interval' | 'final';
+  reason?: 'turns' | 'cooldown' | 'tool_failures' | 'empty_or_error' | 'checkpoint_interval' | 'guarded_tool' | 'final';
   tools?: string[];
 };
 export type RequestLog = {

@@ -171,6 +171,12 @@ Targets can be catalog model IDs or nested policy objects (up to depth 12):
 - `{"type":"plan-exec","planner":"...","executor":"...","replan_every":4}`
 - `{"type":"classify","classifier":"...","routes":{"easy":"...","medium":"...","hard":"..."}}`
 
+Checkpoints always route a worker's final answer or `propose_done` to the
+strong model. Optional `review_tools` names tools the worker cannot dispatch.
+If one appears in a worker response, the strong model replaces the whole
+response before the client can execute any of its calls. The review benchmark
+profiles include `bash` and `shell` because shell scripts can submit indirectly.
+
 Escalation is sticky. Failure counts inspect consecutive tool results in the
 submitted full transcript, ignoring intervening assistant messages; success resets
 the count. Assistant-turn thresholds count assistant messages. An optional

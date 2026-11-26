@@ -16,7 +16,7 @@ const continuing = (name?: string): Completion => ({
   message: { role: 'assistant', content: null, tool_calls: [tool(name)] },
   finishReason: 'tool_calls',
 });
-function session() {
+function session(selected = policy) {
   const body = input();
   const state: SessionState = { escalated: {}, labels: {}, executorTurns: {}, orchestrations: {} };
   const events: PolicyEvent[] = [];
@@ -32,7 +32,7 @@ function session() {
   };
   const step = (result: () => Completion = continuing) =>
     executePolicy(
-      policy,
+      selected,
       state,
       body,
       async (model, received) => {
@@ -107,9 +107,29 @@ test('a budget rejection is not retried with the strong model', async () => {
   assert.deepEqual(models, [worker]);
 });
 
+test('a gated tool replaces the entire worker response, even alongside routine edits', async () => {
+  const selected = validateProfiles({
+    checkpoint: { ...policy, review_tools: ['bash', 'shell'] },
+  }).checkpoint!;
+  const { events, recordTool, step, models } = session(selected);
+  recordTool('ok');
+  const routine = continuing('edit');
+  assert.equal(await step(() => routine), routine);
+  const workerBatch = continuing('edit');
+  workerBatch.message.tool_calls!.push(tool('shell'));
+  const reviewed = await step(() => workerBatch);
+  assert.deepEqual(
+    reviewed.message.tool_calls?.map((call) => call.function.name),
+    ['bash'],
+  );
+  assert.deepEqual(models, [worker, worker, strong]);
+  assert.deepEqual(events.at(-1), { type: 'return', path: 'root', reason: 'guarded_tool', tools: ['shell'] });
+});
+
 test('failure metadata is optional and validated separately from tool output', () => {
   const raw = { model: 'checkpoint', messages: input().messages };
   assert.deepEqual(parseInput({ ...raw, oms_failed_tool_calls: ['abc'] }).failedToolCalls, ['abc']);
   assert.throws(() => parseInput({ ...raw, oms_failed_tool_calls: [1] }));
   assert.throws(() => validateProfiles({ x: { type: 'checkpoint', strong, worker, opening_turns: 0 } }));
+  assert.throws(() => validateProfiles({ x: { type: 'checkpoint', strong, worker, review_tools: ['bash', 1] } }));
 });

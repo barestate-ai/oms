@@ -47,6 +47,12 @@ export function validateProfiles(value: unknown): Profiles {
       modelSpec(p.worker);
       if (!threshold(p.opening_turns) || !threshold(p.failure_streak) || !threshold(p.worker_turns))
         throw new Error('Invalid checkpoint thresholds');
+      if (
+        p.review_tools !== undefined &&
+        (!Array.isArray(p.review_tools) ||
+          p.review_tools.some((name) => typeof name !== 'string' || !/^[\w-]+$/.test(name)))
+      )
+        throw new Error('Invalid checkpoint review tools');
     } else if (p.type === 'orchestrate') {
       if (!Array.isArray(p.planners) || p.planners.length < 1 || p.planners.length > 3)
         throw new Error('Invalid planners');
@@ -258,6 +264,10 @@ export async function executePolicy(
     if (empty(result) || result.finishReason === 'length') return review('empty_or_error');
     if (!result.message.tool_calls?.length || result.message.tool_calls.some((c) => c.function.name === 'propose_done'))
       return review('final');
+    const guarded = result.message.tool_calls
+      .map((call) => call.function.name)
+      .filter((name) => policy.review_tools?.includes(name));
+    if (guarded.length) return review('guarded_tool', guarded);
     s.workerTurns++;
     return result;
   }

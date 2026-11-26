@@ -72,6 +72,41 @@
     "strong": "claude-fable-5-2",
     "worker": "grok-4.3"
   },
+  "review-fable-ember": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "muse-ember-1.0",
+    "opening_turns": 5,
+    "failure_streak": 1,
+    "worker_turns": 3,
+    "review_tools": ["bash", "shell"]
+  },
+  "review-fable-grok": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "grok-4.3",
+    "opening_turns": 5,
+    "failure_streak": 1,
+    "worker_turns": 3,
+    "review_tools": ["bash", "shell"]
+  },
+  "review-fable-mimo": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "mimo-v2.6-flash",
+    "opening_turns": 5,
+    "failure_streak": 1,
+    "worker_turns": 3,
+    "review_tools": ["bash", "shell"]
+  },
+  "review-fable-mimo-control": {
+    "type": "checkpoint",
+    "strong": "claude-fable-5-2",
+    "worker": "mimo-v2.6-flash",
+    "opening_turns": 5,
+    "failure_streak": 1,
+    "worker_turns": 3
+  },
   "checkpoint-opus-grok": {
     "type": "checkpoint",
     "strong": "claude-opus-5-5",
