@@ -1,7 +1,10 @@
 import { DEFAULT_OPTIONS, renderText, runChecks, summarize } from './doctor/checks.ts';
 import { nodeEnv } from './doctor/node-env.ts';
 import { installPinnedSurfpool } from './doctor/install.ts';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { configuredBackend, defaultHarnessEnvironment, omsCommand } from '@oms/engine';
 import { runHarnessCommand } from './harness.ts';
@@ -12,6 +15,10 @@ import { runUpdate, updateDeps } from './update.ts';
 import { COMMANDS, commandHelp, suggestCommand, wantsHelp } from './help.ts';
 import { runErrorCommand } from './error-command.ts';
 import { runSessionsCommand } from './sessions.ts';
+import { accountControls, runAccountCommand } from './account-command.ts';
+import { completionScript, SHELLS, type Shell } from './completion.ts';
+import { runConfigCommand } from './config-command.ts';
+import { runUninstall } from './uninstall.ts';
 
 const installRoot = new URL('../../../', import.meta.url);
 // The packed archive's root package.json carries the release version.
@@ -24,10 +31,12 @@ const HELP = `oms · Solana coding agent
   ${omsCommand()} review [path]   Offline security review of a Solana program
   ${omsCommand()} error <code>    Name a Solana program error
   ${omsCommand()} sessions        Folders with saved conversations
+  ${omsCommand()} login           Sign in to your Oh My Sol account
   ${omsCommand()} update          Update to the latest release (--check to only look)
   ${omsCommand()} --version       Print the version
 
 Options
+  --new               Start a new conversation in this folder
   --spend-usd <n>     Cap API spend for this session (default $5)
   --yolo              Run commands without the sandbox or approval
   --no-web            Start with web search off
@@ -61,7 +70,11 @@ Commands:
   update      Install the latest release (--check only reports; --version <x.y.z> picks one)
   review      Run a local offline Phase A security review
   error       Name a custom program error from the built-in tables and local IDLs
-  sessions    List folders with saved conversations
+  sessions    List folders with saved conversations (--prune removes state of deleted ones)
+  config      Show where settings and state are kept
+  login       Sign in to your account (also: logout, whoami)
+  completion  Print a bash, zsh or fish completion script
+  uninstall   Remove oms (--purge also deletes conversations, sign-ins and settings)
   doctor      Check local prerequisites; does not launch an agent
   workspace   Initialize local repository identity and ignored OMS storage
   task        Create a managed worktree and pin explicit requirements
@@ -116,6 +129,22 @@ async function doctor(args: string[]): Promise<number> {
 const [cmd, ...rest] = process.argv.slice(2);
 const log = (line: string): void => console.log(line);
 const fail = (line: string): void => console.error(line);
+
+/** A yes/no question, only when someone is at a terminal to answer it. Anything but yes, Ctrl+C included, is no. */
+const confirm =
+  process.stdin.isTTY && process.stdout.isTTY
+    ? async (question: string): Promise<boolean> => {
+        const terminal = createInterface({ input: process.stdin, output: process.stdout });
+        terminal.once('SIGINT', () => terminal.close());
+        try {
+          const closed = once(terminal, 'close').then(() => '');
+          const answer = await Promise.race([terminal.question(`${question} [y/N] `).catch(() => ''), closed]);
+          return /^y(es)?$/i.test(answer.trim());
+        } finally {
+          terminal.close();
+        }
+      }
+    : undefined;
 try {
   // `review` prints its own help, with its disclaimer.
   if (cmd !== undefined && cmd !== 'review' && Object.hasOwn(COMMANDS, cmd) && wantsHelp(rest)) {
@@ -135,7 +164,27 @@ try {
   } else if (cmd === 'error') {
     process.exitCode = runErrorCommand(rest, process.cwd(), log, fail);
   } else if (cmd === 'sessions') {
-    process.exitCode = runSessionsCommand(rest, omsHome(), log, fail);
+    process.exitCode = await runSessionsCommand(rest, omsHome(), { log, error: fail, confirm });
+  } else if (cmd === 'config') {
+    const { install } = updateDeps(fileURLToPath(installRoot), version());
+    const context = { version: version(), install, installFolder: fileURLToPath(installRoot), stateRoot: omsHome() };
+    process.exitCode = runConfigCommand(rest, context, log, fail);
+  } else if (cmd === 'login' || cmd === 'logout' || cmd === 'whoami') {
+    const stop = new AbortController();
+    process.once('SIGINT', () => stop.abort());
+    const controls = accountControls(omsHome(), stop.signal);
+    process.exitCode = await runAccountCommand(cmd, rest, { controls, signal: stop.signal, log, error: fail });
+  } else if (cmd === 'completion') {
+    if (rest.length === 1 && (SHELLS as readonly string[]).includes(rest[0]!)) {
+      console.log(completionScript(rest[0] as Shell));
+    } else {
+      fail(`Usage: ${omsCommand()} completion ${SHELLS.join('|')}`);
+      process.exitCode = 2;
+    }
+  } else if (cmd === 'uninstall') {
+    const { install, npm, exec } = updateDeps(fileURLToPath(installRoot), version());
+    const deps = { install, npm, exec, home: homedir(), stateRoot: omsHome(), log, error: fail, confirm };
+    process.exitCode = await runUninstall(rest, deps);
   } else if (cmd === 'doctor') {
     process.exitCode = await doctor(rest);
   } else if (cmd === 'workspace' || cmd === 'task' || cmd === 'run') {

@@ -168,8 +168,13 @@ From your shell (`oms <command> --help` explains each one):
 | `oms doctor` | Check your setup |
 | `oms review [path]` | Offline security report for your program |
 | `oms error <code> [program]` | Name a program error, offline |
-| `oms sessions` | Folders with saved conversations |
+| `oms --new` | Start a new conversation in this folder |
+| `oms sessions` | Folders with saved conversations, `--prune` clears deleted ones |
+| `oms login`, `logout`, `whoami` | Your Oh My Sol account |
+| `oms config` | Where settings and state are kept |
+| `oms completion bash\|zsh\|fish` | Shell completion |
 | `oms update` | Update to the latest release |
+| `oms uninstall` | Remove OMS, keeping your data unless you add `--purge` |
 
 Inside OMS:
 

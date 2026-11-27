@@ -30,6 +30,8 @@ export interface ChatLaunch {
   start?: typeof createChatSession;
   run?: typeof runOmsInterface;
   choose?: typeof chooseLocalAction;
+  /** --new: start a separate conversation instead of resuming the folder's newest one. */
+  fresh?: boolean;
 }
 
 /**
@@ -57,7 +59,7 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
   // Internal SDK policy: no automatic catalog refresh, update checks or telemetry.
   process.env.PI_OFFLINE = '1';
   const folder = resolveChatFolder(o.folder, { stateRoot: o.stateRoot });
-  const selected = await chooseChatSession(folder, o.stateRoot, o.launch, o.choose);
+  const selected = o.fresh ? {} : await chooseChatSession(folder, o.stateRoot, o.launch, o.choose);
   if (!selected) return;
   // The folder's connectors (GitHub, Docker, AWS and more): off until the user turns one on in /connectors.
   const connectors = createConnectors({ stateRoot: o.stateRoot, folder: folder.path });
