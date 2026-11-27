@@ -37,8 +37,8 @@ export function resumeHarnessArguments(
   ];
 }
 
-/** `web` from `<state root>/config.json` (default on). A malformed file is an error, never a silent default. */
-export function webSetting(stateRoot: string): 'on' | 'off' {
+/** An `on`/`off` key from `<state root>/config.json` (default on). A malformed file is an error, never a silent default. */
+function configSetting(stateRoot: string, key: string): 'on' | 'off' {
   const path = join(stateRoot, 'config.json');
   if (!existsSync(path)) return 'on';
   let config: unknown;
@@ -47,9 +47,19 @@ export function webSetting(stateRoot: string): 'on' | 'off' {
   } catch {
     throw new Error(`${path} is not valid JSON`);
   }
-  const web = (config as { web?: unknown } | null)?.web ?? 'on';
-  if (web !== 'on' && web !== 'off') throw new Error(`${path}: web must be "on" or "off"`);
-  return web;
+  const value = (config as Record<string, unknown> | null)?.[key] ?? 'on';
+  if (value !== 'on' && value !== 'off') throw new Error(`${path}: ${key} must be "on" or "off"`);
+  return value;
+}
+
+/** `web` from `<state root>/config.json` (default on). */
+export function webSetting(stateRoot: string): 'on' | 'off' {
+  return configSetting(stateRoot, 'web');
+}
+
+/** `coAuthorTrailer` from `<state root>/config.json` (default on). */
+export function coAuthorTrailerSetting(stateRoot: string): 'on' | 'off' {
+  return configSetting(stateRoot, 'coAuthorTrailer');
 }
 
 /** The CLI owns the application lifetime; the controller owns every task resource. */

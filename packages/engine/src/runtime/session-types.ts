@@ -66,6 +66,8 @@ export interface CommonSessionOptions {
   knowledge?: KnowledgeConfig;
   /** The look-it-up nudge in the system prompt. Defaults on whenever a knowledge credential exists; false turns it off. */
   knowledgeHint?: boolean;
+  /** The Co-Authored-By trailer rule for commits the agent creates. Defaults on; false removes it. */
+  coAuthorTrailer?: boolean;
   /** The search_docs rule and the top task-matched doc snippets in the first user turn (headless). Defaults on whenever a knowledge credential exists. */
   knowledgeInject?: boolean;
   /** Web access (web_search, web_fetch, Solana MCP), host-side. Absent means the tools do not exist: the bench never sets it. */

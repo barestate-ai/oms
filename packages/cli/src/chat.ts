@@ -8,7 +8,7 @@ import {
   type ChatFolder,
   type HarnessEnvironment,
 } from '@oms/engine';
-import { webSetting } from './interactive.ts';
+import { coAuthorTrailerSetting, webSetting } from './interactive.ts';
 import type { LaunchOptions } from './harness.ts';
 import { createConnectors } from './connectors/runtime.ts';
 import { chooseLocalAction } from './ownership.ts';
@@ -70,6 +70,7 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
     maxOutputTokens: o.launch.maxOutputTokens,
     executionMode: o.launch.executionMode,
     web: { enabled: o.web !== false && webSetting(o.stateRoot) === 'on' },
+    coAuthorTrailer: coAuthorTrailerSetting(o.stateRoot) === 'on',
     ...(o.yolo ? { yolo: true } : {}),
     extensions: connectors.extensions,
     extensionTools: connectors.extensionTools,

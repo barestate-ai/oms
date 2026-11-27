@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import {
   configuredBackend,
   createTask,
@@ -16,7 +16,7 @@ import {
   type Workspace,
 } from '@oms/engine';
 import { DEFAULT_BUDGET_CAPS } from '@oms/core';
-import { runInteractiveHarness } from './interactive.ts';
+import { coAuthorTrailerSetting, runInteractiveHarness } from './interactive.ts';
 import { runHeadlessHarness } from './headless.ts';
 
 interface CommandFlags {
@@ -256,6 +256,7 @@ export async function runHarnessCommand(
       stateOptions(parsed.values),
     );
     const task = selectedTask(workspace, parsed.values.get('--task'));
+    const stateRoot = dirname(dirname(workspace.stateDir));
     const sessionId = parsed.values.get('--session');
     // Benchmark cells pin their reference setup with --knowledge (token from the trusted environment, the hint and primer only as flagged).
     // Every other run resolves it in the session: OMS_KNOWLEDGE_URL plus OMS_KNOWLEDGE_TOKEN, else the signed-in account.
@@ -293,6 +294,7 @@ export async function runHarnessCommand(
             ...(parsed.values.has('--knowledge-inject') ? { knowledgeInject: true } : {}),
           }),
       ...(parsed.values.has('--edge-check') ? { edgeCheck: true } : {}),
+      coAuthorTrailer: coAuthorTrailerSetting(stateRoot) === 'on',
     };
     // Headless (the bench runner, CI) is offline unless --web asks; the bench runner never passes it.
     if (headless)

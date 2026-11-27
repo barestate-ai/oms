@@ -12,7 +12,7 @@ import { createSessionHooks } from '../src/runtime/session-hooks.ts';
 import type { SessionLifecycle } from '../src/runtime/session-lifecycle.ts';
 import type { SessionTools } from '../src/runtime/session-tools.ts';
 import type { CommonSessionOptions } from '../src/runtime/session-types.ts';
-import { CLAUDE_CAPPED_WORK, CLAUDE_DEPLOYMENT_KNOWLEDGE } from '../src/runtime/system-prompt.ts';
+import { CLAUDE_CAPPED_WORK, CLAUDE_DEPLOYMENT_KNOWLEDGE, CO_AUTHOR_TRAILER } from '../src/runtime/system-prompt.ts';
 
 async function beforeStart(contract: boolean) {
   const hooks = createSessionHooks(
@@ -91,6 +91,23 @@ for (const contract of [false, true]) {
       }
     });
   }
+}
+
+for (const contract of [false, true]) {
+  test(`co-author trailer rule is present by default and absent when off (${contract ? 'task' : 'chat'})`, () => {
+    const hooks = (options: CommonSessionOptions) =>
+      createSessionHooks(
+        options,
+        {} as SessionLifecycle,
+        { executionMode: 'interactive', ...(contract ? { contract: {} } : {}) } as RuntimeEnvironment,
+        { taskRoot: '/work', toolchainSummary: 'ok' } as SessionTools,
+      );
+    const on = hooks({} as CommonSessionOptions).promptFor(undefined);
+    assert.equal(on.split(CO_AUTHOR_TRAILER).length - 1, 1);
+    assert.match(on, /never add it to a commit the user made/);
+    const off = hooks({ coAuthorTrailer: false } as CommonSessionOptions).promptFor(undefined);
+    assert.ok(!off.includes('Co-Authored-By'));
+  });
 }
 
 test('capped-work guidance is appended once across turns and follows the current provider', async () => {

@@ -139,6 +139,24 @@ export const BATCHED_STEPS = words(
   'keep reusable helpers in a file.',
 );
 
+/** The attribution line an OMS-authored git commit ends with. */
+export const CO_AUTHOR_TRAILER = 'Co-Authored-By: Oh My Sol <357342057+oh-my-sol[bot]@users.noreply.github.com>';
+const CO_AUTHOR_TRAILER_RULE = words(
+  'When you create a git commit, end the commit message with this exact trailer line: after a blank line if the',
+  'message has no trailers yet, appended to them if it has:',
+  `"${CO_AUTHOR_TRAILER}".`,
+  'Keep trailers the message already has, add this one only when it is not already there, and never add it to a',
+  'commit the user made.',
+);
+
+/**
+ * The commit-attribution rule, added through the agent's instructions the way Claude Code does: no git config or hook
+ * change. On unless `coAuthorTrailer` is false.
+ */
+export function coAuthorTrailerHint(options: { coAuthorTrailer?: boolean }): string {
+  return options.coAuthorTrailer === false ? '' : ` ${CO_AUTHOR_TRAILER_RULE}`;
+}
+
 export const CLAUDE_CAPPED_WORK = lines(
   'Capped Solana work procedure:',
   words(
