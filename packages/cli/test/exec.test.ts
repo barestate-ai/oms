@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import { createChatSession, type ChatSession, type ChatSessionOptions } from '@oms/engine';
 import { createChatFixture } from '../../engine/test-support/chat-fixture.ts';
@@ -249,4 +250,38 @@ test('exec propagates cancellation into real chat startup and cleans up before r
   assert.equal(await runExec(['hello'], f.deps), 130);
   assert.equal(existsSync(join(f.stateRoot, 'folders')), false);
   assert.deepEqual(f.notes, ['oms: interrupted']);
+});
+
+test('exec stops an in-flight Surfpool startup and releases the chat lease', { timeout: 15_000 }, async (t) => {
+  const f = await setup(t);
+  const stop = new AbortController();
+  const binary = join(f.base, 'slow-surfpool');
+  writeFileSync(binary, '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n', { mode: 0o700 });
+  f.deps.environment = { ...f.options.environment, binary };
+  f.deps.signal = stop.signal;
+  const state = join(f.stateRoot, 'folders', f.folder.key);
+  const registry = join(state, 'runtime-processes');
+  const lease = join(state, 'session.lease');
+  const cancelAfterSpawn = async () => {
+    const signal = AbortSignal.any([t.signal, AbortSignal.timeout(10_000)]);
+    while (true) {
+      const record = existsSync(registry) && readdirSync(registry).find((name) => name.endsWith('.json'));
+      if (record) {
+        assert.ok(existsSync(lease));
+        const { child } = JSON.parse(readFileSync(join(registry, record), 'utf8')) as { child: { pid: number } };
+        stop.abort();
+        return child.pid;
+      }
+      await delay(10, undefined, { signal });
+    }
+  };
+  try {
+    const [code, pid] = await Promise.all([runExec(['hello'], f.deps), cancelAfterSpawn()]);
+    assert.equal(code, 130);
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    assert.equal(existsSync(lease), false);
+    assert.deepEqual(readdirSync(registry), []);
+  } finally {
+    stop.abort();
+  }
 });
