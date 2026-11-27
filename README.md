@@ -158,7 +158,7 @@ Sign in with GitHub using `/login` to access Solana knowledge.
 
 ## Git commits
 
-In a folder chat the agent may stage and commit in an existing repository (`.git/hooks` and `.git/config` stay read-only). Commits the agent creates end with `Co-Authored-By: Oh My Sol <357342057+oh-my-sol[bot]@users.noreply.github.com>`; commits you run yourself never get it. Set `{"coAuthorTrailer": "off"}` in `~/.oms/config.json` to turn the trailer off.
+In a folder chat the agent may stage and commit in an existing repository (`.git/hooks` and `.git/config` stay read-only). The agent is instructed to end commits it creates with `Co-Authored-By: Oh My Sol <357342057+oh-my-sol[bot]@users.noreply.github.com>`; commits you run yourself never carry the instruction. Set `{"coAuthorTrailer": "off"}` in `~/.oms/config.json` to remove the instruction.
 
 ## Commands
 
