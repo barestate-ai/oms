@@ -109,10 +109,11 @@ async function runExecPrompt(args: string[], deps: ExecDeps): Promise<number> {
   const folder = resolveChatFolder(deps.folder, { stateRoot });
   let sessionId: string | undefined;
   let caps = launch.caps;
+  let executionMode = launch.executionMode;
   if (values.has('--continue')) {
     const saved = latestChatSession(folder, stateRoot);
     if (saved) {
-      const budget = inspectSavedChatBudget(saved.journal, launch.executionMode);
+      const budget = inspectSavedChatBudget(saved.journal);
       if (!budget) {
         note('oms: cannot read the saved conversation budget. Run without --continue to start a new one.');
         return 1;
@@ -130,6 +131,7 @@ async function runExecPrompt(args: string[], deps: ExecDeps): Promise<number> {
         return 1;
       }
       caps = budget.caps;
+      executionMode = budget.executionMode;
       sessionId = saved.sessionId;
     } else note('No earlier conversation here; starting a new one.');
   }
@@ -143,7 +145,7 @@ async function runExecPrompt(args: string[], deps: ExecDeps): Promise<number> {
     environment,
     caps,
     maxOutputTokens: launch.maxOutputTokens,
-    executionMode: launch.executionMode,
+    executionMode,
     web: { enabled: !values.has('--no-web') && webSetting(stateRoot) === 'on' },
     ...(values.has('--yolo') ? { yolo: true } : {}),
     ...(provider ? { modelSelection: { provider, id: values.get('--model')! } } : {}),

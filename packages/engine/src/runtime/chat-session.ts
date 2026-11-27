@@ -135,7 +135,7 @@ export function savedBudgetUsable(
   executionMode: ExecutionMode | undefined,
   now = Date.now(),
 ): boolean {
-  const saved = inspectSavedChatBudget(journal, executionMode, now);
+  const saved = inspectSavedChatBudget(journal, now, executionMode ?? 'bounded');
   return (
     !!saved?.usable &&
     saved.caps.tokens === caps.tokens &&
@@ -146,9 +146,9 @@ export function savedBudgetUsable(
 
 export function inspectSavedChatBudget(
   journal: string,
-  executionMode: ExecutionMode | undefined,
   now = Date.now(),
-): { caps: BudgetCaps; usable: boolean } | undefined {
+  requestedMode?: ExecutionMode,
+): { caps: BudgetCaps; executionMode: ExecutionMode; usable: boolean } | undefined {
   try {
     assertPrivate(journal, false);
     const contents = readFileSync(journal, 'utf8');
@@ -169,11 +169,12 @@ export function inspectSavedChatBudget(
       },
     });
     const snapshot = ledger.snapshot();
+    const executionMode = requestedMode ?? snapshot.executionMode;
     // Resuming charges an uncertain or interrupted request at its reservation, so an interactive chat goes on.
     const usable =
       executionMode === 'interactive' ||
       (snapshot.accounting === 'known' && snapshot.pendingDispatchIds.length === 0 && !snapshot.admissionBlocked);
-    return { caps, usable };
+    return { caps, executionMode, usable };
   } catch {
     return undefined;
   }

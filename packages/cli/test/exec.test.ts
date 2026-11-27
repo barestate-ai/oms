@@ -89,6 +89,26 @@ test('exec --continue inherits custom caps and rejects explicit mismatches befor
   }
 });
 
+test('exec --continue keeps bounded conversations bounded and refuses expired ones', live, async (t) => {
+  for (const expired of [false, true]) {
+    const f = await setup(t);
+    const start = f.deps.start!;
+    const startedAt = Date.now() - (expired ? 180_000 : 0);
+    f.deps.start = (options) => start({ ...options, clock: () => startedAt });
+    f.faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')]);
+    assert.equal(await runExec(['--bounded', '--minutes', '2', 'hello'], f.deps), 0);
+    f.deps.start = start;
+    assert.equal(await runExec(['--continue', 'again'], f.deps), expired ? 1 : 0, f.notes.join('\n'));
+    if (expired) {
+      assert.equal(f.opened.length, 1);
+      assert.match(f.notes.at(-1)!, /cannot admit more work/);
+    } else {
+      assert.equal(f.opened[1]!.executionMode, 'bounded');
+      assert.equal(f.opened[1]!.caps.wallClockMs, 120_000);
+    }
+  }
+});
+
 test('exec - reads the rest of the prompt from standard input', live, async (t) => {
   const f = await setup(t);
   let asked = '';
