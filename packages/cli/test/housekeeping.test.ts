@@ -219,6 +219,24 @@ test('uninstall --purge refuses malformed ownership records', async (t) => {
   assert.ok(existsSync(f.prefix));
 });
 
+test('uninstall --purge refuses a live task under a nested custom workspace state root', async (t) => {
+  const f = installed(t);
+  const task = join(f.stateRoot, 'custom', 'harness', 'workspaces', 'workspace', 'tasks', 'task');
+  mkdirSync(task, { recursive: true, mode: 0o700 });
+  const file = join(task, 'mutation.lease');
+  const lease = acquireMutationLease(file);
+  try {
+    assert.equal(await runUninstall(['--purge', '--yes'], f.deps), 1);
+    assert.match(f.run.err.join('\n'), /OMS is open/);
+    assert.ok(existsSync(file));
+    assert.ok(existsSync(f.prefix));
+  } finally {
+    lease.release();
+  }
+  assert.equal(await runUninstall(['--purge', '--yes'], f.deps), 0);
+  assert.equal(existsSync(f.stateRoot), false);
+});
+
 test('uninstall --purge rechecks ownership after confirmation and after package-manager uninstall', async (t) => {
   for (const during of ['confirmation', 'uninstall']) {
     const f = installed(t);

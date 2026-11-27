@@ -64,18 +64,42 @@ function stateDirs(parent: string): string[] {
   });
 }
 
+function* nestedWorkspaceLeases(stateRoot: string): Iterable<string> {
+  const pending = [stateRoot];
+  while (pending.length) {
+    const dir = pending.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      if (
+        (entry.name === 'registry.lease' || entry.name === 'registry.lease.recovery') &&
+        dir !== stateRoot &&
+        statIfPresent(join(dir, 'workspaces'))?.isDirectory()
+      ) {
+        yield join(dir, 'registry.lease');
+      } else if (
+        (entry.name === 'mutation.lease' || entry.name === 'mutation.lease.recovery') &&
+        /\/workspaces\/[^/]+(?:\/tasks\/[^/]+)?$/.test(dir)
+      ) {
+        yield join(dir, 'mutation.lease');
+      }
+    }
+  }
+}
+
 function canPurge(stateRoot: string, home: string, error: UninstallDeps['error']): boolean {
   try {
     if (!privateDirExists(stateRoot)) return true;
 
-    const leases = [
+    const leases = new Set([
       join(stateRoot, 'registry.lease'),
       ...stateDirs(join(stateRoot, 'folders')).map((dir) => join(dir, 'session.lease')),
       ...stateDirs(join(stateRoot, 'workspaces')).flatMap((dir) => [
         join(dir, 'mutation.lease'),
         ...stateDirs(join(dir, 'tasks')).map((task) => join(task, 'mutation.lease')),
       ]),
-    ];
+      ...nestedWorkspaceLeases(stateRoot),
+    ]);
     for (const lease of leases) {
       if (statIfPresent(`${lease}.recovery`)) throw new Error('Recovery lease exists');
       const stat = statIfPresent(lease);
