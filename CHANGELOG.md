@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.5
 
 - Every command answers `--help`, and `oms help <command>` shows the same text. A mistyped command names the closest one.
 - `oms sessions` lists the folders that have saved conversations, newest first, and flags folders that were deleted.
