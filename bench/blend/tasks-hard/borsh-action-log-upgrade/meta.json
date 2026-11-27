@@ -1,0 +1,9 @@
+{
+  "id": "borsh-action-log-upgrade",
+  "title": "Upgrade recursive Borsh action enums with byte-bounded nested payloads",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "anchor-borsh-layouts",
+  "topics": ["borsh", "enum", "recursive-codec", "u128"]
+}

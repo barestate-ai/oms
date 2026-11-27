@@ -1,0 +1,9 @@
+{
+  "id": "withheld-fee-journal",
+  "title": "Apply atomic Token-2022 withholding, harvest and withdrawal",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "token2022-fee-hook",
+  "topics": ["token2022", "atomicity", "withheld-fees"]
+}

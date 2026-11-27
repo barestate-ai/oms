@@ -1,0 +1,7 @@
+{
+  "id": "memo-instruction",
+  "title": "Refactor memo assembly to deterministic signer metas",
+  "kind": "refactor",
+  "difficulty": 2,
+  "topics": ["memo", "signers", "utf8"]
+}

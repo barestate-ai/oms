@@ -1,0 +1,7 @@
+{
+  "id": "cpi-log-stack",
+  "title": "Repair CPI invocation stack reconstruction",
+  "kind": "bugfix",
+  "difficulty": 2,
+  "topics": ["logs", "cpi", "stack-machine"]
+}

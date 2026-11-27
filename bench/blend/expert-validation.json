@@ -1,0 +1,19 @@
+{
+  "node": "v22.23.4",
+  "tasks": 16,
+  "reference_hidden_passed": 320,
+  "reference_hidden_total": 320,
+  "reference_visible_passed": 32,
+  "starters_failing_strict_majority": 16,
+  "starter_passes_min": 0,
+  "starter_passes_max": 8,
+  "mutations_detected": 131,
+  "mutations_total": 131,
+  "crosscheck": {
+    "tasks": 16,
+    "independent_vectors": 333,
+    "scored_groups": 320,
+    "rfc8032_section_7_1_test_1": true,
+    "method": "Independent Python integer/struct/hashlib interpreters, algebraic fee inverse, Kosaraju SCCs and affine Edwards signatures versus Node 22 implementations"
+  }
+}

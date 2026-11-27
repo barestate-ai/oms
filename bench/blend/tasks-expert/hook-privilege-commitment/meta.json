@@ -1,0 +1,9 @@
+{
+  "id": "hook-privilege-commitment",
+  "title": "Resolve packed hook recipes and bind alias-aware effective roles into a commitment",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "token2022-fee-hook",
+  "topics": ["token2022-fee-hook", "multi-module", "boundary-invariants"]
+}

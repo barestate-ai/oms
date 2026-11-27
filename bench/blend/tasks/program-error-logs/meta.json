@@ -1,0 +1,7 @@
+{
+  "id": "program-error-logs",
+  "title": "Extract runtime custom errors without trusting program text",
+  "kind": "implement",
+  "difficulty": 1,
+  "topics": ["logs", "errors", "cpi"]
+}

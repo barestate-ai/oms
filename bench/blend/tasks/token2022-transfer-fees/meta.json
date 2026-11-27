@@ -1,0 +1,7 @@
+{
+  "id": "token2022-transfer-fees",
+  "title": "Token-2022 fee schedules and overflow-safe inverse transfer amounts",
+  "kind": "implement",
+  "difficulty": 3,
+  "topics": ["token2022", "transfer-fee", "inverse-math", "u64"]
+}

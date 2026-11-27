@@ -1,0 +1,9 @@
+{
+  "id": "cpi-meta-plan-cache",
+  "title": "Expand path-sensitive CPI privilege proofs without unsafe node-only cache reuse",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "cpi-rollback-conservation",
+  "topics": ["cpi-rollback-conservation", "multi-module", "boundary-invariants"]
+}

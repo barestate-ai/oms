@@ -1,0 +1,7 @@
+{
+  "id": "transfer-hook-extra-metas",
+  "title": "Resolve Token-2022 transfer-hook packed PDA seed recipes",
+  "kind": "implement",
+  "difficulty": 3,
+  "topics": ["token2022", "transfer-hook", "tlv", "pda-seeds"]
+}

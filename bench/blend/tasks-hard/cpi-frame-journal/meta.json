@@ -1,0 +1,9 @@
+{
+  "id": "cpi-frame-journal",
+  "title": "Enforce CPI frame conservation and nested account rollback",
+  "kind": "repair",
+  "difficulty": 4,
+  "difficulty_label": "d4",
+  "theme": "cpi-rollback-conservation",
+  "topics": ["cpi", "rollback", "conservation", "ownership"]
+}

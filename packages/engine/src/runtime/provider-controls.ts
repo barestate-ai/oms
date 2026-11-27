@@ -9,6 +9,7 @@ import {
   type MimoProvider,
 } from './inference-preferences.ts';
 import { CLAUDE_CODE_PROVIDER, getClaudeCodeStatus, inspectClaudeCode, type ClaudeCodeStatus } from './claude-code.ts';
+import { BLEND_SIGN_IN } from './blend.ts';
 
 // https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use
 const CLAUDE_SUBSCRIPTION_UNAVAILABLE =
@@ -43,6 +44,7 @@ export interface ProviderControls {
   importEnvironment(path: string, interaction: AuthInteraction): Promise<ImportSummary>;
 }
 interface ProviderControlsOptions {
+  blend?: { configured(): boolean; ensureProfile(id: string): Promise<void> };
   modelRuntime: ModelRuntime;
   session: Pick<AgentSession, 'setModel'>;
   maxOutputTokens: number;
@@ -103,7 +105,11 @@ export function createProviderControls(options: ProviderControlsOptions): Provid
   const { modelRuntime, session, maxOutputTokens, signal, withUserOperation, checkAuthFile } = options;
   const claudeCode = options.claudeCodeAccess ?? { status: getClaudeCodeStatus, inspect: inspectClaudeCode };
   const configured = (provider: string) =>
-    provider === CLAUDE_CODE_PROVIDER ? claudeCode.status().configured : modelRuntime.hasConfiguredAuth(provider);
+    provider === 'blend'
+      ? (options.blend?.configured() ?? modelRuntime.hasConfiguredAuth(provider))
+      : provider === CLAUDE_CODE_PROVIDER
+        ? claudeCode.status().configured
+        : modelRuntime.hasConfiguredAuth(provider);
   const supportedModels = () => {
     const models = modelRuntime
       .getModels()
@@ -132,7 +138,9 @@ export function createProviderControls(options: ProviderControlsOptions): Provid
             detail:
               model.provider === CLAUDE_CODE_PROVIDER
                 ? claudeCode.status().detail
-                : 'Needs setup · /connect this provider first',
+                : model.provider === 'blend'
+                  ? BLEND_SIGN_IN
+                  : 'Needs setup · /connect this provider first',
           };
     return {
       provider: model.provider,
@@ -173,6 +181,11 @@ export function createProviderControls(options: ProviderControlsOptions): Provid
   const selectModel: ProviderControls['selectModel'] = (provider, id) =>
     withUserOperation(async () => {
       signal.throwIfAborted();
+      if (provider === 'blend') {
+        if (!configured(provider)) throw new Error(BLEND_SIGN_IN);
+        await options.blend?.ensureProfile(id);
+        await modelRuntime.refresh({ allowNetwork: false, signal });
+      }
       const model = supportedModels().find((candidate) => candidate.provider === provider && candidate.id === id);
       if (!model) throw new Error('Select a supported model from the installed catalog');
       if (provider === CLAUDE_CODE_PROVIDER) {

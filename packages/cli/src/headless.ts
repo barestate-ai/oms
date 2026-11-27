@@ -253,7 +253,8 @@ export async function runHeadlessHarness(options: HarnessSessionOptions, jsonOut
         }
       }
     }
-  } catch {
+  } catch (error) {
+    console.error('[headless runtime-error]', error);
     status = 'infra';
     reason = 'runtime-error';
   } finally {

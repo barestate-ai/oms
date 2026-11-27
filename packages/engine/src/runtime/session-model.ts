@@ -12,6 +12,8 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { assertPrivate, isMissing } from '../workspace/storage.ts';
 import { registerOmsCatalog } from './catalog.ts';
+import { registerBlend, blendToken, BLEND_SIGN_IN } from './blend.ts';
+import type { OmsAccountControls } from './oms-account.ts';
 import {
   CLAUDE_CODE_PROVIDER,
   claudeCodeEffort,
@@ -53,6 +55,7 @@ export function sessionToolNames(
 
 /** The live pi session with its model runtime, and the pieces the returned session API is built from. */
 export interface SessionModel {
+  ensureBlendProfile(id: string): Promise<void>;
   session: AgentSession;
   created: Awaited<ReturnType<typeof createAgentSession>>;
   modelRuntime: ModelRuntime;
@@ -103,6 +106,7 @@ export async function createSessionModel(
   hooks: SessionHooks,
   extensions: ExtensionFactory[],
   initiallyKnown: boolean,
+  account: OmsAccountControls,
   injectedTools: readonly string[] = [],
   telemetryCredential?: ModelUsageCredential,
 ): Promise<SessionModel> {
@@ -125,6 +129,8 @@ export async function createSessionModel(
     options.modelRuntime ??
     (await ModelRuntime.create({ authPath, modelsPath: null, allowModelNetwork: false, refreshOnCreate: true }));
   registerOmsCatalog(modelRuntime);
+  const blend = registerBlend(modelRuntime, account, env.sessionId);
+  if (options.modelSelection?.provider === 'blend') await blend.ensureProfile(options.modelSelection.id);
   const native = (life.nativeSession = await createClaudeCodeProvider(modelRuntime, {
     effort: claudeCodeEffort(),
     statePath: join(sessionsDir, `${env.sessionId}.claude.json`),
@@ -139,6 +145,7 @@ export async function createSessionModel(
       ? modelRuntime.getModel(options.modelSelection.provider, options.modelSelection.id)
       : undefined);
   if (options.modelSelection && !selectedModel) throw new Error('The selected model is not in the installed catalog');
+  if (selectedModel?.provider === 'blend' && !blendToken(account)) throw new Error(BLEND_SIGN_IN);
   const settingsManager = createHarnessSettings(agentRoot);
   const resourceLoader = new DefaultResourceLoader({
     cwd: codeRoot,
@@ -230,8 +237,10 @@ export async function createSessionModel(
   session.agent.toolExecution = 'parallel';
   const originalSdkStream: StreamFn = session.agent.streamFunction;
   const directStream = createMeteredStream({
+    providerAvailability: (model) => (model.provider === 'blend' && !blendToken(account) ? BLEND_SIGN_IN : undefined),
     streamFunction: originalSdkStream,
     observeModelUsage: modelUsageObserver(telemetryCredential),
+    requestCost: options.requestCost,
     ledger: env.budget,
     allocate: env.allocate,
     executionMode: env.executionMode,
@@ -269,5 +278,14 @@ export async function createSessionModel(
   // Registered for a later sign-in, but not declared to the model while no credential exists.
   if (!initiallyKnown)
     session.setActiveToolsByName(session.getActiveToolNames().filter((name) => !KNOWLEDGE_TOOL_NAMES.includes(name)));
-  return { session, created, modelRuntime, settingsManager, resourceLoader, nativeChat, checkAuthFile };
+  return {
+    session,
+    created,
+    modelRuntime,
+    settingsManager,
+    resourceLoader,
+    nativeChat,
+    checkAuthFile,
+    ensureBlendProfile: blend.ensureProfile,
+  };
 }

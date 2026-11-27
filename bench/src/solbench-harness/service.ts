@@ -6,6 +6,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyO
 import { createServer, type Server } from 'node:http';
 import { base58, parseTransaction, type Instruction, type ParsedTransaction } from './wire.ts';
 import { scoreRun, type Score } from './score.ts';
+import { simulationError } from './simulation.ts';
 
 export const MAX_SUBMISSIONS = 50;
 export const RUN_WALL_MS = 30 * 60_000;
@@ -95,17 +96,30 @@ export function createEnv(o: EnvOptions) {
   const submissions: Array<{ ok: boolean; instructions: Instruction[] }> = [];
   const deployed = new Set<string>();
   let used = 0;
+  let forkFailures = 0;
   const upstream = async (method: string, params: unknown) => {
-    const response = await fetch(o.upstream, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    return (await response.json()) as {
-      result?: any;
-      error?: { code: number; message: string; data?: { logs?: string[] } };
-    };
+    try {
+      const response = await fetch(o.upstream, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const body = (await response.json()) as {
+        result?: any;
+        error?: { code: number; message: string; data?: { logs?: string[] } };
+      };
+      if (
+        !response.ok ||
+        body.error?.code === -32005 ||
+        /node is unhealthy|node unhealthy/i.test(body.error?.message ?? '')
+      )
+        forkFailures++;
+      return body;
+    } catch (error) {
+      forkFailures++;
+      throw error;
+    }
   };
   const score = (): Score => scoreRun(submissions, deployed);
   const status = () => ({
@@ -241,6 +255,10 @@ export function createEnv(o: EnvOptions) {
         -32601,
         `${method} is not available here: read with get* methods, execute with solbench_submit (./submit-tx)`,
       );
+    if (method === 'simulateTransaction') {
+      const error = simulationError(params);
+      if (error) return failure(id, -32602, error);
+    }
     const answer = await upstream(method, params);
     return { jsonrpc: '2.0', id, ...('error' in answer ? { error: answer.error } : { result: answer.result }) };
   }
@@ -256,7 +274,7 @@ export function createEnv(o: EnvOptions) {
     return next;
   }
 
-  return { handle, score, status };
+  return { handle, score, status, forkFailures: () => forkFailures };
 }
 
 export type Env = ReturnType<typeof createEnv>;

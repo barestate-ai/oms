@@ -114,7 +114,12 @@ test('local model reporting counts metered provider requests and sends only mode
     assert.deepEqual(JSON.parse(String(init?.body)), { provider: model.provider, model: model.id, outcome });
   }
 });
-function fixture(streamFunction?: StreamFn, customCaps = caps, onBareBadRequest?: () => void) {
+function fixture(
+  streamFunction?: StreamFn,
+  customCaps = caps,
+  onBareBadRequest?: () => void,
+  requestCost?: Parameters<typeof createMeteredStream>[0]['requestCost'],
+) {
   const events: BudgetLedgerEvent[] = [];
   const ledger = createBudgetLedger({
     caps: customCaps,
@@ -143,6 +148,7 @@ function fixture(streamFunction?: StreamFn, customCaps = caps, onBareBadRequest?
     maxOutputTokens: 50,
     logicalTurnId: () => 'user-run-1',
     onBareBadRequest,
+    requestCost,
   });
   return { stream, ledger, events, calls: () => calls };
 }
@@ -158,6 +164,23 @@ async function dispatchRequest(selected: Model<Api>, options: Parameters<StreamF
   await options?.onPayload?.({ model: selected.id }, selected);
   await options?.fetch?.('http://127.0.0.1:1')?.catch(() => {});
 }
+
+test('host request pricing is refreshed before admission and fails closed when the active model becomes expensive', async () => {
+  let strong = false;
+  const f = fixture(undefined, { ...caps, spendMicroUsd: 1000 }, undefined, () =>
+    strong ? model.cost : { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+  );
+  assert.equal((await consume(f.stream)).result.stopReason, 'stop');
+  assert.equal(f.calls(), 1);
+  strong = true;
+  assert.equal((await consume(f.stream)).result.stopReason, 'error');
+  assert.equal(f.calls(), 1);
+  const broken = fixture(undefined, caps, undefined, () => {
+    throw Error('unavailable price');
+  });
+  assert.equal((await consume(broken.stream)).result.stopReason, 'error');
+  assert.equal(broken.calls(), 0);
+});
 
 test('Codex reserves its entire catalog output capacity rather than advertising an unenforceable local cap', async () => {
   const codex = { ...model, api: 'openai-codex-responses', provider: 'openai-codex' };

@@ -1,0 +1,11 @@
+{
+  "name": "program-error-logs",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

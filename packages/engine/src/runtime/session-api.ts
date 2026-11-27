@@ -21,6 +21,7 @@ import type {
 } from './session-types.ts';
 import { createHarnessSettingsControls, flushHarnessSettings } from './settings-controls.ts';
 import { measuredInputBound, modelReadiness } from './usage.ts';
+import { blendToken } from './blend.ts';
 
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -114,6 +115,7 @@ export function createCoreApi(parts: SessionApiParts): SessionCore {
     withUserOperation: life.withUserOperation,
   });
   const providerControls = createProviderControls({
+    blend: { configured: () => !!blendToken(account), ensureProfile: model.ensureBlendProfile },
     modelRuntime: model.modelRuntime,
     session,
     maxOutputTokens: options.maxOutputTokens,

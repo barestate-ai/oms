@@ -35,6 +35,7 @@ import {
   type ExecutionMode,
 } from '@oms/core';
 
+import { BLEND_SETTLED_ERROR } from './blend.ts';
 import {
   describeClaudeCodeAuth,
   describeClaudeCodeLimit,
@@ -73,8 +74,10 @@ function count(value: unknown): value is number {
 export type ModelUsageObserver = (model: Model<Api>) => ((outcome: 'ok' | 'error') => void) | undefined;
 
 export interface MeteredStreamOptions {
+  readonly providerAvailability?: (model: Model<Api>) => string | undefined;
   /** Capture the original agent.streamFunction before replacing it. */
   readonly streamFunction: StreamFn;
+  readonly requestCost?: (model: Model<Api>, context: Parameters<StreamFn>[1]) => Model<Api>['cost'];
   readonly ledger: BudgetLedger;
   readonly maxOutputTokens: number;
   /** Unique per user run, stable across its tool-loop continuations. Never reuse after restart. */
@@ -533,12 +536,18 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
       let onAbort: (() => void) | undefined;
       try {
         // Snapshot pricing inside the error boundary: malformed model metadata must also yield a Pi error.
+        const cost = config.requestCost?.(selectedModel, context) ?? selectedModel.cost;
         model = {
           ...selectedModel,
-          cost: { ...selectedModel.cost, tiers: selectedModel.cost?.tiers?.map((tier) => ({ ...tier })) },
+          cost: { ...cost, tiers: cost?.tiers?.map((tier) => ({ ...tier })) },
         };
         if (options?.signal?.aborted) {
           failed('Request cancelled before dispatch; no provider usage.', true);
+          return;
+        }
+        const unavailable = config.providerAvailability?.(model);
+        if (unavailable) {
+          failed(unavailable);
           return;
         }
         const subscribed = config.subscribed?.(model.provider) ?? false;
@@ -778,6 +787,42 @@ export function createMeteredStream(config: MeteredStreamOptions): StreamFn {
               const stop = event.error.rawStopReason;
               nativeRequestObserved = stop !== CLAUDE_CODE_SIGNIN && !stop?.startsWith(CLAUDE_CODE_NOT_DISPATCHED);
             }
+            if (
+              model.provider === 'blend' &&
+              event.error.rawStopReason === BLEND_SETTLED_ERROR &&
+              event.error.responseModel === model.id
+            ) {
+              const raw = event.error.usage;
+              const usage =
+                normalizePiUsage(model, raw) ??
+                ([raw.input, raw.output, raw.cacheRead, raw.cacheWrite, raw.totalTokens, raw.cost.total].every(
+                  (value) => value === 0,
+                )
+                  ? { tokens: 0, spendMicroUsd: 0 }
+                  : null);
+              if (usage) {
+                const receipt = config.ledger.settle({
+                  dispatchId: id,
+                  receiptId: randomUUID(),
+                  outcome: 'known',
+                  tokens: usage.tokens,
+                  spendMicroUsd: usage.spendMicroUsd,
+                });
+                if (receipt.ok) {
+                  settled = true;
+                  output.push({
+                    ...event,
+                    error: {
+                      ...cleanMessage(event.error),
+                      errorMessage: 'Blend request failed; its cost receipt was settled.',
+                    },
+                  });
+                  output.end();
+                  return;
+                }
+              }
+            }
+            // Operator diagnostics only (never in the transcript): the raw cause behind the plain user-facing message.
             const errorMessage = (event as { error?: { errorMessage?: string } }).error?.errorMessage;
             if (process.env.OMS_STREAM_DEBUG)
               console.error('oms stream error', JSON.stringify({ reason: event.reason }));

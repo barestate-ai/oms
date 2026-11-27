@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "oms-blend",
+  "account_id": "476f3d30838d09d1253b76f0c92c265d",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "barestate.xyz/oms/blend/*", "zone_name": "barestate.xyz" }],
+  "services": [{ "binding": "GATEWAY", "service": "oms" }],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "bc18205747e04418bf41e93e9ce51f98" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "USERS", "class_name": "BlendUser" },
+      { "name": "GLOBAL", "class_name": "BlendGlobal" },
+    ],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BlendUser", "BlendGlobal"] }],
+  "analytics_engine_datasets": [{ "binding": "USAGE_EVENTS", "dataset": "oms_blend_usage" }],
+  "vars": { "RATE_PER_MIN": "30", "MAX_CONCURRENT": "2", "USER_DAILY_USD": "5", "GLOBAL_DAILY_USD": "50" },
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "invocation_logs": false } },
+}

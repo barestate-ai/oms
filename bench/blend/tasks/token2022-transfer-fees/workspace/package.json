@@ -1,0 +1,11 @@
+{
+  "name": "token2022-transfer-fees",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -41,7 +41,7 @@ npx --no-install oms --help
 npx --no-install oms doctor
 ```
 
-Help should list `doctor`, `workspace`, `task` and `run`. Doctor should identify missing tools and return nonzero while required prerequisites are absent. It must not start an agent.
+Version should be `0.1.3`. Help should show `/blend` and the Auto, Pro and Flash choices; advanced help lists `workspace`, `task` and `run`. Doctor should identify missing tools and return nonzero while required prerequisites are absent. It must not start an agent.
 
 Install Surfpool 1.7.0 with `oms doctor --install`, which downloads the archive named in `node_modules/@barestate/oms/packages/engine/runtime-manifest.json` and checks its SHA-256. Then test both modes:
 

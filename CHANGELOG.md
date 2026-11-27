@@ -8,6 +8,7 @@
 
 ## 0.1.4
 
+- Blend routes coding requests across models through your signed-in, invited OMS account. `/blend` selects Auto; `/blend pro|flash|auto` switches profiles, `/blend off` returns to your previous model, and `/model` lists the Blend profiles. Usage includes the router's settled cost, including retries. Profiles are benchmark-selected on Solana Bench: Auto/Pro route Ember to Fable on real tool failures (score 266, $3.84 per 50-submission run); Flash hands routine work to Ember after Fable's opening turns (230, $2.81). See [Blend](docs/blend.md).
 - `oms update` installs the latest release the way you installed OMS (curl installer, npm or Homebrew), `oms update --check` only reports, and `oms update --version <x.y.z>` picks one. `oms version` prints the version.
 
 ## 0.1.3

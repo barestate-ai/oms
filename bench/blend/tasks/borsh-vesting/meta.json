@@ -1,0 +1,7 @@
+{
+  "id": "borsh-vesting",
+  "title": "Borsh vesting records with UTF-8 and fixed options",
+  "kind": "implement",
+  "difficulty": 2,
+  "topics": ["borsh", "vesting", "utf8"]
+}

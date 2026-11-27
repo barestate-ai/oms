@@ -1,0 +1,9 @@
+{
+  "id": "v0-packet-rebase",
+  "title": "Rebase v0 static indices while keeping packet size, stale signatures and message domains consistent",
+  "kind": "repair",
+  "difficulty": 5,
+  "difficulty_label": "d5",
+  "theme": "v0-alt-signatures",
+  "topics": ["v0-alt-signatures", "multi-module", "boundary-invariants"]
+}

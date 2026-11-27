@@ -1,4 +1,5 @@
 import { catalogThinking, type ContenderModel, type Rates } from './contenders.ts';
+import { BLEND_MODELS } from './blend-router.ts';
 
 /**
  * The Solana Bench cells, each a whole harness as shipped, run online on a subscription login:
@@ -33,22 +34,33 @@ export const SUBSCRIPTION_MODELS: Record<Harness, Record<string, ContenderModel>
     // OMS drives the installed Claude Code CLI as its model (provider `claude-code`, alias `opus` = Claude Opus 5.5).
     // Subscription serves the standard 200k window; 1M needs a `[1m]` opt-in the connector does not send.
     'opus-sub': sub('claude-code', 'opus', 200_000, 'anthropic-messages'),
+    'fable-sub': sub('claude-code', 'fable', 200_000, 'anthropic-messages'),
   },
   codex: { 'gpt-sol': sub('openai', 'gpt-6.1-sol', 272_000) },
-  'claude-code': { 'opus-sub': sub('anthropic', 'claude-opus-5-5', 1_000_000, 'anthropic-messages') },
+  'claude-code': {
+    'opus-sub': sub('anthropic', 'claude-opus-5-5', 1_000_000, 'anthropic-messages'),
+    'fable-sub': sub('anthropic', 'claude-fable-5-2', 1_000_000, 'anthropic-messages'),
+  },
 };
 
-export type OnlineLabel = 'web + Solana MCP';
+export type OnlineLabel = 'web + Solana MCP' | 'web: search + fetch';
 /** Every published cell is online: its own web search and fetch plus the official Solana MCP. */
 const ONLINE: Record<string, OnlineLabel> = {
   'codex-web:gpt-sol': 'web + Solana MCP',
   'oms3-web:gpt-sol': 'web + Solana MCP',
   'oms3-web:opus-sub': 'web + Solana MCP',
   'claude-code-web:opus-sub': 'web + Solana MCP',
+  'claude-code-web:fable-sub': 'web + Solana MCP',
 };
 
 /** `oms3-web:gpt-sol` -> harness `oms3`, model key `gpt-sol`, online label. Anything else is not a cell. */
-export function parseContender(id: string): { harness: Harness; modelKey: string; online: OnlineLabel } | null {
+export function parseContender(
+  id: string,
+): { harness: Harness; modelKey: string; online: OnlineLabel | undefined } | null {
+  if (id.startsWith('oms3-web:blend/') && Object.hasOwn(BLEND_MODELS, id.slice('oms3-web:blend/'.length)))
+    return { harness: 'oms3', modelKey: id.slice('oms3-web:'.length), online: 'web: search + fetch' };
+  if (id.startsWith('oms3:blend/') && Object.hasOwn(BLEND_MODELS, id.slice('oms3:blend/'.length)))
+    return { harness: 'oms3', modelKey: id.slice(6), online: undefined };
   const online = ONLINE[id];
   if (!online) return null;
   const at = id.indexOf(':');

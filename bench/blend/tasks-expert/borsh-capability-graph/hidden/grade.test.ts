@@ -1,0 +1,277 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { solve } from './index.ts';
+test('contract group 0', () => {
+  {
+    const input = JSON.parse('{"data":"e45632ea4f8d5ce500000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010000","size":10,"hash":"f18c1c6680def6ef9b388658fb0e3e4d57e08ec6072a682aa66d27d934d50b71","total":"0","order":[]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 1', () => {
+  {
+    const input = JSON.parse('{"data":"0b5ebe95a2e44c010000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010000","size":10,"hash":"f18c1c6680def6ef9b388658fb0e3e4d57e08ec6072a682aa66d27d934d50b71","total":"0","order":[]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 2', () => {
+  {
+    const input = JSON.parse('{"data":"e45632ea4f8d5ce5010000000100000061010000000000000000000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c0101000161010000000000000000000000000000000000","size":30,"hash":"fe6dacd5804a513c1ce2a7f84090261dd6dc6418a341466668ac513fdd41cdaf","total":"1","order":["a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 3', () => {
+  {
+    const input = JSON.parse('{"data":"0b5ebe95a2e44c0101000161010000000000000000000000000000000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c0101000161010000000000000000000000000000000000","size":30,"hash":"fe6dacd5804a513c1ce2a7f84090261dd6dc6418a341466668ac513fdd41cdaf","total":"1","order":["a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 4', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce502000000010000007a0100000000000000000000000100000061010000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c0102000161010000000000000000000000000000000000017a010000000000000000000000000000000000","size":50,"hash":"5ce2dbf2f35819c4ef2f70118cfcf83ffd42632849572f683ae86bde7a5ed765","total":"2","order":["a","z"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 5', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"0b5ebe95a2e44c010200017a0100000000000000000000000000000000000161010000000000000000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c0102000161010000000000000000000000000000000000017a010000000000000000000000000000000000","size":50,"hash":"5ce2dbf2f35819c4ef2f70118cfcf83ffd42632849572f683ae86bde7a5ed765","total":"2","order":["a","z"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 6', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce501000000010000006101000000000000000200000001000000610100000061"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010100016101000000000000000000000000000000020000000000","size":34,"hash":"6c71f523b3c9f4bb568c279d517e5d3abf36d0bd4b6e6f4a720f135f4324352c","total":"1","order":["a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 7', () => {
+  {
+    const input = JSON.parse('{"data":"0b5ebe95a2e44c010100016101000000000000000000000000000000020000000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010100016101000000000000000000000000000000020000000000","size":34,"hash":"6c71f523b3c9f4bb568c279d517e5d3abf36d0bd4b6e6f4a720f135f4324352c","total":"1","order":["a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 8', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce502000000010000007a01000000000000000100000001000000610100000061010000000000000001000000010000007a"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c01020001610100000000000000000000000000000001000100017a0100000000000000000000000000000001000000","size":54,"hash":"1f3d1e9ae9dca2dadf65ef2c2ca79d6f9fbbe05e32b9cd8dd4e654c7e0946a8a","total":"2","order":["a","z"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 9', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"0b5ebe95a2e44c010200017a010000000000000000000000000000000100010001610100000000000000000000000000000001000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c01020001610100000000000000000000000000000001000100017a0100000000000000000000000000000001000000","size":54,"hash":"1f3d1e9ae9dca2dadf65ef2c2ca79d6f9fbbe05e32b9cd8dd4e654c7e0946a8a","total":"2","order":["a","z"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 10', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce503000000010000007801000000000000000300000001000000610100000061010000006201000000620100000000000000000000000100000061010000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010300016101000000000000000000000000000000000001620100000000000000000000000000000000000178010000000000000000000000000000000300000000000100","size":76,"hash":"78ad9c6aa7e91d2d10ba75a1ca5e2451db90be248b59965ab5486399c2f857fc","total":"3","order":["a","b","x"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 11', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"0b5ebe95a2e44c010300017801000000000000000000000000000000030002000200010001620100000000000000000000000000000000000161010000000000000000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010300016101000000000000000000000000000000000001620100000000000000000000000000000000000178010000000000000000000000000000000300000000000100","size":76,"hash":"78ad9c6aa7e91d2d10ba75a1ca5e2451db90be248b59965ab5486399c2f857fc","total":"3","order":["a","b","x"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 12', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce50200000002000000c3a90100000000000000000000000100000065010000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010200016501000000000000000000000000000000000002c3a9010000000000000000000000000000000000","size":51,"hash":"6e2e1268d239ad1e67d9306f217735b4f7040f017fe21a8c391dfd751b2c3db0","total":"2","order":["e","é"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 13', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"0b5ebe95a2e44c01020002c3a90100000000000000000000000000000000000165010000000000000000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c010200016501000000000000000000000000000000000002c3a9010000000000000000000000000000000000","size":51,"hash":"6e2e1268d239ad1e67d9306f217735b4f7040f017fe21a8c391dfd751b2c3db0","total":"2","order":["e","é"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 14', () => {
+  {
+    const input = JSON.parse('{"data":"e45632ea4f8d5ce50100000004000000efbbbf61010000000000000000000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c01010004efbbbf61010000000000000000000000000000000000","size":33,"hash":"4cc63f036993c772d00536279553bc20b507a3eb5e875b816e72cc74b30b299d","total":"1","order":["﻿a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 15', () => {
+  {
+    const input = JSON.parse('{"data":"0b5ebe95a2e44c01010004efbbbf61010000000000000000000000000000000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c01010004efbbbf61010000000000000000000000000000000000","size":33,"hash":"4cc63f036993c772d00536279553bc20b507a3eb5e875b816e72cc74b30b299d","total":"1","order":["﻿a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 16', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce520000000020000006e30010000000000000000000000020000006e31010000000000000000000000020000006e32010000000000000000000000020000006e33010000000000000000000000020000006e34010000000000000000000000020000006e35010000000000000000000000020000006e36010000000000000000000000020000006e37010000000000000000000000020000006e38010000000000000000000000020000006e39010000000000000000000000030000006e3130010000000000000000000000030000006e3131010000000000000000000000030000006e3132010000000000000000000000030000006e3133010000000000000000000000030000006e3134010000000000000000000000030000006e3135010000000000000000000000030000006e3136010000000000000000000000030000006e3137010000000000000000000000030000006e3138010000000000000000000000030000006e3139010000000000000000000000030000006e3230010000000000000000000000030000006e3231010000000000000000000000030000006e3232010000000000000000000000030000006e3233010000000000000000000000030000006e3234010000000000000000000000030000006e3235010000000000000000000000030000006e3236010000000000000000000000030000006e3237010000000000000000000000030000006e3238010000000000000000000000030000006e3239010000000000000000000000030000006e3330010000000000000000000000030000006e3331010000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c012000026e30010000000000000000000000000000000000026e31010000000000000000000000000000000000036e3130010000000000000000000000000000000000036e3131010000000000000000000000000000000000036e3132010000000000000000000000000000000000036e3133010000000000000000000000000000000000036e3134010000000000000000000000000000000000036e3135010000000000000000000000000000000000036e3136010000000000000000000000000000000000036e3137010000000000000000000000000000000000036e3138010000000000000000000000000000000000036e3139010000000000000000000000000000000000026e32010000000000000000000000000000000000036e3230010000000000000000000000000000000000036e3231010000000000000000000000000000000000036e3232010000000000000000000000000000000000036e3233010000000000000000000000000000000000036e3234010000000000000000000000000000000000036e3235010000000000000000000000000000000000036e3236010000000000000000000000000000000000036e3237010000000000000000000000000000000000036e3238010000000000000000000000000000000000036e3239010000000000000000000000000000000000026e33010000000000000000000000000000000000036e3330010000000000000000000000000000000000036e3331010000000000000000000000000000000000026e34010000000000000000000000000000000000026e35010000000000000000000000000000000000026e36010000000000000000000000000000000000026e37010000000000000000000000000000000000026e38010000000000000000000000000000000000026e39010000000000000000000000000000000000","size":704,"hash":"bb30bf76d3423454e72604c8294dad0a41f1dde765544e8cc6fbf237cfa817d5","total":"32","order":["n0","n1","n10","n11","n12","n13","n14","n15","n16","n17","n18","n19","n2","n20","n21","n22","n23","n24","n25","n26","n27","n28","n29","n3","n30","n31","n4","n5","n6","n7","n8","n9"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 17', () => {
+  {
+    const input = JSON.parse('{"data":"0b5ebe95a2e44c0101000161000000000000000000000000100000000000"}');
+    const before = structuredClone(input);
+    assert.deepEqual(
+      solve(input),
+      JSON.parse(
+        '{"data":"0b5ebe95a2e44c0101000161000000000000000000000000100000000000","size":30,"hash":"6acb5dc2fb8a5f22a968f6826af5fccebea194797494d08e55dc42c5cf4c2ee5","total":"1267650600228229401496703205376","order":["a"]}',
+      ),
+    );
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 18', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"0b5ebe95a2e44c0102000161ffffffffffffffffffffffffffffffff00000162010000000000000000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(solve(input), JSON.parse('{"error":"invalid"}'));
+    assert.deepEqual(input, before);
+  }
+});
+test('contract group 19', () => {
+  {
+    const input = JSON.parse(
+      '{"data":"e45632ea4f8d5ce50200000001000000610100000000000000000000000100000061010000000000000000000000"}',
+    );
+    const before = structuredClone(input);
+    assert.deepEqual(solve(input), JSON.parse('{"error":"invalid"}'));
+    assert.deepEqual(input, before);
+  }
+});

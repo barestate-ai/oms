@@ -1,0 +1,7 @@
+{
+  "id": "spl-token-account",
+  "title": "Decode token accounts without option-offset drift",
+  "kind": "implement",
+  "difficulty": 2,
+  "topics": ["spl-token", "coption", "wrapped-sol"]
+}

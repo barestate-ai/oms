@@ -1,0 +1,9 @@
+# Upgrade recursive Borsh action enums with byte-bounded nested payloads
+
+Repair the existing implementation of `solve(input)` in this small offline Node 22 package. Preserve the API; edit the implementation modules, not tests. No packages, network, RPC, filesystem or clock are needed. Several modules contain interacting defects. The intended fix is compact; do not replace the package with a large framework.
+
+Input {data}; discriminator SHA256("account:ActionLogV1")[:8] or ActionLogV2. Then top-level u32 count<=64 and actions. V1 action tags: 0 transfer {to[32],amount u64}; 1 lock {until i64}; 2 memo {Borsh string u32 bytes<=128}; 3 batch {u32 child count, actions}. V2 tags: 2 transfer {amount u128,to[32]}; 0 lock {until i64,hard bool}; 1 memo {Option<string> u8 0/1 plus Borsh string if Some}; 3 batch {payloadByteLength u32,childCount u16,exact encoded child payload}. Depth starts 0 at top actions, max 4; max 64 action nodes TOTAL including batches, not per list. Validate strict booleans, options, UTF8 including BOM, exact batch byte bounds and no trailing bytes. Migrate transfers without loss, V1 locks hard=true, all empty memos canonicalize to None. Return {data,transferTotal,nodes} normalized to V2, where total sums ALL transfers recursively with checked u128 overflow. Zero top actions/batches legal.
+
+All byte strings are canonical lowercase even-length hex. Unsigned token/lamport amounts are canonical decimal strings in [0, 2^64-1]. Indices/epochs are nonnegative safe integers unless a narrower bound is stated. Reject malformed/out-of-range inputs with exactly `{error:"invalid"}`; never mutate input, even on failure. Successful BigInt values are returned as decimal strings by the existing entrypoint. Do not silently coerce numeric strings or repair malformed wire data.
+
+Run `node --test visible.test.ts`. Hidden tests also cover coupled invariants and boundaries; passing the public examples alone is not the contract.
