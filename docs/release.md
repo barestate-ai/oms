@@ -10,7 +10,7 @@ Everyday work goes through pull requests into `master`. `main` is the release br
 4. After approval it publishes the exact archive it tested with `npm publish --provenance` through npm trusted publishing (no npm token is stored), checks that the registry's tarball has the same SHA-256, creates the `v<version>` tag and GitHub Release with the tarball, its checksum and the changelog section as notes, and smoke-tests the npm package and `curl -fsSL https://barestate.xyz/oms/install | sh`.
 5. Bump the Homebrew formula (see Publication). The run summary lists the URL and SHA-256.
 
-A run for a version that is already on npm and already released does nothing, so a rerun or a merge that does not change the version is harmless. A run where npm has the version but the GitHub Release is missing only creates the release.
+A run for a version that is already on npm and already released does nothing, so a rerun or a merge that does not change the version is harmless. A run where npm has the version but the GitHub Release is missing only creates the release. npm can take several minutes to serve a new version, so the publish job waits up to 20 minutes for it; if that is not enough, re-run the failed job.
 
 ### One-time setup (owner)
 
