@@ -155,6 +155,72 @@ test('uninstall --purge refuses while oms is open in a folder', async (t) => {
   lease.release();
 });
 
+test('uninstall --purge checks live leases even when chat metadata is corrupt', async (t) => {
+  const f = installed(t);
+  const held = saveFolder(f.stateRoot, 'd'.repeat(40), f.home);
+  writeFileSync(join(held, 'folder.json'), 'broken');
+  const lease = acquireMutationLease(join(held, 'session.lease'));
+  try {
+    assert.equal(await runUninstall(['--purge', '--yes'], f.deps), 1);
+    assert.ok(existsSync(join(held, 'session.lease')));
+    assert.ok(existsSync(f.prefix));
+  } finally {
+    lease.release();
+  }
+});
+
+test('uninstall --purge refuses live registry, workspace and managed task leases', async (t) => {
+  for (const parts of [
+    ['registry.lease'],
+    ['workspaces', 'workspace', 'mutation.lease'],
+    ['workspaces', 'workspace', 'tasks', 'task', 'mutation.lease'],
+  ]) {
+    const f = installed(t);
+    const file = join(f.stateRoot, ...parts);
+    mkdirSync(join(f.stateRoot, ...parts.slice(0, -1)), { recursive: true, mode: 0o700 });
+    const lease = acquireMutationLease(file);
+    try {
+      assert.equal(await runUninstall(['--purge', '--yes'], f.deps), 1);
+      assert.ok(existsSync(file));
+      assert.ok(existsSync(f.prefix));
+    } finally {
+      lease.release();
+    }
+  }
+});
+
+test('uninstall --purge refuses malformed ownership records', async (t) => {
+  const f = installed(t);
+  writeFileSync(join(f.stateRoot, 'registry.lease'), 'broken', { mode: 0o600 });
+  assert.equal(await runUninstall(['--purge', '--yes'], f.deps), 1);
+  assert.match(f.run.err.join('\n'), /Cannot verify ownership/);
+  assert.ok(existsSync(f.prefix));
+});
+
+test('uninstall --purge rechecks ownership after confirmation and after package-manager uninstall', async (t) => {
+  for (const during of ['confirmation', 'uninstall']) {
+    const f = installed(t);
+    const file = join(f.stateRoot, 'registry.lease');
+    let lease: ReturnType<typeof acquireMutationLease> | undefined;
+    const confirm = async () => {
+      if (during === 'confirmation') lease = acquireMutationLease(file);
+      return true;
+    };
+    const exec = async () => {
+      lease = acquireMutationLease(file);
+      return 0;
+    };
+    const install = during === 'confirmation' ? f.deps.install : { kind: 'brew' as const };
+    try {
+      assert.equal(await runUninstall(['--purge'], { ...f.deps, install, confirm, exec }), 1);
+      assert.ok(existsSync(file));
+      assert.ok(existsSync(f.prefix));
+    } finally {
+      lease?.release();
+    }
+  }
+});
+
 test('uninstall hands npm and Homebrew copies to their own tool and keeps data if that fails', async (t) => {
   const npm = installed(t);
   npm.deps.install = { kind: 'npm', prefix: '/opt/homebrew' };
@@ -174,6 +240,21 @@ test('an installer copy under a custom OMS_HOME is recognised by its launcher', 
   assert.equal(await runUninstall(['--yes'], f.deps), 0);
   assert.deepEqual(f.ran, []);
   assert.equal(existsSync(f.prefix), false);
+});
+
+test('uninstall recognises an installer launcher with a shell-quoted apostrophe in its prefix', async (t) => {
+  const f = installed(t);
+  const root = join(f.home, "custom's state");
+  const prefix = join(root, 'cli');
+  const launcher = join(root, 'bin', 'oms');
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, 'bin'), { mode: 0o700 });
+  writeFileSync(launcher, `exec '/usr/bin/node' '${f.home}/custom'\\''s state/cli/bin/oms' "$@"\n`);
+  assert.equal(await runUninstall(['--yes'], { ...f.deps, install: { kind: 'npm', prefix } }), 0);
+  assert.deepEqual(f.ran, []);
+  assert.equal(existsSync(launcher), false);
+  assert.equal(existsSync(prefix), false);
+  assert.ok(existsSync(f.stateRoot));
 });
 
 test('uninstall only advises for npx, project and source copies', async (t) => {

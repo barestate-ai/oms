@@ -11,6 +11,7 @@ import { createHelpers } from './helpers/index.ts';
 import { recoverSession } from './recovery.ts';
 import { createCoreApi } from './session-api.ts';
 import { assembleSession, startSession } from './session-assembly.ts';
+import type { SessionLifecycle } from './session-lifecycle.ts';
 import {
   claimRuntime,
   openConversation,
@@ -55,14 +56,15 @@ async function acquireChatLease(root: SessionRoot): Promise<MutationLease> {
 }
 
 export async function createChatSession(options: ChatSessionOptions): Promise<ChatSession> {
-  const { folder, stateRoot } = options;
+  const { folder, stateRoot, startupSignal } = options;
+  startupSignal?.throwIfAborted();
   if (backendFor(options.environment).requiresDocker) throw new Error(DOCKER_CHAT_REFUSAL);
   const root = chatRoot(folder, stateRoot);
   // Seatbelt is the protection and needs no warning; the missing sandbox elsewhere is told once.
   if (backendFor(options.environment).notice()?.key !== 'seatbelt') warnAboutBackend(options.environment, stateRoot);
   const trust: HostTrust = { yolo: options.yolo === true, allowed: new Set() };
   options = { ...options, hostTrust: trust };
-  return startSession(await acquireChatLease(root), async (life) => {
+  const start = async (life: SessionLifecycle): Promise<ChatSession> => {
     const { execution, processes } = claimRuntime(options, root, life);
     // Only a repository that already exists has hooks and config worth guarding; a new one the user asked for must work.
     const protectedFiles = PROTECTED_GIT_FILES.filter((file) => existsSync(join(root.codeRoot, file)));
@@ -108,7 +110,8 @@ export async function createChatSession(options: ChatSessionOptions): Promise<Ch
         },
       },
     };
-  });
+  };
+  return startSession(await acquireChatLease(root), start, startupSignal);
 }
 
 /** The newest saved conversation of a folder, with the budget journal that goes with it. */
@@ -132,15 +135,31 @@ export function savedBudgetUsable(
   executionMode: ExecutionMode | undefined,
   now = Date.now(),
 ): boolean {
-  if (!existsSync(journal)) return false;
+  const saved = inspectSavedChatBudget(journal, executionMode, now);
+  return (
+    !!saved?.usable &&
+    saved.caps.tokens === caps.tokens &&
+    saved.caps.spendMicroUsd === caps.spendMicroUsd &&
+    saved.caps.wallClockMs === caps.wallClockMs
+  );
+}
+
+export function inspectSavedChatBudget(
+  journal: string,
+  executionMode: ExecutionMode | undefined,
+  now = Date.now(),
+): { caps: BudgetCaps; usable: boolean } | undefined {
   try {
     assertPrivate(journal, false);
     const contents = readFileSync(journal, 'utf8');
-    if (!contents.endsWith('\n') || contents.length === 0) return false;
+    if (!contents.endsWith('\n')) return undefined;
     const events = contents
       .slice(0, -1)
       .split('\n')
       .map((line) => JSON.parse(line)) as BudgetLedgerEvent[];
+    const first = events[0];
+    if (first?.type !== 'budget_open') return undefined;
+    const { caps } = first;
     const ledger = createBudgetLedger({
       caps,
       clock: () => now,
@@ -151,10 +170,11 @@ export function savedBudgetUsable(
     });
     const snapshot = ledger.snapshot();
     // Resuming charges an uncertain or interrupted request at its reservation, so an interactive chat goes on.
-    if (executionMode === 'interactive') return true;
-    if (snapshot.accounting !== 'known' || snapshot.pendingDispatchIds.length !== 0) return false;
-    return !snapshot.admissionBlocked;
+    const usable =
+      executionMode === 'interactive' ||
+      (snapshot.accounting === 'known' && snapshot.pendingDispatchIds.length === 0 && !snapshot.admissionBlocked);
+    return { caps, usable };
   } catch {
-    return false;
+    return undefined;
   }
 }

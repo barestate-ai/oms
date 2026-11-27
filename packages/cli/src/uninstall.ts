@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { inspectMutationLease, omsCommand } from '@oms/engine';
-import { savedFolders, shortPath } from './sessions.ts';
+import { shortPath } from './sessions.ts';
 import type { Install } from './update.ts';
 
 const PACKAGE = '@barestate/oms';
@@ -28,12 +28,71 @@ const read = (path: string): string => {
   }
 };
 
+const shellQuote = (path: string): string => "'" + path.replaceAll("'", "'\\''") + "'";
+
+function hasInstallerLauncher(root: string): boolean {
+  const target = shellQuote(join(root, 'cli', 'bin', 'oms'));
+  return read(join(root, 'bin', 'oms'))
+    .split('\n')
+    .some((line) => line.startsWith('exec ') && line.endsWith(` ${target} "$@"`));
+}
+
 /** Where install.sh put this copy, recognised by its launcher so a custom OMS_HOME counts too. */
 function installerHome(install: Install): string | undefined {
   if (install.kind === 'installer') return dirname(install.prefix);
   if (install.kind !== 'npm' || basename(install.prefix) !== 'cli') return undefined;
   const root = dirname(install.prefix);
-  return read(join(root, 'bin', 'oms')).includes(`${install.prefix}/bin/oms`) ? root : undefined;
+  return hasInstallerLauncher(root) ? root : undefined;
+}
+
+const statIfPresent = (path: string) => lstatSync(path, { throwIfNoEntry: false });
+
+function privateDirExists(path: string): boolean {
+  const info = statIfPresent(path);
+  if (!info) return false;
+  if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
+    throw new Error('State directory is not private');
+  return true;
+}
+
+function stateDirs(parent: string): string[] {
+  if (!privateDirExists(parent)) return [];
+  return readdirSync(parent).map((name) => {
+    const path = join(parent, name);
+    if (!privateDirExists(path)) throw new Error('State directory disappeared');
+    return path;
+  });
+}
+
+function canPurge(stateRoot: string, home: string, error: UninstallDeps['error']): boolean {
+  try {
+    if (!privateDirExists(stateRoot)) return true;
+    if (realpathSync(stateRoot) !== resolve(stateRoot)) throw new Error('State directory is not canonical');
+
+    const leases = [
+      join(stateRoot, 'registry.lease'),
+      ...stateDirs(join(stateRoot, 'folders')).map((dir) => join(dir, 'session.lease')),
+      ...stateDirs(join(stateRoot, 'workspaces')).flatMap((dir) => [
+        join(dir, 'mutation.lease'),
+        ...stateDirs(join(dir, 'tasks')).map((task) => join(task, 'mutation.lease')),
+      ]),
+    ];
+    for (const lease of leases) {
+      if (statIfPresent(`${lease}.recovery`)) throw new Error('Recovery lease exists');
+      const stat = statIfPresent(lease);
+      if (stat && !stat.isFile()) throw new Error('Invalid lease file');
+      const { status } = inspectMutationLease(lease);
+      if (status === 'live') {
+        error(`oms: OMS is open in ${shortPath(dirname(lease), home)}. Close it first.`);
+        return false;
+      }
+      if (status !== 'absent') throw new Error('Unresolved lease');
+    }
+    return true;
+  } catch {
+    error('oms: Cannot verify ownership of saved state. Close OMS and recover any held sessions before purging.');
+    return false;
+  }
 }
 
 export async function runUninstall(args: string[], deps: UninstallDeps): Promise<number> {
@@ -51,7 +110,7 @@ export async function runUninstall(args: string[], deps: UninstallDeps): Promise
   let command: { file: string; args: string[] } | undefined;
   if (root) {
     paths.push(join(root, 'cli'));
-    if (read(join(root, 'bin', 'oms')).includes(join(root, 'cli'))) paths.push(join(root, 'bin', 'oms'));
+    if (hasInstallerLauncher(root)) paths.push(join(root, 'bin', 'oms'));
     if (existsSync(join(root, 'node', 'bin', 'node'))) paths.push(join(root, 'node'));
   } else if (install.kind === 'npm') {
     command = { file: deps.npm, args: ['uninstall', '-g', '--prefix', install.prefix, PACKAGE] };
@@ -68,15 +127,7 @@ export async function runUninstall(args: string[], deps: UninstallDeps): Promise
     );
     return 1;
   }
-  if (purge) {
-    const open = savedFolders(stateRoot).find(
-      (folder) => inspectMutationLease(join(folder.state, 'session.lease')).status === 'live',
-    );
-    if (open) {
-      error(`oms: OMS is open in ${shortPath(open.path, home)}. Close it first.`);
-      return 1;
-    }
-  }
+  if (purge && !canPurge(stateRoot, home, error)) return 1;
 
   log('This removes:');
   for (const path of paths) log(`  ${shortPath(path, home)}`);
@@ -95,15 +146,23 @@ export async function runUninstall(args: string[], deps: UninstallDeps): Promise
     }
   }
 
+  if (purge && !canPurge(stateRoot, home, error)) return 1;
   if (command && (await deps.exec(command.file, command.args)) !== 0) {
     error(`oms: the uninstall failed, so nothing else was removed. Run: ${[command.file, ...command.args].join(' ')}`);
     return 1;
   }
   for (const path of paths) rmSync(path, { recursive: true, force: true });
-  if (purge) rmSync(stateRoot, { recursive: true, force: true });
+  if (purge) {
+    if (!canPurge(stateRoot, home, error)) return 1;
+    rmSync(stateRoot, { recursive: true, force: true });
+  }
   log('Removed.');
   if (root) {
-    const lines = SHELL_FILES.filter((file) => read(join(home, file)).includes(join(root, 'bin')));
+    const bin = join(root, 'bin');
+    const lines = SHELL_FILES.filter((file) => {
+      const content = read(join(home, file));
+      return content.includes(bin) || content.includes(shellQuote(bin));
+    });
     if (lines.length)
       log(
         `Delete the PATH line for ${shortPath(join(root, 'bin'), home)} from: ${lines.map((file) => `~/${file}`).join(', ')}`,

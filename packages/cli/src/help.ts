@@ -18,8 +18,9 @@ export const COMMANDS: Record<string, { usage: string[]; about: string }> = {
     ],
     about:
       'Run one prompt in the current folder and print the reply; progress goes to stderr. `-` adds standard input\n' +
-      'to the prompt. Each run is a new conversation unless you pass --continue. Nobody can approve commands, so\n' +
-      'any command that would need approval is refused unless you pass --yolo. Connectors are not loaded.',
+      'to the prompt. Each run is a new conversation unless you pass --continue, which keeps the saved budget caps.\n' +
+      'Nobody can approve commands, so any command that would need approval is refused unless you pass --yolo.\n' +
+      'Connectors are not loaded.',
   },
   doctor: {
     usage: ['doctor [--json] [--programs] [--rpc <url>] [--surfpool-binary <path>] [--install]'],

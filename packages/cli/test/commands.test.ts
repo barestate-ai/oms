@@ -40,6 +40,16 @@ test('oms help <command> and launch flags with --help show help', (t) => {
   assert.match(launch.stdout, /Solana coding agent/);
 });
 
+test('oms help review prints the same usage and disclaimer as oms review --help', (t) => {
+  const { oms } = sandbox(t);
+  const direct = oms(['review', '--help']);
+  const alias = oms(['help', 'review']);
+  assert.equal(alias.status, 0);
+  assert.equal(alias.stdout, direct.stdout);
+  assert.equal(alias.stderr, direct.stderr);
+  assert.match(alias.stderr, /Not a professional audit/);
+});
+
 test('a mistyped command names the closest one', (t) => {
   assert.equal(suggestCommand('updat'), 'update');
   assert.equal(suggestCommand('docter'), 'doctor');
@@ -86,6 +96,25 @@ test('oms error fails clearly on an unknown code and on bad input', (t) => {
     assert.equal(result.status, 2, args.join(' '));
     assert.match(result.stderr, /Usage: oms error/);
   }
+});
+
+test('oms error keeps built-in and local matches when neighboring IDLs are malformed', (t) => {
+  const { home, oms } = sandbox(t);
+  const idl = join(home, 'target', 'idl');
+  mkdirSync(idl, { recursive: true });
+  writeFileSync(join(idl, 'bad-errors.json'), JSON.stringify({ metadata: { name: 'bad' }, errors: {} }));
+  writeFileSync(join(idl, 'bad-name.json'), JSON.stringify({ metadata: { name: 123 }, errors: [] }));
+  writeFileSync(
+    join(idl, 'vault.json'),
+    JSON.stringify({ metadata: { name: 'vault' }, errors: [null, { code: 3012, name: 'VaultError' }] }),
+  );
+  const all = oms(['error', '3012']);
+  assert.equal(all.status, 0, all.stderr);
+  assert.match(all.stdout, /AccountNotInitialized/);
+  assert.match(all.stdout, /vault: VaultError/);
+  const filtered = oms(['error', '3012', 'vault']);
+  assert.equal(filtered.status, 0, filtered.stderr);
+  assert.match(filtered.stdout, /vault: VaultError/);
 });
 
 function saveFolder(home: string, key: string, path: string, chats: string[], when: Date): string {

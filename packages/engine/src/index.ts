@@ -34,6 +34,7 @@ export {
   ChatBusyError,
   createChatSession,
   DOCKER_CHAT_REFUSAL,
+  inspectSavedChatBudget,
   latestChatSession,
   savedBudgetUsable,
 } from './runtime/chat-session.ts';

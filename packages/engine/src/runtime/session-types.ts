@@ -120,6 +120,8 @@ export interface ChatSession extends SessionCore {
 }
 export interface ChatSessionOptions extends CommonSessionOptions {
   folder: ChatFolder;
+  /** Cancels runtime startup, before ownership passes to the caller. */
+  startupSignal?: AbortSignal;
   /** Where OMS keeps this folder's state: `<stateRoot>/folders/<key>`. */
   stateRoot: string;
   /** Start with YOLO on. */

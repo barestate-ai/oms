@@ -21,14 +21,17 @@ export function omsHome(): string {
 export async function checkLocalPrerequisites(
   environment: HarnessEnvironment,
   write: (text: string) => void = (text) => void process.stdout.write(text),
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   try {
     accessSync(environment.binary, constants.X_OK);
   } catch {
     write(`Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool} (local Solana network, one-time)…\n`);
     try {
-      await installPinnedSurfpool(environment.binary);
+      await installPinnedSurfpool(environment.binary, fetch, signal);
     } catch (error) {
+      signal?.throwIfAborted();
       throw new Error(
         `Couldn't install Surfpool: ${error instanceof Error ? error.message : 'unknown error'} · check your connection and retry, or run \`${omsCommand()} doctor\``,
       );
