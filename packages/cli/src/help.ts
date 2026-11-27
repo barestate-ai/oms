@@ -11,6 +11,16 @@ export const COMMANDS: Record<string, { usage: string[]; about: string }> = {
       'Open the chat in the current folder. Plain `oms` does the same, and takes the same options.\n' +
       "It resumes this folder's newest conversation; --new starts a separate one and keeps the old ones.",
   },
+  exec: {
+    usage: [
+      'exec [--continue] [--json] [--provider <provider> --model <model>] [--spend-usd <n>] [--tokens <n>]',
+      '    [--minutes <n>] [--output-tokens <n>] [--bounded] [--no-web] [--yolo] <prompt> [-]',
+    ],
+    about:
+      'Run one prompt in the current folder and print the reply; progress goes to stderr. `-` adds standard input\n' +
+      'to the prompt. Each run is a new conversation unless you pass --continue. Nobody can approve commands, so\n' +
+      'any command that would need approval is refused unless you pass --yolo. Connectors are not loaded.',
+  },
   doctor: {
     usage: ['doctor [--json] [--programs] [--rpc <url>] [--surfpool-binary <path>] [--install]'],
     about: 'Check local prerequisites. --install downloads the pinned Surfpool and checks its SHA-256.',

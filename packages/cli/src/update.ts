@@ -138,9 +138,34 @@ function usage(deps: UpdateDeps, problem: string): number {
   return 2;
 }
 
-async function fetchLatest(): Promise<string> {
+/**
+ * Off unless OMS_UPDATE_CHECK=1: OMS does not look for releases by itself. When on, the lookup starts now and the returned
+ * function says what to print later. It never waits: a lookup that has not answered by then is dropped.
+ */
+export function updateNotice(
+  current: string,
+  env: NodeJS.ProcessEnv = process.env,
+  latest: (signal: AbortSignal) => Promise<string> = fetchLatest,
+): () => string | undefined {
+  if (env.OMS_UPDATE_CHECK !== '1') return () => undefined;
+  const lookup = new AbortController();
+  let found: string | undefined;
+  latest(lookup.signal).then(
+    (version) => (found = version),
+    () => {},
+  );
+  return () => {
+    lookup.abort();
+    return found && isNewer(found, current)
+      ? `oms ${found} is available (you have ${current}). Run: oms update`
+      : undefined;
+  };
+}
+
+async function fetchLatest(cancel?: AbortSignal): Promise<string> {
+  const timeout = AbortSignal.timeout(8000);
   const response = await fetch(LATEST_URL, {
-    signal: AbortSignal.timeout(8000),
+    signal: cancel ? AbortSignal.any([timeout, cancel]) : timeout,
     headers: { accept: 'application/json' },
   });
   if (!response.ok) throw new Error(`registry answered ${response.status}`);

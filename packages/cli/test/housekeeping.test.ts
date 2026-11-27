@@ -193,6 +193,8 @@ test('config shows where things are and never what the secrets say', (t) => {
   assert.equal(text.status, 0, text.stderr);
   assert.match(text.stdout, /State folder +~\/\.oms/);
   assert.match(text.stdout, /Web search +off/);
+  assert.match(text.stdout, /Update check +off/);
+  assert.match(oms(['config'], { OMS_UPDATE_CHECK: '1' }).stdout, /Update check +on/);
   assert.match(text.stdout, /Model sign-ins +saved/);
   assert.doesNotMatch(text.stdout, /SECRET/);
   const json = oms(['config', '--json']);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { detectInstall, installCommand, isNewer, runUpdate, type UpdateDeps } from '../src/update.ts';
+import { detectInstall, installCommand, isNewer, runUpdate, updateNotice, type UpdateDeps } from '../src/update.ts';
 
 const run = promisify(execFile);
 const HOME = '/home/ada';
@@ -188,4 +188,35 @@ test('the command is wired into the launcher and the help', async () => {
   );
   const version = await run(process.execPath, [bin, 'version']);
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+$/);
+});
+
+test('OMS looks for a release only when OMS_UPDATE_CHECK=1', async () => {
+  for (const env of [{}, { OMS_UPDATE_CHECK: '0' }, { OMS_UPDATE_CHECK: 'yes' }]) {
+    const notice = updateNotice('0.1.3', env, async () => assert.fail('no lookup'));
+    assert.equal(notice(), undefined);
+  }
+});
+
+test('the opt-in notice names a newer release, and stays silent otherwise or when the answer is late', async () => {
+  const on = { OMS_UPDATE_CHECK: '1' };
+  const settled = async (latest: () => Promise<string>) => {
+    const notice = updateNotice('0.1.3', on, latest);
+    await new Promise((resolve) => setImmediate(resolve));
+    return notice();
+  };
+  assert.match((await settled(async () => '0.1.4'))!, /0\.1\.4 is available.*oms update/);
+  assert.equal(await settled(async () => '0.1.3'), undefined);
+  assert.equal(
+    await settled(async () => {
+      throw new Error('offline');
+    }),
+    undefined,
+  );
+  let cancelled: AbortSignal | undefined;
+  const late = updateNotice('0.1.3', on, (signal) => {
+    cancelled = signal;
+    return new Promise<string>(() => {});
+  });
+  assert.equal(late(), undefined);
+  assert.equal(cancelled!.aborted, true);
 });
