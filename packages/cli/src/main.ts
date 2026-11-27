@@ -7,8 +7,11 @@ import { configuredBackend, defaultHarnessEnvironment, omsCommand } from '@oms/e
 import { runHarnessCommand } from './harness.ts';
 import { toolchainCommand } from './toolchain.ts';
 import { runReviewCommand } from './review.ts';
-import { startLocal } from '../../../scripts/start-local.ts';
+import { omsHome, startLocal } from '../../../scripts/start-local.ts';
 import { runUpdate, updateDeps } from './update.ts';
+import { COMMANDS, commandHelp, suggestCommand, wantsHelp } from './help.ts';
+import { runErrorCommand } from './error-command.ts';
+import { runSessionsCommand } from './sessions.ts';
 
 const installRoot = new URL('../../../', import.meta.url);
 // The packed archive's root package.json carries the release version.
@@ -19,6 +22,8 @@ const HELP = `oms · Solana coding agent
   ${omsCommand()}                 Start in the current folder (any folder works)
   ${omsCommand()} doctor          Check your setup
   ${omsCommand()} review [path]   Offline security review of a Solana program
+  ${omsCommand()} error <code>    Name a Solana program error
+  ${omsCommand()} sessions        Folders with saved conversations
   ${omsCommand()} update          Update to the latest release (--check to only look)
   ${omsCommand()} --version       Print the version
 
@@ -33,7 +38,7 @@ Inside oms
   /model     Pick a model
   /help      Commands and keys
 
-More: ${omsCommand()} help advanced
+More: ${omsCommand()} <command> --help · ${omsCommand()} help advanced
 `;
 
 const ADVANCED_HELP = `oms advanced commands
@@ -55,6 +60,8 @@ Usage:
 Commands:
   update      Install the latest release (--check only reports; --version <x.y.z> picks one)
   review      Run a local offline Phase A security review
+  error       Name a custom program error from the built-in tables and local IDLs
+  sessions    List folders with saved conversations
   doctor      Check local prerequisites; does not launch an agent
   workspace   Initialize local repository identity and ignored OMS storage
   task        Create a managed worktree and pin explicit requirements
@@ -107,8 +114,15 @@ async function doctor(args: string[]): Promise<number> {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
+const log = (line: string): void => console.log(line);
+const fail = (line: string): void => console.error(line);
 try {
-  if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+  // `review` prints its own help, with its disclaimer.
+  if (cmd !== undefined && cmd !== 'review' && Object.hasOwn(COMMANDS, cmd) && wantsHelp(rest)) {
+    console.log(commandHelp(cmd));
+  } else if (cmd?.startsWith('--') && wantsHelp([cmd, ...rest])) {
+    console.log(HELP);
+  } else if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
     console.log(version());
   } else if (cmd === 'update') {
     process.exitCode = await runUpdate(rest, updateDeps(fileURLToPath(installRoot), version()));
@@ -118,16 +132,24 @@ try {
     process.exitCode = await toolchainCommand(rest);
   } else if (cmd === 'review') {
     process.exitCode = await runReviewCommand(rest);
+  } else if (cmd === 'error') {
+    process.exitCode = runErrorCommand(rest, process.cwd(), log, fail);
+  } else if (cmd === 'sessions') {
+    process.exitCode = runSessionsCommand(rest, omsHome(), log, fail);
   } else if (cmd === 'doctor') {
     process.exitCode = await doctor(rest);
   } else if (cmd === 'workspace' || cmd === 'task' || cmd === 'run') {
     process.exitCode = await runHarnessCommand(cmd, rest);
   } else if (cmd === 'help' && rest[0] === 'advanced') {
     console.log(ADVANCED_HELP);
+  } else if (cmd === 'help' && rest[0] && Object.hasOwn(COMMANDS, rest[0])) {
+    console.log(commandHelp(rest[0]));
   } else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
     console.log(HELP);
   } else {
-    console.error(`oms: unknown command "${cmd}" · see ${omsCommand()} --help`);
+    const guess = suggestCommand(cmd);
+    const hint = guess ? ` · did you mean "${omsCommand()} ${guess}"?` : '';
+    console.error(`oms: unknown command "${cmd}"${hint} · see ${omsCommand()} --help`);
     process.exitCode = 2;
   }
 } catch (error) {
