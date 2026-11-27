@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -130,6 +139,19 @@ test('uninstall --purge also deletes the data, and says so before asking', async
   assert.equal(await runUninstall(['--purge'], f.deps), 0);
   assert.equal(existsSync(f.stateRoot), false);
   assert.match(f.run.out.join('\n'), /conversations.*sign-ins/i);
+});
+
+test('uninstall --purge accepts a symlinked home but not a symlinked state directory', async (t) => {
+  const f = installed(t);
+  const home = join(f.home, 'home-alias');
+  symlinkSync(f.home, home, 'dir');
+  const stateRoot = join(home, '.oms');
+  const stateAlias = join(f.home, 'state-alias');
+  symlinkSync(f.stateRoot, stateAlias, 'dir');
+  assert.equal(await runUninstall(['--purge', '--yes'], { ...f.deps, stateRoot: stateAlias }), 1);
+  assert.ok(existsSync(f.stateRoot));
+  assert.equal(await runUninstall(['--purge', '--yes'], { ...f.deps, home, stateRoot }), 0);
+  assert.equal(existsSync(f.stateRoot), false);
 });
 
 test('uninstall does nothing when declined, unattended without --yes, or given a bad option', async (t) => {

@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { inspectMutationLease, omsCommand } from '@oms/engine';
 import { shortPath } from './sessions.ts';
 import type { Install } from './update.ts';
@@ -67,7 +67,6 @@ function stateDirs(parent: string): string[] {
 function canPurge(stateRoot: string, home: string, error: UninstallDeps['error']): boolean {
   try {
     if (!privateDirExists(stateRoot)) return true;
-    if (realpathSync(stateRoot) !== resolve(stateRoot)) throw new Error('State directory is not canonical');
 
     const leases = [
       join(stateRoot, 'registry.lease'),
