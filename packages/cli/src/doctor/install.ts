@@ -52,15 +52,19 @@ export async function installSurfpool(
   archive: SurfpoolArchive,
   target: string,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<void> {
   let bytes: Buffer;
   try {
-    const response = await fetchImpl(archive.url);
+    signal?.throwIfAborted();
+    const response = await fetchImpl(archive.url, { signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     bytes = Buffer.from(await response.arrayBuffer());
   } catch (error) {
+    signal?.throwIfAborted();
     throw new Error(`Could not download ${archive.url}: ${error instanceof Error ? error.message : 'request failed'}`);
   }
+  signal?.throwIfAborted();
   const actual = createHash('sha256').update(bytes).digest('hex');
   if (actual !== archive.sha256) {
     throw new Error(
@@ -70,9 +74,11 @@ export async function installSurfpool(
   const work = mkdtempSync(join(tmpdir(), 'oms-surfpool-'));
   try {
     writeFileSync(join(work, 'surfpool.tar.gz'), bytes);
-    await run('tar', ['-xzf', 'surfpool.tar.gz'], { cwd: work }).catch(() => {
+    await run('tar', ['-xzf', 'surfpool.tar.gz'], { cwd: work, signal }).catch(() => {
+      signal?.throwIfAborted();
       throw new Error('Could not extract the archive (is `tar` installed?)');
     });
+    signal?.throwIfAborted();
     const found = findFile(work, 'surfpool');
     if (!found) throw new Error('The archive contains no `surfpool` executable');
     mkdirSync(dirname(target), { recursive: true });
@@ -103,13 +109,18 @@ function findFile(directory: string, name: string): string | undefined {
 }
 
 /** Install the Surfpool build pinned in the runtime manifest for this platform at `target`. */
-export async function installPinnedSurfpool(target: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function installPinnedSurfpool(
+  target: string,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
   const manifest = JSON.parse(readFileSync(new URL('../../../engine/runtime-manifest.json', import.meta.url), 'utf8'));
   const archive: SurfpoolArchive | undefined = manifest.surfpoolArchives[`${process.platform}-${process.arch}`];
   if (!archive)
     throw new Error(`No Surfpool ${manifest.surfpoolVersion} build for ${process.platform}-${process.arch}`);
   if (target === join(homedir(), '.oms', 'tools', `surfpool-${manifest.surfpoolVersion}`, 'surfpool'))
     privateDirectory(join(homedir(), '.oms'));
-  await installSurfpool(archive, target, fetchImpl);
+  await installSurfpool(archive, target, fetchImpl, signal);
   return manifest.surfpoolVersion;
 }

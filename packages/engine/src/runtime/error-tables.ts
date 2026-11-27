@@ -69,6 +69,10 @@ export interface ErrorDecoding {
 
 const idlName = (idl: Idl) => idl.metadata?.name ?? idl.name ?? 'program';
 const idlAddress = (idl: Idl) => idl.address ?? idl.metadata?.address;
+const usableErrorIdl = (idl: Idl) =>
+  typeof idlName(idl) === 'string' &&
+  (idlAddress(idl) === undefined || typeof idlAddress(idl) === 'string') &&
+  (idl.errors === undefined || Array.isArray(idl.errors));
 
 /** Parse `3012`, `0xbc4` or `custom program error: 0xbc4`; undefined when it is not one non-negative integer. */
 export function parseErrorCode(text: string): number | undefined {
@@ -91,9 +95,9 @@ export function decodeProgramError(
         (source) => source.id === wanted || source.aliases.includes(lower!) || source.name.toLowerCase() === lower,
       )
     : SOURCES;
-  const owned = wanted
-    ? idls.filter((idl) => idlAddress(idl) === wanted || idlName(idl).toLowerCase() === lower)
-    : [...idls];
+  const owned = idls.filter(
+    (idl) => usableErrorIdl(idl) && (!wanted || idlAddress(idl) === wanted || idlName(idl).toLowerCase() === lower),
+  );
   const matches: ErrorMatch[] = [];
   const notes: string[] = [];
   for (const source of builtIn) {
@@ -101,7 +105,12 @@ export function decodeProgramError(
     if (row) matches.push({ program: source.name, name: row[1], message: row[2], source: 'built-in table' });
   }
   for (const idl of owned) {
-    const row = idl.errors?.find((entry) => entry.code === code);
+    const row = idl.errors?.find(
+      (entry) =>
+        entry?.code === code &&
+        typeof entry.name === 'string' &&
+        (entry.msg === undefined || typeof entry.msg === 'string'),
+    );
     if (row) matches.push({ program: idlName(idl), name: row.name, message: row.msg ?? '', source: 'local IDL' });
   }
   // An Anchor program also raises the framework's own codes.

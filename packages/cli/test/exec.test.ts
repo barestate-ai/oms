@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import { createChatSession, type ChatSession, type ChatSessionOptions } from '@oms/engine';
 import { createChatFixture } from '../../engine/test-support/chat-fixture.ts';
@@ -64,6 +67,47 @@ test('exec --continue resumes the folder conversation; without it each run is se
   const resumed = await run(['--continue', 'again']);
   assert.equal(resumed.sessionId, first.sessionId);
   assert.notEqual((await run(['fresh'])).sessionId, first.sessionId);
+});
+
+test('exec --continue inherits custom caps and rejects explicit mismatches before starting', live, async (t) => {
+  const f = await setup(t);
+  f.faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two'), fauxAssistantMessage('three')]);
+  assert.equal(await runExec(['--tokens', '100000', '--spend-usd', '1', '--minutes', '2', 'hello'], f.deps), 0);
+  const caps = f.opened[0]!.caps;
+  for (const [flag, value] of [
+    ['--tokens', '200000'],
+    ['--spend-usd', '2'],
+    ['--minutes', '3'],
+  ]) {
+    assert.equal(await runExec(['--continue', flag!, value!, 'hello'], f.deps), 2);
+    assert.ok(f.notes.at(-1)?.includes(`${flag} does not match the saved budget`));
+  }
+  assert.equal(f.opened.length, 1);
+  for (const extra of [[], ['--spend-usd', '1']]) {
+    assert.equal(await runExec(['--continue', ...extra, 'again'], f.deps), 0);
+    assert.deepEqual(f.opened.at(-1)?.caps, caps);
+    assert.ok(f.opened.at(-1)?.sessionId);
+  }
+});
+
+test('exec --continue keeps bounded conversations bounded and refuses expired ones', live, async (t) => {
+  for (const expired of [false, true]) {
+    const f = await setup(t);
+    const start = f.deps.start!;
+    const startedAt = Date.now() - (expired ? 180_000 : 0);
+    f.deps.start = (options) => start({ ...options, clock: () => startedAt });
+    f.faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')]);
+    assert.equal(await runExec(['--bounded', '--minutes', '2', 'hello'], f.deps), 0);
+    f.deps.start = start;
+    assert.equal(await runExec(['--continue', 'again'], f.deps), expired ? 1 : 0, f.notes.join('\n'));
+    if (expired) {
+      assert.equal(f.opened.length, 1);
+      assert.match(f.notes.at(-1)!, /cannot admit more work/);
+    } else {
+      assert.equal(f.opened[1]!.executionMode, 'bounded');
+      assert.equal(f.opened[1]!.caps.wallClockMs, 120_000);
+    }
+  }
 });
 
 test('exec - reads the rest of the prompt from standard input', live, async (t) => {
@@ -149,4 +193,95 @@ test('exec rejects a missing prompt, unknown options and half a model choice bef
     assert.equal(await runExec(args, f.deps), 2, args.join(' '));
   }
   assert.match(f.notes.join('\n'), /Usage:[\s\S]*oms exec/);
+});
+
+test('exec exits 130 on SIGINT even while stdin stays open', { timeout: 20_000 }, async (t) => {
+  const f = await setup(t);
+  const main = new URL('../src/main.ts', import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `process.argv = [process.execPath, 'oms', 'exec', '-'];
+       process.stdin.on('newListener', (name) => {
+         if (name === 'readable') process.stderr.write('reading stdin\\n');
+       });
+       await import(${JSON.stringify(main)});`,
+    ],
+    { cwd: f.project, env: { PATH: process.env.PATH, HOME: f.base } },
+  );
+  t.after(() => void child.kill('SIGKILL'));
+  const closed = once(child, 'close', { signal: AbortSignal.timeout(15_000) });
+  let stderr = '';
+  let interrupted = false;
+  child.stderr.setEncoding('utf8').on('data', (line: string) => {
+    stderr += line;
+    if (!interrupted && stderr.includes('reading stdin')) {
+      interrupted = child.kill('SIGINT');
+    }
+  });
+  assert.deepEqual(await closed, [130, null], stderr);
+  assert.match(stderr, /oms: interrupted/);
+  assert.equal(existsSync(join(f.base, '.oms')), false);
+});
+
+test('exec cancellation during prerequisites stops before opening the chat or starting Surfpool', async (t) => {
+  const f = await setup(t);
+  const stop = new AbortController();
+  f.deps.signal = stop.signal;
+  f.deps.prepare = async (_environment, signal) => {
+    assert.equal(signal, stop.signal);
+    stop.abort();
+  };
+  assert.equal(await runExec(['hello'], f.deps), 130);
+  assert.equal(f.opened.length, 0);
+  assert.deepEqual(f.notes, ['oms: interrupted']);
+});
+
+test('exec propagates cancellation into real chat startup and cleans up before returning', async (t) => {
+  const f = await setup(t);
+  const stop = new AbortController();
+  f.deps.signal = stop.signal;
+  f.deps.start = (options) => {
+    stop.abort();
+    return createChatSession(options);
+  };
+  assert.equal(await runExec(['hello'], f.deps), 130);
+  assert.equal(existsSync(join(f.stateRoot, 'folders')), false);
+  assert.deepEqual(f.notes, ['oms: interrupted']);
+});
+
+test('exec stops an in-flight Surfpool startup and releases the chat lease', { timeout: 15_000 }, async (t) => {
+  const f = await setup(t);
+  const stop = new AbortController();
+  const binary = join(f.base, 'slow-surfpool');
+  writeFileSync(binary, '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n', { mode: 0o700 });
+  f.deps.environment = { ...f.options.environment, binary };
+  f.deps.signal = stop.signal;
+  const state = join(f.stateRoot, 'folders', f.folder.key);
+  const registry = join(state, 'runtime-processes');
+  const lease = join(state, 'session.lease');
+  const cancelAfterSpawn = async () => {
+    const signal = AbortSignal.any([t.signal, AbortSignal.timeout(10_000)]);
+    while (true) {
+      const record = existsSync(registry) && readdirSync(registry).find((name) => name.endsWith('.json'));
+      if (record) {
+        assert.ok(existsSync(lease));
+        const { child } = JSON.parse(readFileSync(join(registry, record), 'utf8')) as { child: { pid: number } };
+        stop.abort();
+        return child.pid;
+      }
+      await delay(10, undefined, { signal });
+    }
+  };
+  try {
+    const [code, pid] = await Promise.all([runExec(['hello'], f.deps), cancelAfterSpawn()]);
+    assert.equal(code, 130);
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    assert.equal(existsSync(lease), false);
+    assert.deepEqual(readdirSync(registry), []);
+  } finally {
+    stop.abort();
+  }
 });

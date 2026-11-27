@@ -220,3 +220,31 @@ test('the opt-in notice names a newer release, and stays silent otherwise or whe
   assert.equal(late(), undefined);
   assert.equal(cancelled!.aborted, true);
 });
+
+test('a failed start cancels its in-flight opt-in release lookup', async () => {
+  const main = new URL('../src/main.ts', import.meta.url).href;
+  await assert.rejects(
+    run(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `process.argv = [process.execPath, 'oms', 'start'];
+         globalThis.fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+           signal.addEventListener('abort', () => {
+             process.stderr.write('release lookup aborted\\n');
+             reject(signal.reason);
+           }, { once: true });
+         });
+         await import(${JSON.stringify(main)});`,
+      ],
+      { env: { PATH: process.env.PATH, OMS_UPDATE_CHECK: '1' }, timeout: 15_000 },
+    ),
+    (error: { code?: number; stderr?: string }) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr ?? '', /release lookup aborted/);
+      assert.match(error.stderr ?? '', /Needs an interactive terminal/);
+      return true;
+    },
+  );
+});

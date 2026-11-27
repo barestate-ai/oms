@@ -11,10 +11,20 @@ import { createSessionExtensions, createSessionTools } from './session-tools.ts'
 import type { CommonSessionOptions } from './session-types.ts';
 
 /** Runs one startup under a lifecycle that releases exactly what exists if any stage fails. */
-export async function startSession<T>(lease: MutationLease, start: (life: SessionLifecycle) => Promise<T>): Promise<T> {
-  const life = createSessionLifecycle(lease, new AbortController());
+export async function startSession<T>(
+  lease: MutationLease,
+  start: (life: SessionLifecycle) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort(signal?.reason);
+  const life = createSessionLifecycle(lease, controller);
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
-    return await start(life);
+    signal?.throwIfAborted();
+    const session = await start(life);
+    signal?.throwIfAborted();
+    return session;
   } catch (error) {
     life.liveSession?.dispose();
     try {
@@ -23,6 +33,8 @@ export async function startSession<T>(lease: MutationLease, start: (life: Sessio
       throw new AggregateError([error, cleanupError], 'Harness startup and cleanup failed');
     }
     throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
   }
 }
 

@@ -42,8 +42,13 @@ export async function runAccountCommand(
     }
     if (command === 'login') {
       if (state === 'signed-in') {
-        log(`Already signed in · ${omsCommand()} logout to switch accounts.`);
-        return 0;
+        await controls.refresh(signal);
+        const current = controls.snapshot();
+        if (current.state === 'signed-in') {
+          log(`Already signed in · ${omsCommand()} logout to switch accounts.`);
+          return 0;
+        }
+        if (current.state === 'unavailable') throw new Error(current.message ?? 'the account is unavailable');
       }
       await controls.login(
         {

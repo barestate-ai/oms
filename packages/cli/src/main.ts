@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
+import { addAbortSignal } from 'node:stream';
 import { text } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
 import { configuredBackend, defaultHarnessEnvironment, omsCommand } from '@oms/engine';
@@ -161,21 +162,31 @@ try {
     process.exitCode = await runUpdate(rest, updateDeps(fileURLToPath(installRoot), version()));
   } else if (cmd === undefined || cmd === 'start' || (cmd.startsWith('--') && cmd !== '--help')) {
     const notice = updateNotice(version());
-    await startLocal(cmd === undefined || cmd === 'start' ? rest : [cmd, ...rest]);
-    const newer = notice();
+    let newer: string | undefined;
+    try {
+      await startLocal(cmd === undefined || cmd === 'start' ? rest : [cmd, ...rest]);
+    } finally {
+      newer = notice();
+    }
     if (newer) console.log(newer);
   } else if (cmd === 'exec') {
     const stop = new AbortController();
-    process.once('SIGINT', () => stop.abort());
-    process.exitCode = await runExec(rest, {
-      folder: process.cwd(),
-      stateRoot: omsHome(),
-      prepare: (environment) => checkLocalPrerequisites(environment, (text) => void process.stderr.write(text)),
-      readStdin: () => text(process.stdin),
-      out: log,
-      note: fail,
-      signal: stop.signal,
-    });
+    const interrupt = () => stop.abort();
+    process.on('SIGINT', interrupt);
+    try {
+      process.exitCode = await runExec(rest, {
+        folder: process.cwd(),
+        stateRoot: omsHome(),
+        prepare: (environment, signal) =>
+          checkLocalPrerequisites(environment, (text) => void process.stderr.write(text), signal),
+        readStdin: (signal) => text(signal ? addAbortSignal(signal, process.stdin) : process.stdin),
+        out: log,
+        note: fail,
+        signal: stop.signal,
+      });
+    } finally {
+      process.off('SIGINT', interrupt);
+    }
   } else if (cmd === 'toolchain') {
     process.exitCode = await toolchainCommand(rest);
   } else if (cmd === 'review') {
@@ -210,6 +221,8 @@ try {
     process.exitCode = await runHarnessCommand(cmd, rest);
   } else if (cmd === 'help' && rest[0] === 'advanced') {
     console.log(ADVANCED_HELP);
+  } else if (cmd === 'help' && rest[0] === 'review') {
+    process.exitCode = await runReviewCommand(['--help']);
   } else if (cmd === 'help' && rest[0] && Object.hasOwn(COMMANDS, rest[0])) {
     console.log(commandHelp(rest[0]));
   } else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
