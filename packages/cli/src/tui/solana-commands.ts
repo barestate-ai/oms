@@ -308,7 +308,7 @@ function localIdls(harness: OmsSession): Idl[] {
   }
 }
 
-function describeDecoding(decoding: ErrorDecoding): string[] {
+export function describeDecoding(decoding: ErrorDecoding): string[] {
   return [
     ...decoding.matches.map(
       (match) => `${match.program}: ${match.name}${match.message ? ' · ' + match.message : ''} (${match.source})`,

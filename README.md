@@ -54,7 +54,17 @@ npx @barestate/oms
 
 The first launch installs Surfpool 1.7.0 and checks its SHA-256. `oms doctor --install` does the same on its own.
 
-To update, run `oms update` (`oms update --check` only looks). It upgrades the same way you installed: the curl installer and npm in place, Homebrew through `brew upgrade`. `oms version` prints what you have.
+To update, run `oms update` (`oms update --check` only looks). It upgrades the same way you installed: the curl installer and npm in place, Homebrew through `brew upgrade`. `oms version` prints what you have. OMS does not look for releases by itself; set `OMS_UPDATE_CHECK=1` to be told about a newer one after you close it.
+
+## Scripts and CI
+
+```sh
+oms exec "why does anchor test fail?"
+anchor test 2>&1 | oms exec "explain this failure" -
+oms exec --json --spend-usd 1 "review the vault program" > result.json
+```
+
+Each run is a new conversation unless you add `--continue`. It uses the model you set up in OMS, or `--provider` and `--model`. The exit code is 0 only when the reply finished. Nobody can approve commands, so any command that would need approval is refused unless you pass `--yolo`, which runs commands without asking and without the sandbox.
 
 ## The batteries
 
@@ -159,6 +169,25 @@ The agent looks things up through the official Solana MCP, `web_fetch` and `web_
 Sign in with GitHub using `/login` to access Solana knowledge.
 
 ## Commands
+
+From your shell (`oms <command> --help` explains each one):
+
+| Command | What it does |
+|---|---|
+| `oms` | Chat in the current folder |
+| `oms doctor` | Check your setup |
+| `oms review [path]` | Offline security report for your program |
+| `oms error <code> [program]` | Name a program error, offline |
+| `oms --new` | Start a new conversation in this folder |
+| `oms exec "<prompt>"` | One prompt, no interface, for scripts and CI |
+| `oms sessions` | Folders with saved conversations, `--prune` clears deleted ones |
+| `oms login`, `logout`, `whoami` | Your Oh My Sol account |
+| `oms config` | Where settings and state are kept |
+| `oms completion bash\|zsh\|fish` | Shell completion |
+| `oms update` | Update to the latest release |
+| `oms uninstall` | Remove OMS, keeping your data unless you add `--purge` |
+
+Inside OMS:
 
 | Command | What it does |
 |---|---|

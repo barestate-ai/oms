@@ -25,6 +25,7 @@ export * from './runtime/task-files.ts';
 export { TerminalStoppedError, type TaskTerminal } from './runtime/task-terminal.ts';
 export * from './runtime/provider-controls.ts';
 export { type HarnessSettingsControls, type HarnessSettingsSnapshot } from './runtime/settings-controls.ts';
+export { createOmsAccountControls } from './runtime/oms-account.ts';
 export type { OmsAccountControls, OmsAccountSnapshot, AccountInteraction } from './runtime/oms-account.ts';
 export { recoverHarnessWorkspace } from './runtime/recovery.ts';
 export { omsCommand } from './runtime/cli-command.ts';

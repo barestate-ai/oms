@@ -18,11 +18,14 @@ export function omsHome(): string {
   return join(homedir(), '.oms');
 }
 
-export async function checkLocalPrerequisites(environment: HarnessEnvironment): Promise<void> {
+export async function checkLocalPrerequisites(
+  environment: HarnessEnvironment,
+  write: (text: string) => void = (text) => void process.stdout.write(text),
+): Promise<void> {
   try {
     accessSync(environment.binary, constants.X_OK);
   } catch {
-    process.stdout.write(`Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool} (local Solana network, one-time)…\n`);
+    write(`Installing Surfpool ${DEFAULT_OPTIONS.pinnedSurfpool} (local Solana network, one-time)…\n`);
     try {
       await installPinnedSurfpool(environment.binary);
     } catch (error) {
@@ -35,7 +38,7 @@ export async function checkLocalPrerequisites(environment: HarnessEnvironment): 
 
 /** Plain `oms`: an interactive chat that edits the current folder in place. */
 export async function startLocal(args: string[] = []): Promise<void> {
-  const launch = parseLaunchOptions(args, ['--yolo'], ['--yolo']);
+  const launch = parseLaunchOptions(args, ['--yolo', '--new'], ['--yolo', '--new']);
   if (!process.stdin.isTTY || !process.stdout.isTTY)
     throw new Error(`Needs an interactive terminal · run ${omsCommand()} in a terminal window`);
   const environment = defaultHarnessEnvironment(undefined, configuredBackend(launch.values.get('--sandbox')));
@@ -48,5 +51,6 @@ export async function startLocal(args: string[] = []): Promise<void> {
     launch,
     web: !launch.values.has('--no-web'),
     yolo: launch.values.has('--yolo'),
+    fresh: launch.values.has('--new'),
   });
 }
