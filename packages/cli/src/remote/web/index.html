@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{{title}} · OMS</title>
+    <meta name="theme-color" content="#15120F" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="{{title}}" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header>
+      <span class="face" id="face">{{bot}}</span>
+      <div class="who">
+        <h1>{{title}}</h1>
+        <p id="sub">Connecting…</p>
+      </div>
+      <ul id="people" aria-label="Who is here"></ul>
+    </header>
+
+    <main id="log" aria-live="polite"></main>
+
+    <section id="gate" hidden>
+      <div class="card">
+        <span class="face big">{{bot}}</span>
+        <h2 id="gate-title"></h2>
+        <p id="gate-text"></p>
+        <form id="gate-form" hidden>
+          <input id="gate-name" autocomplete="nickname" maxlength="24" placeholder="Your name" hidden />
+          <input
+            id="gate-code"
+            autocomplete="one-time-code"
+            autocapitalize="characters"
+            spellcheck="false"
+            maxlength="40"
+            placeholder="Code"
+            hidden
+          />
+          <button type="submit">Continue</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="approval" hidden>
+      <h2 id="approval-title"></h2>
+      <p id="approval-reasons"></p>
+      <pre id="approval-command"></pre>
+      <div class="row">
+        <button type="button" data-answer="deny" class="quiet">Deny</button>
+        <button type="button" data-answer="session" id="approval-session" class="quiet">This session</button>
+        <button type="button" data-answer="once">Allow once</button>
+      </div>
+    </section>
+
+    <footer>
+      <p id="flash" role="status"></p>
+      <form id="composer">
+        <textarea id="text" rows="1" placeholder="Message the agent" enterkeyhint="send"></textarea>
+        <button type="button" id="stop" class="quiet" hidden>Stop</button>
+        <button type="submit" id="send">Send</button>
+      </form>
+    </footer>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -216,6 +216,8 @@ interface ReceiptEntry extends Base {
   receipt: Receipt;
 }
 type Entry = UserEntry | AssistantEntry | ToolEntry | NoteEntry | FooterEntry | ReceiptEntry;
+/** One thing in the conversation, as a view other than the terminal (the remote page) reads it. */
+export type ConversationEntry = Entry;
 
 /** One drawn thing: an entry, or a run of read-only calls drawn as one. */
 interface Block {
@@ -260,6 +262,7 @@ export class Conversation {
   private chipRow: number | undefined;
   /** Entries the reader opened or folded with a click, by block key. */
   private readonly opened = new Set<string>();
+  private readonly watchers = new Set<(entry?: ConversationEntry) => void>();
   /** Where each block was in the last render(), for clicks. */
   private layout: { key: string; start: number; end: number; clickable: boolean }[] = [];
   /** Rows drawn since the last reset, per block key: what a frame had to draw again (for tests). */
@@ -320,6 +323,7 @@ export class Conversation {
     this.revision++;
     this.seen = this.revision;
     this.syncPulse();
+    for (const watcher of this.watchers) watcher();
   }
 
   /** Ctrl+O: show every tool call and result in full, or back to the short form (clicks are forgotten). */
@@ -342,6 +346,18 @@ export class Conversation {
 
   private touch(entry: Entry): void {
     entry.rev = ++this.revision;
+    for (const watcher of this.watchers) watcher(entry);
+  }
+
+  /** Be told of every entry that is added or changes, and of a clear (no entry). Returns how to stop. */
+  watch(watcher: (entry?: ConversationEntry) => void): () => void {
+    this.watchers.add(watcher);
+    return () => this.watchers.delete(watcher);
+  }
+
+  /** What the conversation holds now, oldest first. */
+  entries(): readonly ConversationEntry[] {
+    return this.items;
   }
 
   private put(entry: Entry): void {

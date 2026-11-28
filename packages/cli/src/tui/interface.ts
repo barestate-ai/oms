@@ -81,6 +81,7 @@ import { WorkbenchIde } from './ide.ts';
 import type { HelperDisplay } from './display-tools.ts';
 import { Conversation, copyableText, describeValue, displayText, singleLine } from './transcript.ts';
 import { nativeChatDisplayHistory } from './claude-chat.ts';
+import { createRemoteHost, type RemoteHost } from './remote-commands.ts';
 import type { CommandOutput, Prepared } from './prepared.ts';
 import { sessionLabel } from './inspect-commands.ts';
 import { newGoal, runGoalCheck, runGoalLoop, taskVerifierItem, type Goal } from './goal.ts';
@@ -369,6 +370,8 @@ export async function runOmsInterface(
   let paletteInput: Input | undefined;
   let proofAvailable = false;
   let goal: Goal | undefined;
+  /** /remote: this session in a browser on the user's other devices. Built once the approval card exists. */
+  let remote: RemoteHost | undefined;
   let checkedAt = 'not checked';
   const fail = (error: unknown) => {
     failure ??= error;
@@ -686,6 +689,7 @@ export async function runOmsInterface(
    * (`⠹ oms · escrow — Reading lib.rs`) in step. Each is written only when it changes.
    */
   function syncActivity(): void {
+    remote?.sync();
     const working = busy();
     if (working && busyStartedAt === undefined) {
       busyStartedAt = Date.now();
@@ -1419,6 +1423,9 @@ export async function runOmsInterface(
     ask,
     submit: (text) => submit(text, true),
     cancel,
+    get remote() {
+      return remote;
+    },
     quit: () => quit(),
     confirm(question, onYes) {
       confirmation = { question, yes: onYes };
@@ -1749,7 +1756,8 @@ export async function runOmsInterface(
       if (branch) facts.push({ key: 'branch', text: branch, role: 'muted' });
     }
     if (harness.chain?.rpcUrl()) facts.push({ key: 'chip', text: 'surfpool', role: 'muted', dot: 'success' });
-    for (const chip of options.statusChips?.() ?? [])
+    const remoteChip = remote?.chip();
+    for (const chip of [...(options.statusChips?.() ?? []), ...(remoteChip ? [remoteChip] : [])])
       facts.push({
         key: 'chip',
         text: singleLine(chip.text, 24),
@@ -1929,6 +1937,32 @@ export async function runOmsInterface(
       return answer;
     });
   };
+  remote = createRemoteHost({
+    harness,
+    conversation,
+    busy,
+    send(text) {
+      if (closing) return 'The session is closing.';
+      if (busy()) return 'Still working. Wait for it to finish, or stop it.';
+      if (!hasModelConfiguration(harness.session.model)) return 'No model is set up in the terminal yet.';
+      ask(text, undefined);
+      return undefined;
+    },
+    cancel,
+    approval: () => approvals.current(),
+    ask: (question, signal) =>
+      closing
+        ? Promise.resolve(false)
+        : askApproval({
+            text: `${question.title}\n${question.detail}`,
+            card: { title: question.title, reasons: [], command: question.detail, plain: true, session: false },
+            subject: question.subject,
+            session: false,
+            signal,
+          }).then(Boolean),
+    toast,
+    render: requestRender,
+  });
   harness.setHostApproval?.((request, signal) => {
     if (closing) return Promise.resolve(false);
     // The card shows the whole command or none of it: one too long to show is refused, not approved unseen.
@@ -2370,6 +2404,7 @@ export async function runOmsInterface(
     } finally {
       ide.dispose();
       await shell.dispose();
+      await remote?.close().catch(() => {});
       unsubscribe?.();
       disposed = true;
       try {

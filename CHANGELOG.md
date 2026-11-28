@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `/remote` opens the session on your phone or another computer: the live conversation in a browser, where you can send messages, stop work and answer approvals. A device pairs with a one-time code and has to be allowed in the terminal. Each session has its own icon and can be added to a phone's home screen. See [docs/remote.md](docs/remote.md).
 - `/handover` has the agent write a handover note, then starts a new conversation that begins from it. Use it when a conversation has grown long.
 - Every command answers `--help`, and `oms help <command>` shows the same text. A mistyped command names the closest one.
 - `oms sessions` lists the folders that have saved conversations, newest first, and flags folders that were deleted.
