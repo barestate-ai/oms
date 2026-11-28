@@ -266,6 +266,39 @@ test('a guest joins by invitation, can talk, and can neither stop work nor see o
   assert.equal((await f.post('/api/hello', { client: SECRET('late'), code: invite, name: 'x' })).status, 401);
 });
 
+test('a guest from an earlier run waits until the host shares again', async (t) => {
+  const f = await setup(t);
+  f.server.setSharing(true);
+  await f.post('/api/hello', { client: SECRET('akshat'), code: f.server.inviteCode(), name: 'akshat' });
+  // What a restart leaves behind: the guest is known, and sharing is off until the host turns it on.
+  const state = f.saved.at(-1)!;
+  const later = await startRemoteServer({
+    sessionId: 'session-under-test',
+    title: 't',
+    hostName: 'vivek',
+    network: false,
+    port: 0,
+    state,
+    save() {},
+    hooks: {
+      snapshot: () => ({ entries: f.entries, status: { busy: false, model: '', yolo: false } }),
+      admit: async () => false,
+      send: () => undefined,
+      cancel() {},
+      answer: () => false,
+      peopleChanged() {},
+    },
+  });
+  t.after(() => later.close());
+  const events = () =>
+    fetch(`http://127.0.0.1:${later.port}/api/events`, { headers: { authorization: `Bearer ${SECRET('akshat')}` } });
+  assert.equal((await events()).status, 403);
+  later.setSharing(true);
+  const open = await events();
+  assert.equal(open.status, 200);
+  await open.body!.cancel();
+});
+
 test('forgetting unpairs every device at once', async (t) => {
   const f = await setup(t);
   await f.pair('phone');

@@ -9,7 +9,9 @@ import {
   omsCommand,
   type HarnessEnvironment,
 } from '@oms/engine';
+import { userInfo } from 'node:os';
 import { runInteractiveChat } from '../packages/cli/src/chat.ts';
+import { joinSession } from '../packages/cli/src/join.ts';
 import { DEFAULT_OPTIONS } from '../packages/cli/src/doctor/checks.ts';
 import { installPinnedSurfpool } from '../packages/cli/src/doctor/install.ts';
 import { parseLaunchOptions } from '../packages/cli/src/harness.ts';
@@ -36,8 +38,24 @@ export async function checkLocalPrerequisites(
   }
 }
 
+/** `oms join <link>`: take a copy of a session a teammate shared, then open it here. */
+export async function joinLocal(args: string[]): Promise<number> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY)
+    throw new Error(`Needs an interactive terminal · run ${omsCommand()} join in a terminal window`);
+  const sessionId = await joinSession(args, {
+    folder: process.cwd(),
+    stateRoot: omsHome(),
+    name: userInfo().username,
+    log: (line) => console.log(line),
+    error: (line) => console.error(line),
+  });
+  if (!sessionId) return 1;
+  await startLocal([], sessionId);
+  return 0;
+}
+
 /** Plain `oms`: an interactive chat that edits the current folder in place. */
-export async function startLocal(args: string[] = []): Promise<void> {
+export async function startLocal(args: string[] = [], sessionId?: string): Promise<void> {
   const launch = parseLaunchOptions(args, ['--yolo', '--new'], ['--yolo', '--new']);
   if (!process.stdin.isTTY || !process.stdout.isTTY)
     throw new Error(`Needs an interactive terminal · run ${omsCommand()} in a terminal window`);
@@ -52,5 +70,6 @@ export async function startLocal(args: string[] = []): Promise<void> {
     web: !launch.values.has('--no-web'),
     yolo: launch.values.has('--yolo'),
     fresh: launch.values.has('--new'),
+    ...(sessionId ? { sessionId } : {}),
   });
 }

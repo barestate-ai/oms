@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `/share` invites a teammate into a session: in a browser they watch it live and can send messages, and with `oms join '<link>'` they get their own copy to continue. Each side sees whether the other is live, and `/sync` (or asking the agent to sync) trades what is new once the other person agrees. No server is involved. See [docs/remote.md](docs/remote.md).
 - `/remote` opens the session on your phone or another computer: the live conversation in a browser, where you can send messages, stop work and answer approvals. A device pairs with a one-time code and has to be allowed in the terminal. Each session has its own icon and can be added to a phone's home screen. See [docs/remote.md](docs/remote.md).
 - `/handover` has the agent write a handover note, then starts a new conversation that begins from it. Use it when a conversation has grown long.
 - Every command answers `--help`, and `oms help <command>` shows the same text. A mistyped command names the closest one.

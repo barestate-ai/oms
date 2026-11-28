@@ -9,9 +9,23 @@ import {
   type Person,
   type RemoteServer,
   type RemoteState,
+  type SyncAnswer,
+  type SyncItem,
   type WireEntry,
   type WireStatus,
 } from '../remote/server.ts';
+import {
+  cleanItems,
+  collectItems,
+  createPeerLink,
+  exportEntries,
+  readShare,
+  SHARE_NOTE_TYPE,
+  syncNote,
+  writeShare,
+  type PeerLink,
+} from '../remote/share.ts';
+import type { SyncTool } from '../remote/sync-tool.ts';
 import { describe, outcome } from './display-tools.ts';
 import { sessionLabel } from './inspect-commands.ts';
 import { refuse, type Prepared } from './prepared.ts';
@@ -26,7 +40,11 @@ const OUTPUT_CHARS = 4000;
 export function wireEntry(entry: ConversationEntry, cwd?: string): WireEntry | undefined {
   const { key } = entry;
   if (entry.kind === 'user') return { key, kind: 'user', text: entry.text };
-  if (entry.kind === 'note') return { key, kind: 'note', label: entry.label, text: entry.text };
+  // What /remote and /share print carries the pairing code and the invitation: it stays at the terminal.
+  if (entry.kind === 'note')
+    return entry.label === 'remote' || entry.label === 'share'
+      ? undefined
+      : { key, kind: 'note', label: entry.label, text: entry.text };
   if (entry.kind === 'assistant') {
     const text = entry.blocks
       .filter((block) => block.type === 'text')
@@ -72,12 +90,18 @@ export interface RemoteHostDeps {
   ask(question: { title: string; detail: string; subject: string }, signal: AbortSignal): Promise<boolean>;
   toast(text: string): void;
   render(): void;
+  /** The agent's sync tool, offered while the session is shared. */
+  syncTool?: SyncTool | undefined;
 }
 
 export interface RemoteHost {
   /** /remote [stop|local|tunnel|forget]: what to show for it. */
   command(argument: string): Promise<string>;
-  chip(): StatusChip | undefined;
+  /** /share [stop]: invite a teammate into this session, or end that. */
+  share(argument: string): Promise<string>;
+  /** /sync, and the agent's sync tool: trade what is new with whoever holds a copy and is live. */
+  syncNow(): Promise<string>;
+  chips(): StatusChip[];
   /** Called on every frame: remote views hear of a change in what is running or being asked. */
   sync(): void;
   close(): Promise<void>;
@@ -125,8 +149,16 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   const stateFile = manager.getSessionDir?.() ? join(manager.getSessionDir(), `${sessionId}.remote.json`) : undefined;
   const title = sessionLabel(harness);
   const cwd = harness.root;
+  const me = userInfo().username;
+  const sessionsDir: string | undefined = manager.getSessionDir?.();
+  /** Set when this session is a copy of one a teammate shared. */
+  const joined = sessionsDir ? readShare(sessionsDir, sessionId) : undefined;
+  const never = new AbortController().signal;
 
   let server: RemoteServer | undefined;
+  let state: RemoteState = { devices: {} };
+  let peer: PeerLink | undefined;
+  let peerLive = false;
   let network = true;
   let tunnel: { url: string; child: ChildProcess } | undefined;
   let unwatch: (() => void) | undefined;
@@ -138,7 +170,11 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   function loadState(): RemoteState {
     try {
       const saved = JSON.parse(readFileSync(stateFile!, 'utf8')) as Partial<RemoteState>;
-      return { ...(typeof saved.port === 'number' ? { port: saved.port } : {}), devices: saved.devices ?? {} };
+      return {
+        ...(typeof saved.port === 'number' ? { port: saved.port } : {}),
+        devices: saved.devices ?? {},
+        ...(saved.synced ? { synced: saved.synced } : {}),
+      };
     } catch {
       return { devices: {} };
     }
@@ -168,6 +204,100 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
         : {}),
     };
   }
+  // ---------------------------------------------------------------- syncing two copies
+
+  const plural = (count: number): string => `${count} new message${count === 1 ? '' : 's'}`;
+  const consent = (from: string, theirs: number, signal: AbortSignal): Promise<boolean> =>
+    deps.ask(
+      {
+        title: `Sync this session with ${from}?`,
+        detail: `${from} has ${plural(theirs)} for you and gets what is new here.\nEach side receives the other's messages as one note in the conversation.`,
+        subject: `sync with ${from}`,
+      },
+      signal,
+    );
+  /** The other side's messages arrive as one note the agent can read. */
+  function ingest(from: string, items: readonly SyncItem[]): void {
+    if (!items.length) return;
+    void harness.session
+      .sendCustomMessage(
+        { customType: SHARE_NOTE_TYPE, content: syncNote(from, items), display: true, details: undefined },
+        { triggerTurn: false },
+      )
+      .catch(() => deps.toast('The synced messages could not be added'));
+  }
+  const outcome = (who: string, sent: number, received: number): string =>
+    sent || received
+      ? `Synced with ${who} · sent ${plural(sent)}, received ${plural(received)}.`
+      : `Already in sync with ${who}.`;
+  // ponytail: a reply lost on the way leaves one side thinking the other has its messages; resend from /sync if that happens.
+  function mark(personId: string, leaf: string | undefined): void {
+    if (!leaf) return;
+    state.synced = { ...state.synced, [personId]: leaf };
+    saveState(state);
+  }
+  function markJoined(leaf: string | undefined): void {
+    if (!joined || !sessionsDir || !leaf) return;
+    joined.synced = leaf;
+    writeShare(sessionsDir, sessionId, joined);
+  }
+  if (joined) {
+    deps.syncTool?.setActive(true);
+    peer = createPeerLink({
+      link: joined,
+      async onSync({ items }): Promise<SyncAnswer> {
+        if (!(await consent(joined.host, items.length, never))) return { ok: false, reason: `${me} said no.` };
+        const mine = collectItems(manager, joined.synced);
+        ingest(joined.host, items);
+        markJoined(mine.leaf);
+        return { ok: true, items: mine.items };
+      },
+      changed() {
+        const live = !!peer?.live();
+        if (live !== peerLive) deps.toast(live ? `${joined.host} is live` : `${joined.host} went away`);
+        peerLive = live;
+        deps.render();
+      },
+      ended() {
+        deps.toast(`${joined.host} ended the sharing`);
+        peer = undefined;
+        peerLive = false;
+        deps.render();
+      },
+    });
+  }
+  async function syncNow(): Promise<string> {
+    if (joined && peer) {
+      const mine = collectItems(manager, joined.synced);
+      const answer = await peer.sync(mine.items);
+      if (!answer.ok) return answer.reason;
+      ingest(joined.host, answer.items);
+      markJoined(mine.leaf);
+      return outcome(joined.host, mine.items.length, answer.items.length);
+    }
+    const running = server;
+    const live = running?.people().filter((person) => person.kind === 'oms' && person.live) ?? [];
+    if (!running || !live.length)
+      return running?.inviteCode()
+        ? 'Nobody with their own copy of this session is live right now.'
+        : 'This session is not shared. /share invites a teammate.';
+    const results: string[] = [];
+    for (const person of live) {
+      const mine = collectItems(manager, state.synced?.[person.id]);
+      const answer = await running.requestSync(person.id, me, mine.items);
+      if (!answer.ok) {
+        results.push(answer.reason.replace(/^They\b/, person.name));
+        continue;
+      }
+      const theirs = cleanItems(answer.items);
+      ingest(person.name, theirs);
+      mark(person.id, mine.leaf);
+      results.push(outcome(person.name, mine.items.length, theirs.length));
+    }
+    return results.join('\n');
+  }
+  deps.syncTool?.bind(syncNow);
+
   const entries = (): WireEntry[] =>
     conversation.entries().flatMap((entry) => {
       const wire = wireEntry(entry, cwd);
@@ -178,28 +308,35 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     if (server && network === overNetwork) return server;
     await stop();
     network = overNetwork;
+    state = loadState();
     const started = await startRemoteServer({
       sessionId,
       title,
-      hostName: userInfo().username,
+      hostName: me,
       network,
-      state: loadState(),
+      state,
       save: saveState,
       hooks: {
         snapshot: () => ({ entries: entries(), status: status() }),
-        admit: ({ role, name, address }, signal) =>
+        admit: ({ role, name, address, kind }, signal) =>
           deps.ask(
-            role === 'owner'
+            kind === 'oms'
               ? {
-                  title: 'Let this device control the session?',
-                  detail: `${name} at ${address}\nIt can read the conversation, send messages, stop work and answer approvals.`,
-                  subject: `remote access for ${name} (${address})`,
+                  title: `Give ${name} a copy of this session?`,
+                  detail: `${name} at ${address}, from their own OMS\nThey receive this conversation, with secrets masked, and continue it in their folder. You can sync with them while both are open.`,
+                  subject: `${name} joining with a copy (${address})`,
                 }
-              : {
-                  title: `Let ${name} join this session?`,
-                  detail: `${name} at ${address}\nThey can read the conversation and send messages to the agent. Approvals stay with you.`,
-                  subject: `${name} joining (${address})`,
-                },
+              : role === 'owner'
+                ? {
+                    title: 'Let this device control the session?',
+                    detail: `${name} at ${address}\nIt can read the conversation, send messages, stop work and answer approvals.`,
+                    subject: `remote access for ${name} (${address})`,
+                  }
+                : {
+                    title: `Let ${name} join this session?`,
+                    detail: `${name} at ${address}\nThey can read the conversation and send messages to the agent. Approvals stay with you.`,
+                    subject: `${name} joining (${address})`,
+                  },
             signal,
           ),
         send(from: Person, text: string) {
@@ -216,11 +353,24 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
           shown.answer(answer === 'deny' ? false : answer === 'session' ? 'session' : true);
           return true;
         },
+        export(from) {
+          const shared = exportEntries(manager);
+          mark(from.id, shared.at(-1)?.id);
+          return { host: me, cwd: manager.getCwd(), entries: shared };
+        },
+        async sync(from, raw): Promise<SyncAnswer> {
+          const theirs = cleanItems(raw);
+          if (!(await consent(from.name, theirs.length, never))) return { ok: false, reason: `${me} said no.` };
+          const mine = collectItems(manager, state.synced?.[from.id]);
+          ingest(from.name, theirs);
+          mark(from.id, mine.leaf);
+          return { ok: true, items: mine.items };
+        },
         peopleChanged() {
           const now = new Map(
             started
               .people()
-              .filter((person) => person.kind === 'browser' && person.live)
+              .filter((person) => person.kind !== 'terminal' && person.live)
               .map((person) => [person.id, person.name]),
           );
           for (const [id, name] of now) if (!here.has(id)) deps.toast(`${name} connected`);
@@ -239,6 +389,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   }
 
   async function stop(): Promise<void> {
+    if (!joined) deps.syncTool?.setActive(false);
     tunnel?.child.kill();
     tunnel = undefined;
     unwatch?.();
@@ -272,7 +423,41 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     ].join('\n');
   }
 
+  function describeShare(running: RemoteServer): string {
+    const base = tunnel?.url ?? running.addresses()[0]!.url;
+    const link = `${base}/#${running.inviteCode()}`;
+    const others = running.people().filter((person) => person.role === 'guest');
+    const here = others.filter((person) => person.live).map((person) => person.name);
+    const away = others.filter((person) => !person.live).map((person) => person.name);
+    return [
+      'This session is shared.',
+      '',
+      `  In a browser   ${link}`,
+      `  With OMS       oms join '${link}'`,
+      '',
+      'Send it to a teammate on the same network (or use /remote tunnel first for a link that works from anywhere).',
+      'In a browser they see this session live and can send messages. With oms join they get their own copy of the',
+      'conversation to continue in their folder; /sync then trades what is new while both of you are open.',
+      'You are asked here before anyone gets in. Approvals stay with you, and secrets are masked in what they get.',
+      '',
+      `${here.length ? `Live now: ${here.join(', ')}` : 'Nobody has joined yet'}${away.length ? ` · away: ${away.join(', ')}` : ''} · /share stop ends it`,
+    ].join('\n');
+  }
+
   return {
+    async share(argument) {
+      if (argument === 'stop') {
+        if (!server?.inviteCode()) return 'This session is not shared.';
+        server.setSharing(false);
+        deps.syncTool?.setActive(!!joined);
+        return 'Sharing is off and guests were removed. Your own devices stay connected until /remote stop.';
+      }
+      const running = await start(true);
+      running.setSharing(true);
+      deps.syncTool?.setActive(true);
+      return describeShare(running);
+    },
+    syncNow,
     async command(argument) {
       if (argument === 'stop') {
         if (!server) return 'Remote access is already off.';
@@ -293,9 +478,15 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       }
       return describeAccess(running);
     },
-    chip() {
-      if (!server) return undefined;
-      return here.size ? { text: `remote · ${here.size}`, dot: 'success' } : { text: 'remote', dot: 'info' };
+    chips() {
+      const chips: StatusChip[] = [];
+      if (joined && peer)
+        chips.push(peerLive ? { text: joined.host, dot: 'success' } : { text: `${joined.host} away` });
+      if (server) {
+        const label = server.inviteCode() ? 'shared' : 'remote';
+        chips.push(here.size ? { text: `${label} · ${here.size}`, dot: 'success' } : { text: label, dot: 'info' });
+      }
+      return chips;
     },
     sync() {
       if (!server) return;
@@ -305,23 +496,36 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       lastStatus = encoded;
       server.status(next);
     },
-    close: stop,
-  };
-}
-
-/** /remote [stop|local|tunnel|forget] */
-export function remoteCommand(ctx: CommandContext, argument: string): Prepared {
-  const remote = ctx.remote;
-  if (!remote) return refuse('Remote access is not available here');
-  return {
-    ok: true,
-    async run() {
-      try {
-        return { title: 'remote', text: await remote.command(argument.trim()) };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Remote access could not start';
-        return { title: 'remote', text: message, failure: message, failureShown: true };
-      }
+    async close() {
+      peer?.close();
+      peer = undefined;
+      deps.syncTool?.bind(undefined);
+      await stop();
     },
   };
 }
+
+const remoteAction =
+  (title: string, act: (remote: NonNullable<CommandContext['remote']>, argument: string) => Promise<string>) =>
+  (ctx: CommandContext, argument: string): Prepared => {
+    const remote = ctx.remote;
+    if (!remote) return refuse('Remote access is not available here');
+    return {
+      ok: true,
+      async run() {
+        try {
+          return { title, text: await act(remote, argument.trim()) };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'That did not work';
+          return { title, text: message, failure: message, failureShown: true };
+        }
+      },
+    };
+  };
+
+/** /remote [stop|local|tunnel|forget] */
+export const remoteCommand = remoteAction('remote', (remote, argument) => remote.command(argument));
+/** /share [stop] */
+export const shareCommand = remoteAction('share', (remote, argument) => remote.share(argument));
+/** /sync */
+export const syncCommand = remoteAction('sync', (remote) => remote.syncNow());

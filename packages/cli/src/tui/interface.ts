@@ -82,6 +82,7 @@ import type { HelperDisplay } from './display-tools.ts';
 import { Conversation, copyableText, describeValue, displayText, singleLine } from './transcript.ts';
 import { nativeChatDisplayHistory } from './claude-chat.ts';
 import { createRemoteHost, type RemoteHost } from './remote-commands.ts';
+import type { SyncTool } from '../remote/sync-tool.ts';
 import type { CommandOutput, Prepared } from './prepared.ts';
 import { sessionLabel } from './inspect-commands.ts';
 import { newGoal, runGoalCheck, runGoalLoop, taskVerifierItem, type Goal } from './goal.ts';
@@ -291,6 +292,8 @@ export async function runOmsInterface(
     version?: string;
     /** A folder chat's connectors (GitHub, Docker, AWS and more): the /connectors pane, their approvals and the sign-in tip. */
     connectors?: Connectors;
+    /** The agent's tool for syncing a shared session; the interface says what a call does. */
+    syncTool?: SyncTool;
   } = {},
 ): Promise<void> {
   const terminal = options.terminal ?? new ProcessTerminal();
@@ -1756,8 +1759,7 @@ export async function runOmsInterface(
       if (branch) facts.push({ key: 'branch', text: branch, role: 'muted' });
     }
     if (harness.chain?.rpcUrl()) facts.push({ key: 'chip', text: 'surfpool', role: 'muted', dot: 'success' });
-    const remoteChip = remote?.chip();
-    for (const chip of [...(options.statusChips?.() ?? []), ...(remoteChip ? [remoteChip] : [])])
+    for (const chip of [...(options.statusChips?.() ?? []), ...(remote?.chips() ?? [])])
       facts.push({
         key: 'chip',
         text: singleLine(chip.text, 24),
@@ -1962,6 +1964,7 @@ export async function runOmsInterface(
           }).then(Boolean),
     toast,
     render: requestRender,
+    syncTool: options.syncTool,
   });
   harness.setHostApproval?.((request, signal) => {
     if (closing) return Promise.resolve(false);

@@ -240,8 +240,8 @@ test('connectors: the session gets their extensions and tool names, the interfac
   }
   assert.equal(
     (opened[0]!.extensions as unknown[]).length,
-    1,
-    'only the connector extension while no hosted connector is on',
+    2,
+    'the connector extension and the sync tool while no hosted connector is on',
   );
   assert.deepEqual(opened[0]!.extensionTools, [
     'github',
@@ -252,8 +252,10 @@ test('connectors: the session gets their extensions and tool names, the interfac
     'mcp__gitlab_remote__*',
     'mcp__linear__*',
     'mcp__slack__*',
+    'session_sync',
   ]);
   assert.equal(typeof (given[0]!.connectors as { rows: unknown }).rows, 'function');
+  assert.equal(typeof (given[0]!.syncTool as { bind: unknown }).bind, 'function');
   assert.equal(JSON.parse(readFileSync(join(f.stateRoot, 'connectors.json'), 'utf8')).tips.launches, 2);
 });
 
