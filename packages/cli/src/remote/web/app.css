@@ -1,0 +1,448 @@
+:root {
+  --canvas: #15120f;
+  --surface: #221d19;
+  --raised: #2e2722;
+  --line: #3b332d;
+  --text: #ece4db;
+  --muted: #a89a8c;
+  --faint: #7a6d62;
+  --accent: #d98c5f;
+  --on-accent: #15120f;
+  --good: #a5c67c;
+  --warn: #e4b65e;
+  --bad: #e46f6f;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --canvas: #f3eee4;
+    --surface: #eae3d5;
+    --raised: #e1d8c8;
+    --line: #d3c8b5;
+    --text: #2a2520;
+    --muted: #5c5248;
+    --faint: #857a6d;
+    --accent: #9a4a2c;
+    --on-accent: #f3eee4;
+    --good: #55702f;
+    --warn: #8a6410;
+    --bad: #a83a32;
+    color-scheme: light;
+  }
+}
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--canvas);
+  color: var(--text);
+  font:
+    16px/1.5 system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+[hidden] {
+  display: none !important;
+}
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+button.quiet {
+  background: var(--raised);
+  color: var(--text);
+}
+button:disabled {
+  opacity: 0.5;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 10px
+    max(16px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line);
+}
+.face {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 5px;
+  border-radius: 12px;
+  background: #f3eee4;
+  box-shadow: 0 0 0 1px var(--line);
+}
+.face.big {
+  display: block;
+  width: 72px;
+  height: 72px;
+  padding: 9px;
+  border-radius: 20px;
+}
+.face svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.who {
+  flex: 1;
+  min-width: 0;
+}
+h1 {
+  overflow: hidden;
+  font-size: 17px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sub {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#people {
+  display: flex;
+  gap: 6px;
+  padding: 0;
+  list-style: none;
+}
+#people li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 110px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+#people li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#people li::before {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  content: '';
+}
+#people li.live::before {
+  background: var(--good);
+}
+/* On a phone the people are dots, so the session's name keeps its room. */
+@media (max-width: 480px) {
+  #people li {
+    padding: 6px;
+  }
+  #people li span {
+    display: none;
+  }
+}
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left));
+}
+main > * {
+  max-width: 760px;
+  margin: 0 auto 14px;
+}
+.user {
+  width: fit-content;
+  max-width: min(85%, 640px);
+  margin-right: max(0px, calc((100% - 760px) / 2));
+  margin-left: auto;
+  padding: 9px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--raised);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.assistant {
+  overflow-wrap: anywhere;
+}
+.assistant > * + * {
+  margin-top: 10px;
+}
+.assistant ul,
+.assistant ol {
+  padding-left: 22px;
+}
+.assistant h3 {
+  font-size: 16px;
+}
+.assistant.streaming > :last-child::after {
+  color: var(--accent);
+  content: ' ▍';
+}
+.ending {
+  color: var(--warn);
+  font-size: 14px;
+}
+code,
+pre {
+  font: 13px/1.45 var(--mono);
+}
+code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface);
+}
+pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  white-space: pre;
+}
+pre code {
+  padding: 0;
+  background: none;
+}
+.tool {
+  color: var(--muted);
+  font-size: 14px;
+}
+.tool summary {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  list-style: none;
+  cursor: pointer;
+}
+.tool summary::-webkit-details-marker {
+  display: none;
+}
+.tool summary::before {
+  flex: none;
+  color: var(--faint);
+  content: '●';
+}
+.tool.running summary::before,
+.tool.pending summary::before {
+  color: var(--accent);
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+.tool.done summary::before {
+  color: var(--good);
+}
+.tool.error summary::before,
+.tool.interrupted summary::before {
+  color: var(--bad);
+}
+.tool b {
+  flex: none;
+  color: var(--text);
+  font-weight: 600;
+}
+.tool .target {
+  overflow: hidden;
+  font: 13px/1.45 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool .summary {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 13px;
+}
+.tool pre {
+  max-height: 260px;
+  margin-top: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.note {
+  padding: 10px 12px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.note b {
+  display: block;
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#gate {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--canvas);
+}
+.card {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  width: min(100%, 360px);
+  text-align: center;
+}
+.card h2 {
+  font-size: 20px;
+}
+.card p {
+  color: var(--muted);
+}
+.card form {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+input,
+textarea {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+#gate-code {
+  font: 20px/1.3 var(--mono);
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+#approval {
+  max-height: 60dvh;
+  overflow-y: auto;
+  padding: 14px max(16px, env(safe-area-inset-right)) 14px max(16px, env(safe-area-inset-left));
+  border-top: 1px solid var(--warn);
+  background: var(--surface);
+}
+#approval h2 {
+  font-size: 16px;
+}
+#approval p {
+  color: var(--warn);
+  font-size: 14px;
+}
+#approval pre {
+  max-height: 30dvh;
+  margin: 10px 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.row {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 8px;
+}
+.row button {
+  padding: 0 8px;
+  font-size: 15px;
+}
+
+footer {
+  padding: 8px max(12px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  border-top: 1px solid var(--line);
+}
+#flash {
+  min-height: 0;
+  color: var(--warn);
+  font-size: 13px;
+  text-align: center;
+}
+#flash:not(:empty) {
+  padding-bottom: 6px;
+}
+#composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  max-width: 760px;
+  margin: 0 auto;
+}
+textarea {
+  flex: 1;
+  max-height: 40dvh;
+  resize: none;
+}
+
+.bot .lids,
+.bot .whole,
+.bot .eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.bot .lids {
+  transition: transform 80ms ease-in-out;
+}
+.blink .bot .lids {
+  transform: scaleY(0.1);
+}
+@keyframes pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bot .whole {
+    animation: bob 3.4s ease-in-out infinite alternate;
+  }
+  .busy .bot .eyes {
+    animation: scan 1.1s ease-in-out infinite alternate;
+  }
+}
+@keyframes bob {
+  to {
+    transform: translateY(-0.9px);
+  }
+}
+@keyframes scan {
+  from {
+    transform: translate(-1.4px, 1px);
+  }
+  to {
+    transform: translate(1.4px, 1px);
+  }
+}

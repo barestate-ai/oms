@@ -16,6 +16,7 @@ import { acceptsConnectors, connectorCommandNames, connectorsCommand, contextCom
 import type { Connectors } from '../connectors/runtime.ts';
 import { clearConversation, goalCommand, handoverCommand } from './conversation-commands.ts';
 import { acceptsArt, acceptsLayout, acceptsPanel, acceptsWeb, uiCommands } from './ui-commands.ts';
+import { remoteCommand, type RemoteHost } from './remote-commands.ts';
 import { refuseWith, type Prepared } from './prepared.ts';
 import type { Goal } from './goal.ts';
 import type { StartupArtMode } from './startup-art.ts';
@@ -81,6 +82,8 @@ export interface CommandContext {
   /** Run another command as if chosen from the menu. */
   submit(text: string): void;
   cancel(): void;
+  /** This session on the user's other devices; absent until the interface has built it. */
+  readonly remote?: Pick<RemoteHost, 'command'> | undefined;
   quit(): void;
   /** Ask a yes/no question on one key: y runs `onYes`; n, Esc or any other key drops it. */
   confirm(question: string, onYes: () => void): void;
@@ -195,6 +198,7 @@ const CHAT_HELP = [
   'connectors',
   'model',
   'yolo',
+  'remote',
   'web',
   'goal',
   'team',
@@ -360,6 +364,15 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     description: 'Model and web search setup',
     whileBusy: 'accepted',
     run: uiCommands.setup,
+  },
+  {
+    name: 'remote',
+    group: 'Setup',
+    description: 'Open this session on your phone or another computer',
+    argument: '[stop|local|tunnel|forget]',
+    accepts: (argument) => ['', 'stop', 'local', 'tunnel', 'forget'].includes(argument),
+    whileBusy: 'always',
+    run: remoteCommand,
   },
   {
     name: 'yolo',
