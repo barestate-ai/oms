@@ -181,6 +181,7 @@ From your shell (`oms <command> --help` explains each one):
 | `oms --new` | Start a new conversation in this folder |
 | `oms exec "<prompt>"` | One prompt, no interface, for scripts and CI |
 | `oms sessions` | Folders with saved conversations, `--prune` clears deleted ones |
+| `oms join '<link>'` | Take a copy of a session a teammate shared with `/share` |
 | `oms login`, `logout`, `whoami` | Your Oh My Sol account |
 | `oms config` | Where settings and state are kept |
 | `oms completion bash\|zsh\|fish` | Shell completion |
@@ -202,6 +203,9 @@ Inside OMS:
 | `/error <code>`, `/program <name>` | Decode errors and programs |
 | `/review` | Offline security report for your program |
 | `/workbench`, `/harness` | Editor or chat |
+| `/remote` | Open the session on your phone or another computer ([docs](docs/remote.md)) |
+| `/share`, `/sync` | Invite a teammate into the session, and trade what is new |
+| `/handover` | New conversation that starts from a handover note |
 | `/web provider`, `/web on\|off` | Search provider and web access |
 | `/login` | Sign in with GitHub for Solana knowledge |
 | `/help`, `/exit` | Every command and key, and quit |

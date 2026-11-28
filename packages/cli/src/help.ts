@@ -44,6 +44,12 @@ export const COMMANDS: Record<string, { usage: string[]; about: string }> = {
       'List the folders that have saved conversations. Run oms in a folder to continue there.\n' +
       '--prune deletes the saved state of folders that no longer exist, after asking.',
   },
+  join: {
+    usage: ['join <link> [--name <your name>]'],
+    about:
+      'Take a copy of a session a teammate shared with /share and open it in this folder. They are asked before\n' +
+      'you get it. While you are both open, /sync trades what is new on each side.',
+  },
   update: {
     usage: ['update [--check] [--version <x.y.z>]'],
     about: 'Install the latest release the way oms was installed. --check only reports.',

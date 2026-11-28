@@ -16,7 +16,7 @@ import { acceptsConnectors, connectorCommandNames, connectorsCommand, contextCom
 import type { Connectors } from '../connectors/runtime.ts';
 import { clearConversation, goalCommand, handoverCommand } from './conversation-commands.ts';
 import { acceptsArt, acceptsLayout, acceptsPanel, acceptsWeb, uiCommands } from './ui-commands.ts';
-import { remoteCommand, type RemoteHost } from './remote-commands.ts';
+import { remoteCommand, shareCommand, syncCommand, type RemoteHost } from './remote-commands.ts';
 import { refuseWith, type Prepared } from './prepared.ts';
 import type { Goal } from './goal.ts';
 import type { StartupArtMode } from './startup-art.ts';
@@ -83,7 +83,7 @@ export interface CommandContext {
   submit(text: string): void;
   cancel(): void;
   /** This session on the user's other devices; absent until the interface has built it. */
-  readonly remote?: Pick<RemoteHost, 'command'> | undefined;
+  readonly remote?: Pick<RemoteHost, 'command' | 'share' | 'syncNow'> | undefined;
   quit(): void;
   /** Ask a yes/no question on one key: y runs `onYes`; n, Esc or any other key drops it. */
   confirm(question: string, onYes: () => void): void;
@@ -199,6 +199,7 @@ const CHAT_HELP = [
   'model',
   'yolo',
   'remote',
+  'share',
   'web',
   'goal',
   'team',
@@ -210,7 +211,6 @@ const CHAT_HELP = [
   'usage',
   'session',
   'clear',
-  'handover',
   'cancel',
   'files',
   'terminal',
@@ -373,6 +373,24 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     accepts: (argument) => ['', 'stop', 'local', 'tunnel', 'forget'].includes(argument),
     whileBusy: 'always',
     run: remoteCommand,
+  },
+  {
+    name: 'share',
+    group: 'Setup',
+    description: 'Invite a teammate into this session',
+    argument: '[stop]',
+    accepts: (argument) => argument === '' || argument === 'stop',
+    availability: 'chat',
+    whileBusy: 'always',
+    run: shareCommand,
+  },
+  {
+    name: 'sync',
+    group: 'Work',
+    description: 'Trade what is new with a teammate who shares this session',
+    availability: 'chat',
+    whileBusy: 'always',
+    run: syncCommand,
   },
   {
     name: 'yolo',

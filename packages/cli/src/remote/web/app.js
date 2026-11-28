@@ -199,6 +199,7 @@
     denied: ['Not allowed', 'The terminal said no. Ask for a new code or link to try again.'],
     slow: ['Too many tries', 'Wait a minute, then try again.'],
     offline: ['Not reachable', 'This session is not running, or this device is on another network.'],
+    paused: ['Not shared right now', 'The host has turned sharing off. This page comes back when it is on again.'],
   };
   let linkCode = '';
   function gate(kind) {
@@ -280,7 +281,9 @@
       try {
         const response = await call('/api/events', undefined, stream.signal);
         if (response.status === 401) return void hello('');
+        if (response.status === 403) gate('paused');
         if (!response.ok) throw new Error('unavailable');
+        gate(null);
         online = true;
         delay = 500;
         const reader = response.body.getReader();

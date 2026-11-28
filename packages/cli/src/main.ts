@@ -11,7 +11,7 @@ import { configuredBackend, defaultHarnessEnvironment, omsCommand } from '@oms/e
 import { runHarnessCommand } from './harness.ts';
 import { toolchainCommand } from './toolchain.ts';
 import { runReviewCommand } from './review.ts';
-import { checkLocalPrerequisites, omsHome, startLocal } from '../../../scripts/start-local.ts';
+import { checkLocalPrerequisites, joinLocal, omsHome, startLocal } from '../../../scripts/start-local.ts';
 import { runUpdate, updateDeps, updateNotice } from './update.ts';
 import { runExec } from './exec.ts';
 import { COMMANDS, commandHelp, suggestCommand, wantsHelp } from './help.ts';
@@ -34,6 +34,7 @@ const HELP = `oms · Solana coding agent
   ${omsCommand()} review [path]   Offline security review of a Solana program
   ${omsCommand()} error <code>    Name a Solana program error
   ${omsCommand()} sessions        Folders with saved conversations
+  ${omsCommand()} join <link>     Open a session a teammate shared with /share
   ${omsCommand()} login           Sign in to your Oh My Sol account
   ${omsCommand()} update          Update to the latest release (--check to only look)
   ${omsCommand()} --version       Print the version
@@ -75,6 +76,7 @@ Commands:
   review      Run a local offline Phase A security review
   error       Name a custom program error from the built-in tables and local IDLs
   sessions    List folders with saved conversations (--prune removes state of deleted ones)
+  join        Take a copy of a session a teammate shared with /share, and open it here
   config      Show where settings and state are kept
   login       Sign in to your account (also: logout, whoami)
   completion  Print a bash, zsh or fish completion script
@@ -176,6 +178,8 @@ try {
       note: fail,
       signal: stop.signal,
     });
+  } else if (cmd === 'join') {
+    process.exitCode = await joinLocal(rest);
   } else if (cmd === 'toolchain') {
     process.exitCode = await toolchainCommand(rest);
   } else if (cmd === 'review') {

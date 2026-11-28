@@ -10,9 +10,16 @@ export interface Person {
   id: string;
   name: string;
   role: Role;
-  kind: 'terminal' | 'browser';
+  /** `oms` is a teammate's own OMS holding a copy of the session; `browser` is a page showing this one live. */
+  kind: 'terminal' | 'browser' | 'oms';
   live: boolean;
 }
+/** One message of a conversation, as one side tells the other in a sync. */
+export interface SyncItem {
+  who: 'user' | 'agent';
+  text: string;
+}
+export type SyncAnswer = { ok: true; items: SyncItem[] } | { ok: false; reason: string };
 /** One row of the conversation as a remote view draws it. Text is already masked and free of terminal sequences. */
 export type WireEntry =
   | { key: string; kind: 'user'; text: string }
@@ -47,7 +54,10 @@ export type ApprovalAnswer = 'once' | 'session' | 'deny';
 export interface RemoteHooks {
   snapshot(): { entries: WireEntry[]; status: WireStatus };
   /** Ask at the terminal whether this new device or guest may connect. */
-  admit(request: { role: Role; name: string; address: string }, signal: AbortSignal): Promise<boolean>;
+  admit(
+    request: { role: Role; name: string; address: string; kind: 'browser' | 'oms' },
+    signal: AbortSignal,
+  ): Promise<boolean>;
   /** The person's next message to the agent. Returns why not, when it is refused. */
   send(from: Person, text: string): string | undefined;
   cancel(from: Person): void;
@@ -55,12 +65,18 @@ export interface RemoteHooks {
   answer(from: Person, id: number, answer: ApprovalAnswer): boolean;
   /** Someone connected or left. */
   peopleChanged(): void;
+  /** The conversation for a teammate's OMS to keep its own copy of. */
+  export?(from: Person): unknown;
+  /** A teammate's OMS asks to sync and sends what is new on its side. */
+  sync?(from: Person, items: unknown): Promise<SyncAnswer>;
 }
 
 /** What is kept between runs, so a paired phone and its home-screen app keep working. Device secrets are stored hashed. */
 export interface RemoteState {
   port?: number;
-  devices: Record<string, { name: string; role: Role }>;
+  devices: Record<string, { name: string; role: Role; kind?: 'oms' }>;
+  /** For each teammate's OMS, the last entry here that it has been told about. */
+  synced?: Record<string, string>;
 }
 
 export interface RemoteOptions {
@@ -92,6 +108,8 @@ export interface RemoteServer {
   entry(entry: WireEntry): void;
   cleared(): void;
   status(status: WireStatus): void;
+  /** Ask a live teammate's OMS to sync, handing it what is new here. Resolves once it has answered. */
+  requestSync(personId: string, from: string, items: SyncItem[]): Promise<SyncAnswer>;
   /** Forget every paired device and guest, and disconnect them. */
   forget(): void;
   close(): Promise<void>;
@@ -112,6 +130,8 @@ const sameCode = (given: string, expected: string | undefined): boolean =>
   !!expected && !!given && timingSafeEqual(digest(given), digest(expected));
 
 const BODY_LIMIT = 64 * 1024;
+const SYNC_BODY_LIMIT = 1024 * 1024;
+const SYNC_WAIT_MS = 120_000;
 const MESSAGE_LIMIT = 32_000;
 /** Wrong codes allowed per minute, over every address together: a short code cannot be guessed at this pace. */
 const WRONG_CODES_PER_MINUTE = 10;
@@ -227,15 +247,18 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
   let lastStatus = hooks.snapshot().status;
   const closing = new AbortController();
   const admissions = new Map<string, Promise<boolean>>();
-  const streams = new Set<{ id: string; role: Role; res: ServerResponse }>();
+  const streams = new Set<{ id: string; role: Role; oms: boolean; res: ServerResponse }>();
+  const syncs = new Map<number, { id: string; settle(answer: SyncAnswer): void }>();
+  let nextSync = 1;
   const pending = new Map<string, WireEntry>();
   let flushTimer: NodeJS.Timeout | undefined;
 
   const terminal: Person = { id: 'terminal', name: options.hostName, role: 'owner', kind: 'terminal', live: true };
   const person = (id: string): Person => ({
     id: id.slice(0, 12),
-    ...state.devices[id]!,
-    kind: 'browser',
+    name: state.devices[id]!.name,
+    role: state.devices[id]!.role,
+    kind: state.devices[id]!.kind ?? 'browser',
     live: [...streams].some((stream) => stream.id === id),
   });
   const people = (): Person[] => [terminal, ...Object.keys(state.devices).map(person)];
@@ -248,12 +271,13 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
     if (stream.res.writableLength > STREAM_BACKLOG) return void stream.res.destroy();
     stream.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
-  const broadcast = (event: string, data: (role: Role) => unknown): void => {
-    for (const stream of streams) write(stream, event, data(stream.role));
+  /** A teammate's OMS has its own copy of the conversation: it hears who is here, not every row. */
+  const broadcast = (event: string, data: (role: Role) => unknown, toOms = false): void => {
+    for (const stream of streams) if (toOms || !stream.oms) write(stream, event, data(stream.role));
   };
   const announcePeople = (): void => {
     const list = people();
-    broadcast('people', () => list);
+    broadcast('people', () => list, true);
     hooks.peopleChanged();
   };
 
@@ -271,13 +295,13 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
     res.end(payload);
   }
 
-  async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
+  async function body(req: IncomingMessage, limit = BODY_LIMIT): Promise<Record<string, unknown>> {
     if (!/^application\/json\b/.test(req.headers['content-type'] ?? '')) throw new Error('json');
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req as AsyncIterable<Buffer>) {
       size += chunk.length;
-      if (size > BODY_LIMIT) throw new Error('large');
+      if (size > limit) throw new Error('large');
       chunks.push(chunk);
     }
     const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
@@ -311,15 +335,19 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
         return send(res, 401, { error: 'code' });
       }
       if (admissions.size >= 3) return send(res, 429, { error: 'slow' });
-      const name = role === 'owner' ? deviceLabel(req.headers['user-agent']) : cleanName(input.name) || 'guest';
+      const kind = input.kind === 'oms' ? 'oms' : 'browser';
+      const name =
+        role === 'owner' && kind === 'browser'
+          ? deviceLabel(req.headers['user-agent'])
+          : cleanName(input.name) || 'guest';
       const address = (req.socket.remoteAddress ?? 'unknown').replace(/^::ffff:/, '');
       admission = hooks
-        .admit({ role, name, address }, closing.signal)
+        .admit({ role, name, address, kind }, closing.signal)
         .catch(() => false)
         .then((allowed) => {
           admissions.delete(id);
           if (!allowed || closed) return false;
-          state.devices[id] = { name, role };
+          state.devices[id] = { name, role, ...(kind === 'oms' ? { kind } : {}) };
           // A used code is spent: a photo of the screen does not pair a second device.
           if (role === 'owner') pairing = newCode(8);
           options.save(state);
@@ -344,13 +372,13 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
       'x-content-type-options': 'nosniff',
     });
     const role = state.devices[id]!.role;
-    const stream = { id, role, res };
+    const stream = { id, role, oms: state.devices[id]!.kind === 'oms', res };
     const { entries, status } = hooks.snapshot();
     lastStatus = status;
     write(stream, 'state', {
       session: { title: options.title },
       me: { id: id.slice(0, 12), ...state.devices[id]! },
-      entries,
+      entries: stream.oms ? [] : entries,
       status: statusFor(role, status),
     });
     streams.add(stream);
@@ -359,6 +387,13 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
     req.on('close', () => {
       clearInterval(ping);
       streams.delete(stream);
+      // A sync it was asked for can no longer be answered.
+      if (stream.oms && ![...streams].some((other) => other.id === id))
+        for (const [key, waiting] of syncs)
+          if (waiting.id === id) {
+            syncs.delete(key);
+            waiting.settle({ ok: false, reason: 'They went offline before answering.' });
+          }
       if (!closed) announcePeople();
     });
     announcePeople();
@@ -378,7 +413,26 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
     const id = caller(req);
     if (!id) return send(res, 401, { error: 'pair' });
     const from = person(id);
+    // A guest is let in only while the host is sharing; one from an earlier run waits until /share is on again.
+    if (from.role === 'guest' && !invite) return send(res, 403, { error: 'This session is not shared right now.' });
     if (req.method === 'GET' && path === '/api/events') return events(req, res, id);
+    if (from.kind === 'oms') {
+      if (req.method === 'GET' && path === '/api/export' && hooks.export) return send(res, 200, hooks.export(from));
+      if (req.method === 'POST' && path === '/api/sync' && hooks.sync)
+        return send(res, 200, await hooks.sync(from, (await body(req, SYNC_BODY_LIMIT)).items));
+      if (req.method === 'POST' && path === '/api/sync-reply') {
+        const reply = await body(req, SYNC_BODY_LIMIT);
+        const waiting = typeof reply.id === 'number' ? syncs.get(reply.id) : undefined;
+        if (!waiting || waiting.id !== id) return send(res, 409, { error: 'That sync is over.' });
+        syncs.delete(reply.id as number);
+        waiting.settle(
+          reply.ok === true && Array.isArray(reply.items)
+            ? { ok: true, items: reply.items as SyncItem[] }
+            : { ok: false, reason: 'They said no.' },
+        );
+        return send(res, 200, { ok: true });
+      }
+    }
     if (req.method !== 'POST') return send(res, 405, { error: 'method' });
     const input = await body(req);
     if (path === '/api/send') {
@@ -470,8 +524,29 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
       lastStatus = status;
       broadcast('status', (role) => statusFor(role, lastStatus));
     },
+    requestSync(personId, from, items) {
+      const target = [...streams].find((stream) => stream.oms && stream.id.startsWith(personId));
+      if (!target) return Promise.resolve({ ok: false, reason: 'They went offline.' });
+      return new Promise<SyncAnswer>((resolve) => {
+        const key = nextSync++;
+        const timer = setTimeout(() => {
+          syncs.delete(key);
+          resolve({ ok: false, reason: 'They did not answer in time.' });
+        }, SYNC_WAIT_MS);
+        timer.unref();
+        syncs.set(key, {
+          id: target.id,
+          settle(answer) {
+            clearTimeout(timer);
+            resolve(answer);
+          },
+        });
+        write(target, 'sync', { id: key, from, items });
+      });
+    },
     forget() {
       state.devices = {};
+      delete state.synced;
       options.save(state);
       pairing = newCode(8);
       disconnect(() => false);
@@ -482,6 +557,8 @@ export async function startRemoteServer(options: RemoteOptions): Promise<RemoteS
       closed = true;
       closing.abort();
       clearTimeout(flushTimer);
+      for (const waiting of syncs.values()) waiting.settle({ ok: false, reason: 'Sharing was turned off.' });
+      syncs.clear();
       disconnect(() => false);
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -11,6 +11,7 @@ import {
 import { webSetting } from './interactive.ts';
 import type { LaunchOptions } from './harness.ts';
 import { createConnectors } from './connectors/runtime.ts';
+import { createSyncTool, SYNC_TOOL } from './remote/sync-tool.ts';
 import { chooseLocalAction } from './ownership.ts';
 import { connectorStatusChips } from './tui/connectors.ts';
 import { runOmsInterface } from './tui/interface.ts';
@@ -32,6 +33,8 @@ export interface ChatLaunch {
   choose?: typeof chooseLocalAction;
   /** --new: start a separate conversation instead of resuming the folder's newest one. */
   fresh?: boolean;
+  /** Open this saved conversation (the one `oms join` just made). */
+  sessionId?: string;
 }
 
 /**
@@ -59,11 +62,17 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
   // Internal SDK policy: no automatic catalog refresh, update checks or telemetry.
   process.env.PI_OFFLINE = '1';
   const folder = resolveChatFolder(o.folder, { stateRoot: o.stateRoot });
-  const selected = o.fresh ? {} : await chooseChatSession(folder, o.stateRoot, o.launch, o.choose);
+  const selected = o.sessionId
+    ? { sessionId: o.sessionId }
+    : o.fresh
+      ? {}
+      : await chooseChatSession(folder, o.stateRoot, o.launch, o.choose);
   if (!selected) return;
   // The folder's connectors (GitHub, Docker, AWS and more): off until the user turns one on in /connectors.
   const connectors = createConnectors({ stateRoot: o.stateRoot, folder: folder.path });
   connectors.recordLaunch();
+  // Offered to the agent only while the session is shared with someone.
+  const syncTool = createSyncTool();
   const chat = await (o.start ?? createChatSession)({
     folder,
     stateRoot: o.stateRoot,
@@ -73,8 +82,8 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
     executionMode: o.launch.executionMode,
     web: { enabled: o.web !== false && webSetting(o.stateRoot) === 'on' },
     ...(o.yolo ? { yolo: true } : {}),
-    extensions: connectors.extensions,
-    extensionTools: connectors.extensionTools,
+    extensions: [...connectors.extensions, syncTool.extension],
+    extensionTools: [...connectors.extensionTools, SYNC_TOOL],
     ...selected,
   });
   try {
@@ -90,6 +99,7 @@ export async function runInteractiveChat(o: ChatLaunch): Promise<void> {
     await (o.run ?? runOmsInterface)(chat, {
       ...interfacePreferences(o.stateRoot),
       connectors,
+      syncTool,
       statusChips: () => connectorStatusChips(connectors),
       view: 'harness',
       ...(notes.length ? { startNote: notes.join('\n') } : {}),

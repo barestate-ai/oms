@@ -39,6 +39,7 @@ test('/remote opens the session to a device that pairs with the code and is allo
       while (!wanted.test(seen)) seen += new TextDecoder().decode((await reader.read()).value);
     };
     await read(/event: state\n.*earlier question/);
+    assert.equal(/Remote access is on|Code\s+\S{4}-\S{4}/.test(seen), false, 'the pairing code stays at the terminal');
     await terminal.until((s) => s.includes('remote · 1'));
 
     const send = (text: string) =>
