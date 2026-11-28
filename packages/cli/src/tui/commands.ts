@@ -14,7 +14,7 @@ import { prepareReview, prepareRun, prepareTest, prepareVerify } from './work-co
 import { agentsCommand, teamCommand } from './agent-commands.ts';
 import { acceptsConnectors, connectorCommandNames, connectorsCommand, contextCommand } from './connector-commands.ts';
 import type { Connectors } from '../connectors/runtime.ts';
-import { clearConversation, goalCommand } from './conversation-commands.ts';
+import { clearConversation, goalCommand, handoverCommand } from './conversation-commands.ts';
 import { acceptsArt, acceptsLayout, acceptsPanel, acceptsWeb, uiCommands } from './ui-commands.ts';
 import { refuseWith, type Prepared } from './prepared.ts';
 import type { Goal } from './goal.ts';
@@ -206,6 +206,7 @@ const CHAT_HELP = [
   'usage',
   'session',
   'clear',
+  'handover',
   'cancel',
   'files',
   'terminal',
@@ -664,6 +665,15 @@ export const OMS_COMMANDS: readonly CommandSpec[] = [
     accepts: any,
     whileBusy: 'never',
     run: clearConversation,
+  },
+  {
+    name: 'handover',
+    group: 'Work',
+    description: 'New conversation that starts from a handover note',
+    argument: '[what to stress]',
+    accepts: any,
+    whileBusy: 'never',
+    run: (ctx, argument) => handoverCommand(ctx, argument),
   },
   {
     name: 'cancel',

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `/handover` has the agent write a handover note, then starts a new conversation that begins from it. Use it when a conversation has grown long.
 - Every command answers `--help`, and `oms help <command>` shows the same text. A mistyped command names the closest one.
 - `oms sessions` lists the folders that have saved conversations, newest first, and flags folders that were deleted.
 - `oms error <code> [program]` names a Solana program error from the shell, offline, using the built-in tables and the project's IDLs.
